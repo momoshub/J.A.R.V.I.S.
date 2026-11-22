@@ -19,7 +19,7 @@ import { reviewRequestIn } from "../domain/reviewRequest.ts";
 import { nameOfRequest } from "../domain/runControl.ts";
 import { coalesceKind, queuedInput } from "../domain/queuedBatch.ts";
 import { sessionThreadKey } from "../domain/agentSession.ts";
-import { isRestartCut, type RunRegistry } from "./runRegistry.ts";
+import { isRestartCut, RESTART_STOPPER, type RunRegistry } from "./runRegistry.ts";
 import type { ThreadQueue } from "./threadQueue.ts";
 import type { PostedRef } from "./slackAdmin.ts";
 import type { TurnOutcome } from "../infrastructure/db/turnLogRepo.ts";
@@ -140,7 +140,12 @@ export const respond = async (
     const chatTurn = async (lead: PendingTurn, inbound: InboundMessage): Promise<HandleResult> => {
       const { tracked, sink, onTurnStart, runId } = lead;
       // Called off while it waited its turn, so it never spawns anything.
-      if (tracked?.signal.aborted) return { kind: "ignored" };
+      if (tracked?.signal.aborted) {
+        // Never reaches the `finally` below, so its run is closed here: a
+        // stopped message left tracked would count as waiting for ever.
+        tracked.done();
+        return { kind: "ignored" };
+      }
       tracked?.running();
       onTurnStart?.();
       const startedAt = deps.clock();
@@ -259,27 +264,39 @@ export const respond = async (
 
     // Everything one person typed while a turn was running, answered together:
     // the batch's messages are already in the thread, in order, so the turn
-    // reads them from there and replies once. Only the newest message's caller
-    // answers; the others settle as ignored the moment the batch starts, so no
-    // second reply and no stream or run is left open for them. A message
-    // stopped by id while it queued is left out of the batch.
-    const runBatch = (items: readonly PendingTurn[]): Promise<HandleResult> => {
+    // reads them from there and replies once. Only the newest live message's
+    // caller answers; the others settle as ignored when the batch ends, so no
+    // second reply and no stream is left open for them. Until then each keeps
+    // its own run (state queued, so a stop never lands on it) and its inbox
+    // row: a restart that cuts the turn cuts them all, and every one of them is
+    // picked up again on its own. A message stopped by id while it queued is
+    // left out of the batch.
+    const runBatch = async (items: readonly PendingTurn[], leadAt: number): Promise<HandleResult> => {
+      const lead = items[leadAt]!;
       const live = items.filter((i) => !i.tracked?.signal.aborted);
-      const lead = live[live.length - 1] ?? items[items.length - 1]!;
-      // Folded into the lead's turn: they no longer wait, and nothing of them
-      // is left in the registry to hold a restart open or to be stopped twice.
-      for (const i of items) if (i !== lead) i.tracked?.done();
-      const texts = live.map((i) => cleanInboundText(i.inbound.text)).filter((t) => t.length > 0);
-      if (live.length < 2 || texts.length < 2) return chatTurn(lead, lead.inbound);
-      const who = deps.users.get(lead.inbound.slackUserId)?.displayName || lead.inbound.displayName || `<@${lead.inbound.slackUserId}>`;
-      const humanMessages = live.flatMap((i) => i.inbound.humanMessages ?? []);
-      return chatTurn(lead, {
-        ...lead.inbound,
-        text: queuedInput(who, texts),
-        coalesced: texts.length,
-        ...(live.some((i) => i.inbound.mentioned) ? { mentioned: true } : {}),
-        ...(humanMessages.length > 0 ? { humanMessages } : {}),
-      });
+      const merged = items.filter((i) => i !== lead);
+      try {
+        // A restart's cut of a folded message's row is a cut of the turn that
+        // carries it.
+        for (const i of merged) {
+          i.tracked?.signal.addEventListener("abort", () => {
+            if (isRestartCut(i.tracked?.signal)) deps.runs?.stop(lead.runId, RESTART_STOPPER);
+          });
+        }
+        const texts = live.map((i) => cleanInboundText(i.inbound.text)).filter((t) => t.length > 0);
+        if (live.length < 2 || texts.length < 2) return await chatTurn(lead, lead.inbound);
+        const who = deps.users.get(lead.inbound.slackUserId)?.displayName || lead.inbound.displayName || `<@${lead.inbound.slackUserId}>`;
+        const humanMessages = live.flatMap((i) => i.inbound.humanMessages ?? []);
+        return await chatTurn(lead, {
+          ...lead.inbound,
+          text: queuedInput(who, texts),
+          coalesced: texts.length,
+          ...(live.some((i) => i.inbound.mentioned) ? { mentioned: true } : {}),
+          ...(humanMessages.length > 0 ? { humanMessages } : {}),
+        });
+      } finally {
+        for (const i of merged) i.tracked?.done();
+      }
     };
 
     // Chat and workflow turns share the thread's one session, so they take it

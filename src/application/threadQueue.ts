@@ -35,18 +35,19 @@ export type ThreadQueue = {
    * Run `item` in a turn it may share. Items that queue under the same `key`
    * and `kind` with no other turn between them wait as one group; when the
    * chain reaches it, `runBatch` is called ONCE with every item, oldest first,
-   * and the item at `leader` (the newest by default) gets its result - the
-   * caller whose reply is the one that gets posted. Every other caller settles
-   * with `merged` as soon as the batch starts, so nothing waits on a turn that
-   * is not theirs. A batch that fails rejects the leader only. Once a batch has
-   * started, a later item opens the next group.
+   * and the item at `leader` (the newest by default; its index is passed too)
+   * gets its result - the caller whose reply is the one that gets posted. Every
+   * other caller settles with `merged` when the batch ends, so none is left
+   * waiting and each caller's own bookkeeping (an inbox row) closes with the
+   * turn that answered it. A batch that fails rejects the leader only. Once a
+   * batch has started, a later item opens the next group.
    */
   coalesce: <I, T>(opts: {
     key: string;
     /** Only items of the same kind merge (here: the same author). */
     kind: string;
     item: I;
-    runBatch: (items: readonly I[]) => Promise<T>;
+    runBatch: (items: readonly I[], leader: number) => Promise<T>;
     /** What a caller whose item ran inside another's turn settles with. */
     merged: T;
     /** Index of the item whose caller receives the result. Defaults to the last. */
@@ -107,7 +108,7 @@ export const createThreadQueue = (): ThreadQueue => {
     key: string;
     kind: string;
     item: I;
-    runBatch: (items: readonly I[]) => Promise<T>;
+    runBatch: (items: readonly I[], leader: number) => Promise<T>;
     merged: T;
     leader?: (items: readonly I[]) => number;
   }): Promise<T> =>
@@ -122,22 +123,32 @@ export const createThreadQueue = (): ThreadQueue => {
       open.set(opts.key, group);
       let lead: Waiter | undefined;
       type Outcome = { ok: true; value: unknown } | { ok: false; error: unknown };
-      // The leader hears back once the turn has left the chain (not from inside
+      // Everyone hears back once the turn has left the chain (not from inside
       // it), so whoever awaits the answer sees the queue as it is afterwards.
+      // The merged callers wait for the end too, not the start: their inbox
+      // rows stay open until the turn that answers them is done, so a restart
+      // that cuts it picks every one of them up again.
       void enqueue<Outcome>(opts.key, async () => {
         if (open.get(opts.key) === group) open.delete(opts.key);
         const items = group.waiters.map((w) => w.item as I);
-        const at = opts.leader?.(items) ?? items.length - 1;
-        lead = group.waiters[Math.min(Math.max(at, 0), items.length - 1)]!;
-        for (const w of group.waiters) if (w !== lead) w.resolve(opts.merged as never);
-        // The failure belongs to the leader's caller; this turn itself never
-        // throws, so the chain behind it is untouched.
+        // The failure belongs to the leader's caller (or to all of them when
+        // the pick itself fails); this turn never throws, so the chain behind
+        // it is untouched.
         try {
-          return { ok: true, value: await opts.runBatch(items) };
+          const at = Math.min(Math.max(opts.leader?.(items) ?? items.length - 1, 0), items.length - 1);
+          lead = group.waiters[at]!;
+          return { ok: true, value: await opts.runBatch(items, at) };
         } catch (error) {
           return { ok: false, error };
         }
-      }).then((o) => (o.ok ? lead!.resolve(o.value as never) : lead!.reject(o.error)));
+      }).then((o) => {
+        for (const w of group.waiters) {
+          if (lead === undefined) w.reject((o as { error: unknown }).error);
+          else if (w !== lead) w.resolve(opts.merged as never);
+          else if (o.ok) w.resolve(o.value as never);
+          else w.reject(o.error);
+        }
+      });
     });
 
   return { run, coalesce, depth: (key) => depths.get(key) ?? 0 };

@@ -106,7 +106,7 @@ export const RUNTIME_COMMANDS: readonly CommandDef[] = [
       // different things to read when you are watching something misbehave.
       const waiting = deps.runs.inThread(key).length;
       return waiting > 0
-        ? `Nothing is running yet - ${waiting} ${waiting === 1 ? "turn is" : "turns are"} waiting behind it.`
+        ? `Nothing is running yet - ${waiting} ${waiting === 1 ? "message is" : "messages are"} waiting behind it, and they run together as one turn.`
         : "Nothing is running in this thread.";
     },
   },

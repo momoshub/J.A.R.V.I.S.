@@ -626,6 +626,55 @@ describe("respond", () => {
       expect(asked[4]).toContain("pal again");
     });
 
+    test("a lone queued message stopped by id leaves no run behind", async () => {
+      const runs = createRunRegistry();
+      const { brain, asked, release } = held();
+      const deps = build(brain);
+      deps.threadQueue = createThreadQueue();
+      deps.runs = runs;
+      const a = respond(deps, { ...inbound, text: "the long one", messageTs: "700.1" });
+      await tick();
+      const only = respond(deps, { ...inbound, text: "only one", messageTs: "700.2" });
+      runs.stop(runs.inThread("C1:700.1").find((r) => r.what === "only one")!.id, OWNER);
+      release();
+      expect(await only).toEqual({ kind: "ignored" });
+      await a;
+      expect(asked).toHaveLength(1);
+      expect(runs.all()).toEqual([]);
+    });
+
+    test("folded messages stay tracked until their turn ends, and a restart cut of one cuts the turn", async () => {
+      const runs = createRunRegistry();
+      let seen: AbortSignal | undefined;
+      const { brain, release } = held();
+      const deps = build({
+        complete: async (p) => {
+          const out = await brain.complete(p);
+          if (!seen && p.messages.some((m) => m.content.includes("2 messages"))) {
+            seen = p.signal;
+            await new Promise<void>((_res, reject) => p.signal?.addEventListener("abort", () => reject(new Error("claude CLI exited with code 143: no output"))));
+          }
+          return out;
+        },
+      });
+      deps.threadQueue = createThreadQueue();
+      deps.runs = runs;
+      const a = respond(deps, { ...inbound, text: "the long one", messageTs: "700.1" });
+      await tick();
+      const b = respond(deps, { ...inbound, text: "first of two", messageTs: "700.2", inboxRowId: 11 });
+      const c = respond(deps, { ...inbound, text: "second of two", messageTs: "700.3", inboxRowId: 12 });
+      release();
+      await a;
+      await tick(20); // the combined turn is running
+      // the folded message still holds its run (so its inbox row stays open), but a stop never lands on it
+      expect(runs.inThread("C1:700.1").map((r) => r.state).sort()).toEqual(["queued", "running"]);
+      // its row runs over the restart budget: the turn that carries it is cut too
+      runs.stop(runs.inThread("C1:700.1").find((r) => r.inboxRowId === 11)!.id, RESTART_STOPPER);
+      expect(await Promise.all([b, c])).toEqual([{ kind: "ignored" }, { kind: "ignored" }]);
+      expect(seen?.aborted).toBe(true);
+      expect(runs.all()).toEqual([]);
+    });
+
     test("a queued message stopped by id before its turn is left out of the batch", async () => {
       const runs = createRunRegistry();
       const { brain, asked, release } = held();

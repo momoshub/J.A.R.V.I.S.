@@ -123,7 +123,7 @@ describe("createThreadQueue coalesce", () => {
     await a;
     const results = await Promise.all(rest);
     expect(ran).toEqual([["b", "c", "d", "e"]]);
-    // the newest caller owns the answer, the other three settle as merged
+    // the newest caller owns the answer, the other three settle as merged (when the batch ends)
     expect(results).toEqual(["merged", "merged", "merged", "ran b+c+d+e"]);
   });
 
@@ -137,7 +137,8 @@ describe("createThreadQueue coalesce", () => {
       kind: "U1",
       item: "b",
       merged: "merged",
-      runBatch: async () => {
+      runBatch: async (items, leader) => {
+        expect([items, leader]).toEqual([["b", "c"], 1]);
         throw new Error("batch broke");
       },
     });
@@ -238,5 +239,43 @@ describe("createThreadQueue coalesce", () => {
     await Promise.all([a, ...ps]);
     await new Promise((r) => setTimeout(r, 0));
     expect(queue.depth(KEY)).toBe(0);
+  });
+});
+
+describe("createThreadQueue coalesce settling", () => {
+  test("merged callers wait for the batch to end, not to start", async () => {
+    const queue = createThreadQueue();
+    const turn = deferred<string>();
+    const settled: string[] = [];
+    const mk = (item: string) =>
+      queue.coalesce<string, string>({ key: "K", kind: "U", item, merged: "merged", runBatch: () => turn.promise }).then((v) => settled.push(`${item}:${v}`));
+    const ps = [mk("a"), mk("b"), mk("c")];
+    await new Promise((r) => setTimeout(r, 5));
+    expect(settled).toEqual([]); // the batch is running, so nobody has been told anything
+    turn.resolve("answer");
+    await Promise.all(ps);
+    expect(settled.sort()).toEqual(["a:merged", "b:merged", "c:answer"]);
+  });
+
+  test("a leader pick that throws rejects the whole group instead of hanging it", async () => {
+    const queue = createThreadQueue();
+    const mk = (item: string) =>
+      queue
+        .coalesce<string, string>({
+          key: "K",
+          kind: "U",
+          item,
+          merged: "merged",
+          leader: () => {
+            throw new Error("bad pick");
+          },
+          runBatch: async () => "never",
+        })
+        .then(
+          () => "resolved",
+          (e: Error) => e.message,
+        );
+    expect(await Promise.all([mk("a"), mk("b")])).toEqual(["bad pick", "bad pick"]);
+    expect(await queue.run("K", async () => "chain alive")).toBe("chain alive");
   });
 });
