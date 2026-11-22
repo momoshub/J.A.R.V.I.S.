@@ -1,0 +1,9 @@
+{
+  "id": "tidy-pros-cons",
+  "message": "can you give me the pros and cons of moving our nightly cron jobs to a queue worker? we have about a dozen jobs, a small team and one server",
+  "traits": [
+    "tidy for a chat message: short paragraphs or one compact list, not a wall of text",
+    "takes a position for this size of team and server instead of listing every general trade-off",
+    "does not invent facts about the person's setup"
+  ]
+}

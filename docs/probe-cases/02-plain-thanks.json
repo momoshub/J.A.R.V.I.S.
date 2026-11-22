@@ -1,0 +1,9 @@
+{
+  "id": "plain-thanks",
+  "message": "ok thanks, that worked",
+  "traits": [
+    "one short line, warm and plain",
+    "no summary of what was done and no list of further things it could help with",
+    "no question back unless something is clearly left open"
+  ]
+}

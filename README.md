@@ -1546,6 +1546,34 @@ Identity and learnings are stored in the DB and applied on the next reply - no r
 
 **Learnings need the owner's approval.** A learning is injected into every future reply, in every channel, so only the owner typing `learn <fact>` saves one active. A `learn` from anyone else, a `learn` the agent runs for itself, and every `POST /api/learnings` (the endpoint the agent curls, and the dashboard's teach box - the loopback API cannot tell the two apart) is stored *pending*: it never reaches a prompt, the API answers `{"status":"pending", "id":N, "message":...}` so the agent does not claim it saved one, and the owner gets a DM with Approve / Reject buttons (or `learn pending`, `learn approve <id>`, `learn reject <id>`). Existing learnings stay active. Up to 20 can wait at once, and `POST /api/learnings/update` (new wording) sends the learning back to pending. With a memory adapter an approved fact lives only in the adapter, so there is no numbered learning left to delete: `adapter forget <fact>` (a typed line, never run by a turn; the text as `learnings` shows it) removes that line as a new revision. `adapter revert <id>` rolls back TO that revision, so everything after it is undone - it is not a way to drop a single fact.
 
+## Probing a prompt or skill change
+
+A change to the system prompt, an adapter skill or a prompt guide changes what the model does, and a reader cannot see that in a diff. `bin/probe-harness.ts` runs the same replay cases on the text before and after the change and has a judge model compare the answers pairwise, after Harness2's Propose-Probe-Compose ([google-research/harness2](https://github.com/google-research/harness2)). It needs no ground truth: it compares behaviour.
+
+```bash
+# the file as it is now against the same path on origin/main
+bun bin/probe-harness.ts --path src/domain/personality.ts --dry-run   # the plan and the estimated token spend, no model called
+bun bin/probe-harness.ts --path src/domain/personality.ts
+
+# or two files, e.g. a skill exported with `X/jv adapter export` before and after an edit
+bun bin/probe-harness.ts --base old/SKILL.md --candidate new/SKILL.md --runs 3 --out probe.md
+```
+
+| option | default | |
+| --- | --- | --- |
+| `--path <file>` / `--base-ref <ref>` | - / `origin/main` | candidate = the file now, base = the same path at the ref |
+| `--base <file>` + `--candidate <file>` | - | two texts instead of `--path` |
+| `--cases <dir>` | `docs/probe-cases` | one JSON file per case: `{"id", "message", "traits": [...]}` |
+| `--runs <n>` | 2 (max 5) | runs per case and version |
+| `--max-cases <n>` | 5 (max 10) | cases used, in file-name order |
+| `--model` / `--judge-model` | `sonnet` / `opus` | answers / comparison |
+| `--out <file>` | `probe-<stamp>.md` in the system temp folder | the markdown report |
+| `--dry-run` | off | print the plan and estimate, call nothing |
+
+Each case is a past user message written without private content (no Slack ids, no names, no urls: the repo is public) and the traits a good answer shows. The answering calls are sandboxed: the text under test is the whole system prompt, there are no tools, no MCP servers and no Slack, no saved session, an empty working folder, and an environment holding only what the CLI needs to log in. So it measures how the model writes to a message, not what it does with tools. Before any call the script prints an estimate of the token spend (default run: 5 cases x 2 runs x 2 versions + 10 judgements = 30 calls, roughly 35k input and 10k output tokens), and after the run the real figure.
+
+The report gives the totals (candidate wins, base wins, ties), a row per case, and what each version did in the judge's words for every pair that was not a tie. A handful of pairs is a signal, not a measurement: read the contrasts, and rerun with a higher `--runs` before a close call. Paste the report in the PR body of every docs, prompt-text or skill change (the `jarvis-source` skill says so). Add a case in `docs/probe-cases/` when a voice or behaviour rule keeps slipping.
+
 ## Testing
 
 ```bash
