@@ -419,7 +419,7 @@ export const createDashboard = (config: DashboardConfig, deps: DashboardDeps) =>
           const ticket = req.headers.get("x-jarvis-ticket")?.trim() ?? "";
           const found = ticket ? deps.learningSource?.(ticket) : undefined;
           const runId = req.headers.get("x-jarvis-session")?.trim() ?? "";
-          return reply(await app.teach(body.content, found ? { ...found, runId } : undefined));
+          return reply(await app.teach(body.content, found ? { ...found, runId } : undefined, body.scope));
         }
         case "/api/learnings/update":
           return reply(await app.updateLearning(body.id, body.content));

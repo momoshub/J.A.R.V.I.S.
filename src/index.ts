@@ -614,11 +614,11 @@ const main = async () => {
     clock,
     say: async (channel, text, thread) => void (await slackAdmin.post(channel, text, thread, SIGNATURES.watch)),
   });
-  const promptContext = () => ({
+  const promptContext = (channelId?: string) => ({
     botName: profile().name,
     base: settings.get(SETTING_KEYS.systemPrompt),
-    // Active learnings only: a pending one is the owner's to approve first.
-    learnings: injectedLearnings(learnings),
+    // Active learnings only (a pending one is the owner's to approve first), scoped to the turn's channel.
+    learnings: injectedLearnings(learnings, channelId),
     adapter: adapterReader.read(),
     // The prompt lists the methods the Slack proxy allows, so it reads the same live setting.
     slackExtraMethods: parseExtraMethods(settings.get(SETTING_KEYS.slackExtraMethods)),

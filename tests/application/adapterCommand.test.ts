@@ -10,6 +10,7 @@ import { createAdapterRevisionRepo } from "../../src/infrastructure/db/adapterRe
 import { createAdapterStore } from "../../src/infrastructure/adapter/adapterStore.ts";
 import { dispatchCommand, type CommandDeps } from "../../src/application/commands.ts";
 import { rememberFact } from "../../src/application/adapterMemory.ts";
+import { proposeLearning } from "../../src/application/learningApproval.ts";
 import { adapterDepsOf } from "../../src/application/commands/shared.ts";
 import type { AllowedUser } from "../../src/domain/types.ts";
 
@@ -28,6 +29,8 @@ structure:
     - path: memory/NOTES.md
       format: {max_bytes: 8000}
     - path: memory/people/*.md
+      format: {max_bytes: 8000}
+    - path: memory/channels/*.md
       format: {max_bytes: 8000}
   fixed:
     - README.md
@@ -112,6 +115,21 @@ describe("the adapter command", () => {
     // filed into the adapter, so the table keeps no second copy
     expect(d.learnings!.get(row!.id)).toBeUndefined();
     expect(d.learnings!.pending()).toEqual([]);
+  });
+
+  test("with an adapter, a channel-scoped learning is filed into that channel's note, not the global notes", async () => {
+    const d = deps();
+    const r = await proposeLearning(d.learningApproval!, "billing deploys go through the pod", "agent", undefined, ["C0TEAM00001"]);
+    const id = r.ok ? r.learning.id : -1;
+    expect(await run(d, `learn approve ${id}`)).toContain("Approved");
+    expect(d.adapterStore?.load().notes).not.toContain("billing deploys");
+    expect(d.adapterStore?.load().channels.get("C0TEAM00001")).toContain("billing deploys go through the pod");
+    expect(d.learnings!.get(id)).toBeUndefined();
+
+    // widened on approval: the global notes get it
+    const w = await proposeLearning(d.learningApproval!, "everyone reviews before merging", "agent", undefined, ["C0TEAM00001"]);
+    expect(await run(d, `learn approve ${w.ok ? w.learning.id : -1} global`)).toContain("Approved");
+    expect(d.adapterStore?.load().notes).toContain("everyone reviews before merging");
   });
 
   test("with an adapter, a rejected learning never reaches the notes", async () => {

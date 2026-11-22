@@ -1,7 +1,7 @@
 /** Learned facts: learn, learnings, relearn, unlearn. */
 
 import { isBlank } from "../../domain/adapter.ts";
-import { AGENT_SOURCE, parseLearnArgs, pendingReply, refusalText } from "../../domain/learning.ts";
+import { AGENT_SOURCE, parseLearnArgs, pendingReply, refusalText, scopeLabel } from "../../domain/learning.ts";
 import { decideLearning, proposeLearning, rewordLearning, saveActive } from "../learningApproval.ts";
 import { type CommandDef, adapterDepsOf } from "./shared.ts";
 
@@ -9,7 +9,7 @@ export const LEARNINGS_COMMANDS: readonly CommandDef[] = [
   {
     name: "learn",
     minRole: "executer",
-    usage: "<fact>|pending|approve <id>|reject <id>",
+    usage: "<fact>|pending|approve <id> [global|<channel ids>]|reject <id>",
     summary: "teach me a durable fact (the owner's is saved, anyone else's waits for the owner's approval)",
     run: async ({ deps, actor, rest, prefix, fromBrainRun, channelId, threadTs, messageTs }) => {
       const la = deps.learningApproval;
@@ -25,8 +25,8 @@ export const LEARNINGS_COMMANDS: readonly CommandDef[] = [
         const waiting = la.learnings.pending();
         if (waiting.length === 0) return "No learnings are waiting for approval.";
         return [
-          ...waiting.map((l) => `- #${l.id} (${l.createdBy === AGENT_SOURCE ? "from a turn" : `<@${l.createdBy}>`}) ${l.content}`),
-          `_\`${prefix} learn approve <id>\` or \`${prefix} learn reject <id>\`_`,
+          ...waiting.map((l) => `- #${l.id} (${l.createdBy === AGENT_SOURCE ? "from a turn" : `<@${l.createdBy}>`}${l.scope.length > 0 ? `, ${scopeLabel(l.scope)}` : ""}) ${l.content}`),
+          `_\`${prefix} learn approve <id> [global|<channel ids>]\` or \`${prefix} learn reject <id>\`_`,
         ].join("\n");
       }
       if (args.kind === "usage") {
@@ -35,7 +35,7 @@ export const LEARNINGS_COMMANDS: readonly CommandDef[] = [
       if (args.kind === "approve" || args.kind === "reject") {
         if (!owner) return refusalText("not-owner");
         if (fromBrainRun) return refusalText("from-turn");
-        const r = await decideLearning(la, args.id, args.kind, actor.slackId);
+        const r = await decideLearning(la, args.id, args.kind, actor.slackId, args.kind === "approve" && args.scope ? { scope: args.scope } : {});
         if (r.kind === "refused") return refusalText(r.why, args.id);
         if (r.kind === "failed") return `I could not keep that, so it is still pending:\n${r.violations.map((v) => `- ${v}`).join("\n")}`;
         if (r.kind === "rejected") return `Rejected #${args.id}. It will never be part of my memory.`;
@@ -43,7 +43,7 @@ export const LEARNINGS_COMMANDS: readonly CommandDef[] = [
           r.warnings.length > 0
             ? `\n:warning: my always-on memory is over budget - \`${prefix} adapter refine\` will tidy it.`
             : "";
-        return `Approved #${args.id}. I will keep that in mind.${nag}`;
+        return `Approved #${args.id} (${scopeLabel(r.learning.scope)}). I will keep that in mind.${nag}`;
       }
 
       const fact = args.text;
@@ -102,7 +102,7 @@ export const LEARNINGS_COMMANDS: readonly CommandDef[] = [
       if (!deps.learnings) return "Learnings are not available.";
       const list = deps.learnings.list();
       if (list.length === 0) return `I have not learned anything yet.${nudge}`;
-      return `${list.map((l) => `- #${l.id} ${l.content}`).join("\n")}${nudge}`;
+      return `${list.map((l) => `- #${l.id}${l.scope.length > 0 ? ` (${scopeLabel(l.scope)})` : ""} ${l.content}`).join("\n")}${nudge}`;
     },
   },
   {

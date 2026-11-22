@@ -14,17 +14,20 @@
  * the adapter (where the prompt reads it) and drops the row, so there is still
  * ONE store of what the bot knows.
  */
-import { rememberFact, type AdapterDeps } from "./adapterMemory.ts";
+import { hasFact, rememberFact, type AdapterDeps, type MemoryTarget } from "./adapterMemory.ts";
 import {
   AGENT_SOURCE,
+  GLOBAL_SCOPE,
   LEARNING_APPROVE_ACTION,
   LEARNING_REJECT_ACTION,
   approvalCore,
+  appliesIn,
   approvalText,
   oneLine,
   proposalProblem,
   settledText,
   type DecisionRefusal,
+  type LearningScope,
   type LearningSource,
 } from "../domain/learning.ts";
 import { SIGNATURES } from "../domain/messageFooter.ts";
@@ -51,13 +54,19 @@ export type LearningApprovalDeps = {
 /**
  * The learnings that reach a prompt. The one place the injection reads from:
  * active only, filtered here as well as in the repo, so a change to either
- * cannot start injecting a pending or rejected fact.
+ * cannot start injecting a pending or rejected fact. Scoped to the turn's
+ * channel: a global learning reaches every turn, a channel-scoped one only a
+ * turn in one of its channels (a turn with no known channel gets global only).
  */
-export const injectedLearnings = (learnings: LearningsRepo): string[] =>
+export const injectedLearnings = (learnings: LearningsRepo, channel?: string): string[] =>
   learnings
     .list()
-    .filter((l) => l.status === "active")
+    .filter((l) => l.status === "active" && appliesIn(l.scope, channel))
     .map((l) => l.content);
+
+/** Where an approved fact goes in the adapter: the notes for global, each channel's own note otherwise. */
+const adapterTargets = (scope: LearningScope): readonly MemoryTarget[] =>
+  scope.length === 0 ? [{ kind: "global" }] : scope.map((id) => ({ kind: "channel", id }));
 
 export type Saved =
   | { readonly ok: true; readonly id?: number; readonly warnings: readonly string[] }
@@ -109,7 +118,7 @@ const askOwner = async (deps: LearningApprovalDeps, l: Learning, by: string): Pr
     !!deps.slack.postInteractive && (await ownerOwnsThread(deps, l.sourceChannel, l.sourceThreadTs));
   const threaded = inThread
     ? await deps.slack
-        .postInteractive?.(l.sourceChannel, approvalText(l.id, l.content, by), actions, l.sourceThreadTs, SIGNATURES.learning)
+        .postInteractive?.(l.sourceChannel, approvalText(l.id, l.content, by, undefined, l.scope), actions, l.sourceThreadTs, SIGNATURES.learning)
         .catch(logAndIgnore("learning approval thread post"))
     : undefined;
   if (threaded) {
@@ -121,7 +130,7 @@ const askOwner = async (deps: LearningApprovalDeps, l: Learning, by: string): Pr
       ? await deps.slack.permalink?.(l.sourceChannel, l.sourceThreadTs).catch(logAndIgnore("learning source permalink"))
       : undefined;
   const notice = await deps.slack
-    .postDmInteractive(deps.ownerSlackId, approvalText(l.id, l.content, by, link), actions, SIGNATURES.learning)
+    .postDmInteractive(deps.ownerSlackId, approvalText(l.id, l.content, by, link, l.scope), actions, SIGNATURES.learning)
     .catch(logAndIgnore("learning approval post"));
   if (notice) deps.learnings.setNotice(l.id, notice.channel, notice.ts, notice.fingerprint);
   else deps.log?.(`learning #${l.id} pending, the owner DM did not go out`);
@@ -141,6 +150,7 @@ export const proposeLearning = async (
   fact: string,
   by: string,
   source?: LearningSource,
+  scope: LearningScope = GLOBAL_SCOPE,
 ): Promise<Proposed> => {
   const text = oneLine(fact);
   const problem = proposalProblem(text);
@@ -151,7 +161,7 @@ export const proposeLearning = async (
   if (waiting.length >= MAX_PENDING) {
     return { ok: false, error: `${waiting.length} learnings are already waiting for the owner. Try again once they have decided.` };
   }
-  const l = deps.learnings.add(text, by, deps.clock(), "pending", source);
+  const l = deps.learnings.add(text, by, deps.clock(), "pending", source, scope);
   deps.log?.(`learning #${l.id} proposed by ${by}, pending the owner`);
   await askOwner(deps, l, by);
   return { ok: true, learning: l };
@@ -219,7 +229,7 @@ export const decideLearning = async (
   id: number,
   decision: "approve" | "reject",
   by: string,
-  opts: { readonly flip?: boolean } = {},
+  opts: { readonly flip?: boolean; /** Where it applies from now on; absent keeps what the proposal asked for. */ readonly scope?: LearningScope } = {},
 ): Promise<DecideResult> => {
   const l = deps.learnings.get(id);
   if (!l) return { kind: "refused", why: "unknown" };
@@ -237,18 +247,24 @@ export const decideLearning = async (
   // Filed first, claimed second: a refused write leaves the learning pending.
   // Nothing awaits between the read above and the claim, so no press slips in.
   const adapter = deps.adapter?.();
+  const scope = opts.scope ?? l.scope;
   let warnings: readonly string[] = [];
   if (adapter) {
-    const r = rememberFact(adapter, l.content, { kind: "global" }, by);
-    if (!r.ok) return { kind: "failed", violations: r.violations };
-    warnings = r.warnings;
+    // One file per channel of the scope. A fact already filed (an earlier try that stopped part-way) is skipped, not doubled.
+    for (const target of adapterTargets(scope)) {
+      if (hasFact(adapter, l.content, target)) continue;
+      const r = rememberFact(adapter, l.content, target, by);
+      if (!r.ok) return { kind: "failed", violations: r.violations };
+      warnings = [...warnings, ...r.warnings];
+    }
   }
   if (!deps.learnings.decide(id, "active", by, now)) return { kind: "refused", why: "decided" };
+  if (opts.scope && !adapter) deps.learnings.setScope(id, opts.scope);
   // The adapter holds it now and is what the prompt reads; the row would only be a second copy.
   if (adapter) deps.learnings.remove(id);
   deps.log?.(`learning #${id} approved by ${by}`);
   await settle(deps, l, "approve", by, !adapter);
-  return { kind: "approved", learning: l, warnings };
+  return { kind: "approved", learning: { ...l, scope }, warnings };
 };
 
 export type PressOutcome =

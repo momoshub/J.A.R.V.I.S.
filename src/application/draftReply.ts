@@ -10,7 +10,7 @@ import type { SlackMessage } from "./slackAdmin.ts";
 
 export type DraftReplyDeps = {
   llm: LlmPort;
-  promptContext: () => PromptContext;
+  promptContext: (channelId?: string) => PromptContext;
   /** The console is the owner's own tool, so its drafts are billed to the owner. */
   ownerSlackId: string;
 };
@@ -19,7 +19,7 @@ export type DraftReply = (thread: readonly SlackMessage[], channel?: string) => 
 
 export const createDraftReply = (deps: DraftReplyDeps): DraftReply => {
   return async (thread, channel) => {
-    const ctx = deps.promptContext();
+    const ctx = deps.promptContext(channel);
     const botName = ctx.botName ?? "You";
     const system = buildSystemPrompt({ botName: ctx.botName, base: ctx.base, learnings: ctx.learnings, slackExtraMethods: ctx.slackExtraMethods });
     const transcript = thread

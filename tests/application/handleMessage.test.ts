@@ -698,6 +698,14 @@ describe("handleMessage", () => {
     expect(seen[2]?.session).toEqual({ id: "sess-2", resume: false, name: "jarvis-C1-700.1" });
   });
 
+  test("the prompt context is asked for the turn's own channel, so learnings are scoped to it", async () => {
+    const asked: (string | undefined)[] = [];
+    const deps = build({ complete: async () => "ok" });
+    deps.promptContext = (channelId) => (asked.push(channelId), { learnings: [] });
+    await handleMessage(deps, { channelId: "C0TEAM00001", slackUserId: OWNER, text: "hi", threadTs: "720.1", messageTs: "720.1" });
+    expect(asked).toContain("C0TEAM00001");
+  });
+
   test("a watch hand-back keeps the old session through a rule change, once", async () => {
     // a restart to ship a feature changes the rules; the session that set the
     // watch is the one that knows what the job was
