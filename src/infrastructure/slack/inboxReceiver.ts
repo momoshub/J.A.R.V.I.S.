@@ -59,9 +59,12 @@ export type InboxReceiverOptions = {
    * A row claimed while a restart waits has run past its budget. Cut what it
    * started and tell the thread; return whether anything was cut. Only then
    * is the row marked cut and left running for the next process to pick up.
-   * Something that cannot be cut (no turn to stop) is left to finish.
+   * Something that cannot be cut (no turn to stop) is left to finish. A list
+   * names every row the cut covers (messages answered inside one combined
+   * turn): all of them still in flight are held in the same pass, since the
+   * turn ending would otherwise close the others before their own budgets.
    */
-  readonly onOverBudget?: (rowId: number) => boolean;
+  readonly onOverBudget?: (rowId: number) => boolean | readonly number[];
   /**
    * While a restart waits, rows this answers true for are not claimed: they
    * stay pending for the next process (commands, slash commands, buttons -
@@ -173,10 +176,17 @@ export const createInboxReceiver = (opts: InboxReceiverOptions) => {
     for (const [id, f] of inFlight) {
       if (!f.budgeted || f.checked || now() - f.claimedAt < budgetMs) continue;
       f.checked = true;
-      if (!opts.onOverBudget(id)) continue;
-      f.held = true;
-      opts.inbox.markCutRow(id, now());
-      log(`row ${id} ran past its ${Math.round(budgetMs / 1000)}s budget while a restart waits; cut, the next process picks it up`);
+      const cut = opts.onOverBudget(id);
+      const rows = cut === true ? [id] : cut === false ? [] : cut.length > 0 ? [...new Set([id, ...cut])] : [];
+      if (rows.length === 0) continue;
+      for (const row of rows) {
+        const flight = inFlight.get(row);
+        if (!flight) continue;
+        flight.checked = true;
+        flight.held = true;
+        opts.inbox.markCutRow(row, now());
+      }
+      log(`row ${id} ran past its ${Math.round(budgetMs / 1000)}s budget while a restart waits; cut${rows.length > 1 ? ` with ${rows.length - 1} more row(s) of its turn` : ""}, the next process picks it up`);
     }
   };
 

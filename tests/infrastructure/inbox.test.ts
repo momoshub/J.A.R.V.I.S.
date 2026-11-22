@@ -30,7 +30,9 @@ import { createUserRepo } from "../../src/infrastructure/db/userRepo.ts";
 import { createMessageRepo } from "../../src/infrastructure/db/messageRepo.ts";
 import type { LlmPort } from "../../src/application/ports.ts";
 import { createGatewayHandler, type SocketEnvelope } from "../../src/infrastructure/slack/gateway.ts";
-import { createRunRegistry } from "../../src/application/runRegistry.ts";
+import { createRestartCutter, createRunRegistry } from "../../src/application/runRegistry.ts";
+import { respond } from "../../src/application/respond.ts";
+import { createThreadQueue } from "../../src/application/threadQueue.ts";
 
 const T0 = 1_800_000_000_000;
 const message = (eventId: string, text = "hi") => ({
@@ -703,5 +705,99 @@ describe("openInbox path", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("a restart's budget and messages answered in one combined turn", () => {
+  test("every row of the combined turn is held, whichever order the rows come due and the turn unwinds in", async () => {
+    const BUDGET = 120_000;
+    const OWNER = "U0OWNER0001";
+    const inbox = openInbox(":memory:");
+    const db = openDatabase(":memory:");
+    const runs = createRunRegistry();
+    let now = T0;
+    let t = 1;
+    let opened!: () => void;
+    const firstGate = new Promise<void>((r) => (opened = r));
+    let calls = 0;
+    const llm: LlmPort = {
+      complete: async (p) => {
+        calls += 1;
+        if (calls === 1) {
+          await firstGate;
+          return "first answered";
+        }
+        // the combined turn: runs until the restart's cut kills it
+        await new Promise<void>((_res, reject) => p.signal?.addEventListener("abort", () => reject(new Error("claude CLI exited with code 143: no output"))));
+        return "never";
+      },
+    };
+    const deps = {
+      users: createUserRepo(db),
+      messages: createMessageRepo(db),
+      llm,
+      clock: () => t++,
+      ownerSlackId: OWNER,
+      contextWindow: 10,
+      threadQueue: createThreadQueue(),
+      runs,
+    };
+    const app: EventProcessor = {
+      processEvent: async (e) => {
+        const body = e.body as { event: { text: string; ts: string } };
+        await respond(deps, {
+          channelId: "C1",
+          slackUserId: OWNER,
+          text: body.event.text,
+          threadTs: "700.1",
+          messageTs: body.event.ts,
+          inboxRowId: (e.customProperties as { inboxRowId: number }).inboxRowId,
+        });
+      },
+    };
+    const receiver = createInboxReceiver({
+      inbox,
+      now: () => now,
+      log: () => undefined,
+      onOverBudget: createRestartCutter(runs, () => undefined, "hold on"),
+    });
+    receiver.init(app);
+    const post = (id: string, text: string, ts: string) =>
+      inbox.enqueue(
+        { envelopeId: id, type: "events_api", body: { type: "event_callback", event_id: id, event: { type: "message", channel: "C1", user: OWNER, text, ts, thread_ts: "700.1", channel_type: "im" } } },
+        now,
+      )!;
+    const tick = (ms = 10) => new Promise((r) => setTimeout(r, ms));
+
+    post("Ev1", "the long one", "700.1");
+    const first = receiver.drain(); // before the restart: not on a budget
+    await tick();
+    receiver.budget(BUDGET);
+    // three messages claimed in separate drains, 10 s apart: they come due at different times
+    const rows: number[] = [];
+    const dispatched: Promise<void>[] = [];
+    for (const [i, text] of ["one", "two", "three"].entries()) {
+      rows.push(post(`Ev${i + 2}`, text, `700.${i + 2}`));
+      dispatched.push(...receiver.drain());
+      now += 10_000;
+      await tick();
+    }
+    opened(); // the long one ends; rows 2-4 run as ONE turn
+    await Promise.all(first);
+    await tick(30);
+    expect(calls).toBe(2);
+
+    // the oldest row's budget comes due first: its cut takes the turn, and the turn takes the rest
+    now = T0 + BUDGET + 1_000;
+    receiver.tickNow();
+    await Promise.all(dispatched);
+    now += BUDGET; // the other rows' own budgets come due after everything has unwound
+    receiver.tickNow();
+
+    expect(runs.all()).toEqual([]);
+    // none was closed as finished: all three stay running for the next process, which redelivers them
+    expect(inbox.counts()).toMatchObject({ running: 3, done: 1 });
+    expect(inbox.recover(now + 60_000)).toMatchObject({ redelivered: 3, dropped: 0 });
+    expect(rows).toHaveLength(3);
   });
 });

@@ -1041,9 +1041,28 @@ each other's history. Queued this way, the second message runs with the first's
 result already in the session, which is what makes a follow-up mean "and the
 rest" rather than "again, from scratch".
 
-If something is already running, the thread is told so rather than going quiet.
 Commands are deliberately not queued: a review is its own process with its own
 session, and holding one behind a long chat turn would make it look dead.
+
+### Messages queued behind a turn are answered together
+
+Send a, then b, c, d, e while a runs, and b..e do not take four turns of their own:
+they wait as one group, and when a ends - finished, failed or stopped - they run
+as ONE turn with one reply. The turn reads them from the thread, so each keeps its
+author, timestamp, attachments and links, and is told these were several messages
+sent while it was busy. The newest message carries the turn (its stream and
+reply); the others settle when it ends and post nothing (their inbox rows stay open until then, so a restart that cuts the turn re-delivers each of them).
+
+Only a person's own typed messages from the same author merge. Every turn the bot
+starts itself (a watch hand-back, a worker's question, a loop, a nudge, a
+workflow step) keeps its own turn and is a barrier the groups do not merge
+across: each carries its own instruction, and a turn runs under one person's role
+and budget. Messages that arrive while the combined turn runs form the next group.
+
+Stop ends only the running turn, so waiting messages are never dropped by it:
+after a stop they start at once as one turn. With nothing running (only messages
+queued behind a bot-started turn) there is nothing to stop, and `stop` says how
+many are waiting.
 
 ## One session per thread
 

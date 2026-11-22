@@ -30,7 +30,7 @@ no classes.
   |                                           |     allowance, audit log)   |
   |                                           +-> handleMessage (chat)      |
   |                                                    |                    |
-  |                    threadQueue (1 turn per thread) + runRegistry (stop) |
+  |                    threadQueue (1 turn per thread, queued messages merge) + runRegistry (stop) |
   |                                                    |                    |
   |                    LlmPort: claude CLI, one --resume session per thread |
   |                    tool policy per role, stream.ts -> live Slack reply  |
@@ -73,7 +73,9 @@ no classes.
   `SLACK_TRANSPORT=socket` (the default) the bot holds the socket itself and no
   gateway is needed.
 - **One turn per thread, one session per thread.** `threadQueue` serialises
-  turns in a thread; `threadSession` keeps one CLI session id per thread and
+  turns in a thread, and merges what one person types while a turn runs into a
+  single turn when it ends (`coalesce`; bot-started turns never merge, stop hits
+  only the running turn); `threadSession` keeps one CLI session id per thread and
   resumes it, so the model keeps its context and files between turns. Sessions
   never mix: what one thread needs another to know crosses as a `brief` (a
   short note written for the target, stored in `thread_briefs` by migration
@@ -316,7 +318,7 @@ Orchestrates the domain and depends on **ports**, not concrete adapters.
 - `selfPosts.ts` (application) + `domain/selfPost.ts` - what a turn (by its run ticket) posted into its own thread through the proxy, so that turn's closing reply is dropped instead of streamed as a second message (unless it carries a `KEEP_REPLY` line; the proxy strips that marker from the turn's own post/update text and blocks)
 - `commands.ts`, `commandTickets.ts`, `workerTickets.ts`, `commandLimits.ts`, `brainRun.ts` - the command registry (configurable prefix + slash, role gates, help), the brain's tickets, allowances and result delivery. The command definitions live in `commands/`, one file per group (`chat`, `schedule`, `people`, `adapter`, `learnings`, `errands`, `review`, `runtime`, `slack`, `cloudwatch`), with `commands/shared.ts` for the deps, the `CommandDef` type and the helpers more than one group uses
 - `learningApproval.ts` (+ `domain/learning.ts`) - learnings need the owner's approval: only the owner's own typed `learn` is saved active; a member's `learn`, the agent's `learn` and every `POST /api/learnings` are stored pending (`learnings.status`, migration v35), kept out of every prompt (`injectedLearnings` is the one place the injection reads, active only) and put to the owner with `jv:learning:approve|reject` buttons - in the thread of the turn that proposed it when that is the owner's DM or a thread they started (source recorded in `learnings.source_*`, migration v39), otherwise in the owner's DM with a link to that thread - a press is honoured only on the notice exactly as last rendered (`domain/noticeFingerprint.ts` over its text and buttons, stored in `learnings.notice_fingerprint`, migration v40; `slackProxy` also refuses a turn's `chat.update` on any stored notice) - decided in code in `slack/app.ts` like `jv:loop:` and never handed to the model; after a decision the notice keeps its buttons (`updateInteractive`: the pressed one relabelled `Approved by` / `Rejected by`, the other flips the decision, which `LearningsRepo.decide` allows), unlike the other approval notices, which are settled with `settleInteractive`
-- `threadQueue.ts`, `runRegistry.ts` - one turn per thread, and stopping one
+- `threadQueue.ts`, `runRegistry.ts` - one turn per thread (what a person queues behind it is merged into one turn), and stopping the running one
 - `followGate.ts` (application), `followGateModel.ts` - the per-thread buffer for a followed thread (a quiet window, a hard cap, injectable timers) and the cheap pal-model call that says reply, skip or wait
 - `ciGate.ts` (application) - the CI gate of `quick-review`: idempotent request-changes and approve against GitHub's own state, the watcher row for a running CI, and its poll
 - `watcher.ts`, `reminders.ts`, `loops.ts`, `reviewInbox.ts`, `reviewGuard.ts`, `innerChild.ts`, `offlineAlarm.ts`, `orcaQuestions.ts`, `idleReaper.ts`, `stuckSweeper.ts`, `stalePromiseSweep.ts` - the timers (`orcaQuestions` also sits on the tool-trace sink, linking each Orca worker to the thread that started it)

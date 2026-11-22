@@ -303,6 +303,11 @@ export type InboundMessage = {
    * together from two authors must not be read as a spoken command.
    */
   batched?: boolean;
+  /**
+   * How many messages this turn stands for: set by `respond` when everything one person typed while a turn was running is
+   * answered in a single turn. `text` then carries all of them, and `messageTs` is the newest's.
+   */
+  coalesced?: number;
   /** A retry: a restart cut the first attempt at this message off part way. */
   interrupted?: boolean;
   /** The gateway inbox row this came in on, so a restart can cut its turn. */
@@ -542,6 +547,7 @@ export const handleMessage = async (
     sandboxed: tierOf(policy) === "sandbox",
     following: inbound.following === true,
     interrupted: inbound.interrupted === true,
+    coalesced: inbound.coalesced,
     commandPrefix: deps.commandPrefix,
     adapter: ctx.adapter,
     // Scoped memory resolves against who is actually here and where.

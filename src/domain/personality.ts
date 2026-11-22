@@ -79,6 +79,21 @@ This message is being handled a SECOND time:
 - answer the message in full, as if the cut-off reply had never been posted. Mention the restart in at most one short line, and only if it changes what the person should expect`
     : "";
 
+/**
+ * Told to a turn that stands for several messages one person sent while the
+ * turn ahead of it was still running. They are already in the thread, in
+ * order, so the rule is only about how to read and answer them.
+ */
+export const queuedRules = (count: number): string =>
+  count > 1
+    ? `
+
+This turn covers ${count} messages from the same person, sent while you were busy with the turn before it:
+- they are the ${count} newest of that person's messages at the end of the thread, oldest first. Read every one of them in full before acting - the text, the attachments and the links of each
+- answer once, in ONE reply that covers all of them. Do not answer them one by one, and do not post a reply per message
+- when a later message corrects, narrows or cancels an earlier one, the later one wins; say so in a line if it changed what you do`
+    : "";
+
 export const followRules = (following: boolean): string => {
   if (!following) return "";
   return `
@@ -441,6 +456,8 @@ export type BuildSystemPromptOptions = PromptContext & {
   readonly following?: boolean;
   /** true when this message is being retried after a restart cut the first attempt off */
   readonly interrupted?: boolean;
+  /** how many queued messages this one turn stands for (more than one: they are answered together) */
+  readonly coalesced?: number;
   /** configured message command prefix, for explaining what a command line is */
   readonly commandPrefix?: string;
   /**
@@ -500,7 +517,7 @@ export const buildSystemPromptParts = (
 
   const roster = renderParticipants(options.participants ?? []);
   const reactions = reactionRules(options.channelId ?? "", options.reactable ?? [], options.reactScript);
-  const following = followRules(options.following === true) + interruptedRules(options.interrupted === true);
+  const following = followRules(options.following === true) + interruptedRules(options.interrupted === true) + queuedRules(options.coalesced ?? 1);
   const remembering = learningRules(options.learnUrl ?? "");
   const interactive = kitRules(options.kitUrl ?? "");
   const attachments = attachmentRules(options.fileScript);

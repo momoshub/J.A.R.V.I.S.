@@ -94,3 +94,188 @@ describe("createThreadQueue", () => {
     expect(ran).toEqual([1, 2, 3, 4]);
   });
 });
+
+describe("createThreadQueue coalesce", () => {
+  const KEY = "C1:100.1";
+  const batch = (queue: ReturnType<typeof createThreadQueue>, item: string, ran: string[][], kind = "U1") =>
+    queue.coalesce<string, string>({
+      key: KEY,
+      kind,
+      item,
+      merged: "merged",
+      runBatch: async (items) => {
+        ran.push([...items]);
+        return `ran ${items.join("+")}`;
+      },
+    });
+
+  test("everything queued behind a running turn runs as ONE turn when it finishes", async () => {
+    const queue = createThreadQueue();
+    const first = deferred<string>();
+    const ran: string[][] = [];
+    const a = queue.run(KEY, () => first.promise);
+    const rest = ["b", "c", "d", "e"].map((m) => batch(queue, m, ran));
+
+    await new Promise((r) => setTimeout(r, 5));
+    expect(ran).toEqual([]); // nothing starts while a runs
+
+    first.resolve("a");
+    await a;
+    const results = await Promise.all(rest);
+    expect(ran).toEqual([["b", "c", "d", "e"]]);
+    // the newest caller owns the answer, the other three settle as merged (when the batch ends)
+    expect(results).toEqual(["merged", "merged", "merged", "ran b+c+d+e"]);
+  });
+
+  test("a failed running turn still lets the batch run, and a failed batch does not break the chain", async () => {
+    const queue = createThreadQueue();
+    const boom = queue.run(KEY, async () => {
+      throw new Error("killed");
+    });
+    const failing = queue.coalesce<string, string>({
+      key: KEY,
+      kind: "U1",
+      item: "b",
+      merged: "merged",
+      runBatch: async (items, leader) => {
+        expect([items, leader]).toEqual([["b", "c"], 1]);
+        throw new Error("batch broke");
+      },
+    });
+    const sibling = queue.coalesce<string, string>({ key: KEY, kind: "U1", item: "c", merged: "merged", runBatch: async () => "unused" });
+    const after = queue.run(KEY, async () => "next turn");
+    const outcome = sibling.then(
+      () => "resolved",
+      (e: Error) => e.message,
+    );
+
+    await expect(boom).rejects.toThrow("killed");
+    // c joined b's group and is the newest, so the failure is c's alone; b settled as merged
+    expect(await failing).toBe("merged");
+    expect(await outcome).toBe("batch broke");
+    expect(await after).toBe("next turn");
+  });
+
+  test("messages that arrive while the batch runs form the next batch", async () => {
+    const queue = createThreadQueue();
+    const hold = deferred<string>();
+    const ran: string[][] = [];
+    const a = queue.run(KEY, () => hold.promise);
+    const first = ["b", "c"].map((m) =>
+      queue.coalesce<string, string>({
+        key: KEY,
+        kind: "U1",
+        item: m,
+        merged: "merged",
+        runBatch: async (items) => {
+          ran.push([...items]);
+          await new Promise((r) => setTimeout(r, 20)); // the combined turn takes a while
+          return "first batch";
+        },
+      }),
+    );
+    hold.resolve("a");
+    await a;
+    await new Promise((r) => setTimeout(r, 5)); // the batch is running now
+    const later = ["d", "e"].map((m) => batch(queue, m, ran));
+
+    await Promise.all([...first, ...later]);
+    expect(ran).toEqual([["b", "c"], ["d", "e"]]);
+  });
+
+  test("a bot-started turn in between is a barrier, and a different author never merges", async () => {
+    const queue = createThreadQueue();
+    const hold = deferred<string>();
+    const ran: string[][] = [];
+    const order: string[] = [];
+    const a = queue.run(KEY, () => hold.promise);
+    const p1 = batch(queue, "b", ran);
+    const watch = queue.run(KEY, async () => void order.push("watch hand-back"));
+    const p2 = batch(queue, "c", ran); // after the barrier: its own batch
+    const p3 = batch(queue, "d", ran, "U2"); // someone else: its own batch too
+    const p4 = batch(queue, "e", ran, "U2");
+
+    hold.resolve("a");
+    await Promise.all([a, p1, watch, p2, p3, p4]);
+    expect(ran).toEqual([["b"], ["c"], ["d", "e"]]);
+    expect(order).toEqual(["watch hand-back"]);
+  });
+
+  test("the leader can be chosen, and a lone message runs as a batch of one", async () => {
+    const queue = createThreadQueue();
+    const hold = deferred<string>();
+    const a = queue.run(KEY, () => hold.promise);
+    const pick = (m: string) =>
+      queue.coalesce<string, string>({
+        key: KEY,
+        kind: "U1",
+        item: m,
+        merged: "merged",
+        leader: () => 0,
+        runBatch: async (items) => `led by ${items[0]}`,
+      });
+    const results = [pick("b"), pick("c")];
+    hold.resolve("a");
+    await a;
+    expect(await Promise.all(results)).toEqual(["led by b", "merged"]);
+    expect(await batch(queue, "solo", [])).toBe("ran solo");
+  });
+
+  test("another thread is not held, and depth counts a group once", async () => {
+    const queue = createThreadQueue();
+    const hold = deferred<string>();
+    const a = queue.run(KEY, () => hold.promise);
+    const ps = ["b", "c", "d"].map((m) => batch(queue, m, []));
+    expect(queue.depth(KEY)).toBe(2); // the running turn and the one group
+    const other = await queue.coalesce<string, string>({
+      key: "C1:other",
+      kind: "U1",
+      item: "x",
+      merged: "merged",
+      runBatch: async () => "other ran",
+    });
+    expect(other).toBe("other ran");
+    hold.resolve("a");
+    await Promise.all([a, ...ps]);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(queue.depth(KEY)).toBe(0);
+  });
+});
+
+describe("createThreadQueue coalesce settling", () => {
+  test("merged callers wait for the batch to end, not to start", async () => {
+    const queue = createThreadQueue();
+    const turn = deferred<string>();
+    const settled: string[] = [];
+    const mk = (item: string) =>
+      queue.coalesce<string, string>({ key: "K", kind: "U", item, merged: "merged", runBatch: () => turn.promise }).then((v) => settled.push(`${item}:${v}`));
+    const ps = [mk("a"), mk("b"), mk("c")];
+    await new Promise((r) => setTimeout(r, 5));
+    expect(settled).toEqual([]); // the batch is running, so nobody has been told anything
+    turn.resolve("answer");
+    await Promise.all(ps);
+    expect(settled.sort()).toEqual(["a:merged", "b:merged", "c:answer"]);
+  });
+
+  test("a leader pick that throws rejects the whole group instead of hanging it", async () => {
+    const queue = createThreadQueue();
+    const mk = (item: string) =>
+      queue
+        .coalesce<string, string>({
+          key: "K",
+          kind: "U",
+          item,
+          merged: "merged",
+          leader: () => {
+            throw new Error("bad pick");
+          },
+          runBatch: async () => "never",
+        })
+        .then(
+          () => "resolved",
+          (e: Error) => e.message,
+        );
+    expect(await Promise.all([mk("a"), mk("b")])).toEqual(["bad pick", "bad pick"]);
+    expect(await queue.run("K", async () => "chain alive")).toBe("chain alive");
+  });
+});
