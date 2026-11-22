@@ -15,7 +15,7 @@ export const ADAPTER_COMMANDS: readonly CommandDef[] = [
     aliases: ["memory"],
     minRole: "admin",
     usage: "[status|check|history|refine [note]|revert <id>|export|import <dir>|migrate]",
-    summary: "inspect and curate what I remember",
+    summary: "inspect and curate what I remember (`revert <id>` rolls back to that revision: everything after it is undone)",
     // Bookkeeping the brain runs for itself (export, import, status...) is
     // plumbing: posted into the thread it was just noise between replies.
     // Only refine stays loud - it runs for minutes and reports as it goes.
@@ -51,7 +51,7 @@ export const ADAPTER_COMMANDS: readonly CommandDef[] = [
         if (!Number.isInteger(id)) return `Which one? \`${prefix} adapter revert <id>\` (see \`${prefix} adapter history\`)`;
         const result = revertAdapter(a, id, actor.slackId);
         return result.ok
-          ? `Reverted to #${id}${result.revision ? ` (now #${result.revision})` : ""}.\n\n${adapterStatus(a)}`
+          ? `Reverted to #${id}${result.revision ? ` (now #${result.revision})` : ""}. Everything after #${id} is undone.\n\n${adapterStatus(a)}`
           : `Could not revert:\n${result.violations.map((v) => `- ${v}`).join("\n")}`;
       }
 

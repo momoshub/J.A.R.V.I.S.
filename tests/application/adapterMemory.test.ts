@@ -12,11 +12,15 @@ import {
   commitAdapter,
   createAdapterReader,
   editAdapterFile,
+  forgetFact,
   INBOX_HEADING,
   migrateLearnings,
   rememberFact,
   revertAdapter,
 } from "../../src/application/adapterMemory.ts";
+import { removeLearning } from "../../src/application/learningApproval.ts";
+import { openDatabase } from "../../src/infrastructure/db/client.ts";
+import { createLearningsRepo } from "../../src/infrastructure/db/learningsRepo.ts";
 
 const MANIFEST = `
 template:
@@ -70,6 +74,114 @@ const setup = (files: Record<string, string> = {}, budget?: number): AdapterDeps
     budget,
   };
 };
+
+describe("forgetFact", () => {
+  test("drops the line rememberFact wrote, as a new revision, and keeps the rest", () => {
+    const deps = setup();
+    rememberFact(deps, "the team ships on Fridays", { kind: "global" }, "U1");
+    rememberFact(deps, "English only", { kind: "global" }, "U1");
+    const r = forgetFact(deps, "the team ships on Fridays", { kind: "global" }, "U1");
+    expect(r.ok).toBe(true);
+    const notes = deps.store.load().notes;
+    expect(notes).not.toContain("the team ships on Fridays");
+    expect(notes).toContain("English only");
+    expect(deps.revisions?.list().length).toBe(3);
+    expect(deps.revisions?.list()[0]?.reason).toContain("forget:");
+  });
+
+  test("matches a multi-line fact the way rememberFact flattened it", () => {
+    const deps = setup();
+    rememberFact(deps, "line one\n\nline two", { kind: "global" }, "U1");
+    forgetFact(deps, "line one\n\nline two", { kind: "global" }, "U1");
+    expect(deps.store.load().notes).not.toContain("line one");
+  });
+
+  test("finds the line wherever a refine pass moved it, and leaves other facts alone", () => {
+    const deps = setup({ "memory/NOTES.md": "# Notes\n## Deploys\n- ships on Fridays\n- never on Mondays\n" });
+    forgetFact(deps, "ships on Fridays", { kind: "global" }, "U1");
+    expect(deps.store.files().get("memory/NOTES.md")).toBe("# Notes\n## Deploys\n- never on Mondays\n");
+  });
+
+  test("a fact that is not there is a no-op and records nothing", () => {
+    const deps = setup();
+    rememberFact(deps, "kept", { kind: "global" }, "U1");
+    const before = deps.revisions?.list().length;
+    expect(forgetFact(deps, "never taught", { kind: "global" }, "U1")).toEqual({ ok: true, warnings: [] });
+    expect(forgetFact(deps, "kept as a longer line", { kind: "global" }, "U1").ok).toBe(true);
+    expect(forgetFact(deps, "  ", { kind: "global" }, "U1").ok).toBe(true);
+    expect(deps.revisions?.list().length).toBe(before);
+    expect(deps.store.load().notes).toContain("kept");
+  });
+
+  test("the inbox heading goes with its last line, but not while it still has one", () => {
+    const deps = setup();
+    rememberFact(deps, "one", { kind: "global" }, "U1");
+    rememberFact(deps, "two", { kind: "global" }, "U1");
+    forgetFact(deps, "one", { kind: "global" }, "U1");
+    expect(deps.store.load().notes).toContain(INBOX_HEADING);
+    forgetFact(deps, "two", { kind: "global" }, "U1");
+    expect(deps.store.load().notes).not.toContain(INBOX_HEADING);
+  });
+
+  test("a person's file is removed when its last fact goes; later revisions survive", () => {
+    const deps = setup();
+    rememberFact(deps, "prefers short answers", { kind: "person", id: "U7" }, "U1");
+    rememberFact(deps, "stays", { kind: "global" }, "U1");
+    forgetFact(deps, "prefers short answers", { kind: "person", id: "U7" }, "U1");
+    expect(deps.store.load().people.has("U7")).toBe(false);
+    expect(deps.store.load().notes).toContain("stays");
+  });
+});
+
+describe("deleting a learning", () => {
+  const withAdapter = () => {
+    const adapter = setup();
+    const repo = createLearningsRepo(openDatabase(":memory:"));
+    const deps = { learnings: repo, adapter: () => adapter, clock: () => 5, ownerSlackId: "U1" };
+    return { adapter, repo, deps };
+  };
+
+  test("an active row takes its adapter line with it, as a new revision", () => {
+    const { adapter, repo, deps } = withAdapter();
+    const l = repo.add("ships on Fridays", "U1", 1, "active");
+    rememberFact(adapter, l.content, { kind: "global" }, "U1");
+    rememberFact(adapter, "a later fact", { kind: "global" }, "U1");
+    expect(removeLearning(deps, l.id, "dashboard")).toEqual({ ok: true });
+    expect(repo.get(l.id)).toBeUndefined();
+    expect(adapter.store.load().notes).not.toContain("ships on Fridays");
+    expect(adapter.store.load().notes).toContain("a later fact");
+    expect(adapter.revisions?.list().length).toBe(3);
+  });
+
+  test("a pending row never touches the adapter, even when an approved fact says the same", () => {
+    const { adapter, repo, deps } = withAdapter();
+    rememberFact(adapter, "same words", { kind: "global" }, "U1");
+    const p = repo.add("same words", "agent", 1, "pending");
+    expect(removeLearning(deps, p.id, "dashboard")).toEqual({ ok: true });
+    expect(repo.get(p.id)).toBeUndefined();
+    expect(adapter.store.load().notes).toContain("same words");
+    expect(adapter.revisions?.list().length).toBe(1);
+  });
+
+  test("an id that is already gone, or no adapter, still deletes without error", () => {
+    const { repo, deps } = withAdapter();
+    expect(removeLearning(deps, 999, "dashboard")).toEqual({ ok: true });
+    const l = repo.add("flat", "U1", 1, "active");
+    expect(removeLearning({ ...deps, adapter: undefined }, l.id, "dashboard")).toEqual({ ok: true });
+    expect(repo.list()).toEqual([]);
+  });
+
+  test("a refused adapter write leaves the row in place", () => {
+    const { adapter, repo, deps } = withAdapter();
+    const l = repo.add("keep me", "U1", 1, "active");
+    rememberFact(adapter, l.content, { kind: "global" }, "U1");
+    const refusing = { ...adapter, store: { ...adapter.store, write: () => { throw new Error("disk full"); } } };
+    const r = removeLearning({ ...deps, adapter: () => refusing }, l.id, "dashboard");
+    expect(r).toEqual({ ok: false, violations: ["disk full"] });
+    expect(repo.get(l.id)).toBeDefined();
+    expect(adapter.store.load().notes).toContain("keep me");
+  });
+});
 
 describe("rememberFact", () => {
   test("a fact lands under the inbox heading and is readable back", () => {

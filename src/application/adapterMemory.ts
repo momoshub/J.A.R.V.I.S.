@@ -152,6 +152,55 @@ export const rememberFact = (
   });
 };
 
+/** The line `rememberFact` writes for a fact, so the two cannot drift apart. */
+const bulletOf = (text: string): string => `- ${text.trim().replace(/\n+/g, " ")}`;
+
+/**
+ * Drop a fact's line from whichever file its scope names, as a NEW revision.
+ *
+ * The inverse of `rememberFact`, for a learning that is deleted after it was
+ * filed: revert cannot do it, because it rolls back TO a revision and would
+ * undo every later import and refine with it. Matches the bullet exactly
+ * (ignoring surrounding whitespace and CRLF), wherever in the file a refine
+ * pass moved it, and removes the inbox heading when that was its last line.
+ * A fact that is not there is a no-op that records nothing.
+ */
+export const forgetFact = (
+  deps: AdapterDeps,
+  fact: string,
+  target: MemoryTarget,
+  actor: string,
+): CommitResult => {
+  const text = fact.trim();
+  if (!text) return { ok: true, warnings: [] };
+  const path = fileFor(target);
+  const current = deps.store.files().get(path);
+  if (current === undefined) return { ok: true, warnings: [] };
+
+  const bullet = bulletOf(text);
+  const lines = current.split("\n");
+  const kept = lines.filter((line) => line.trim() !== bullet);
+  if (kept.length === lines.length) return { ok: true, warnings: [] };
+
+  // An inbox heading left with nothing under it is noise in every prompt.
+  const at = kept.findIndex((line) => line.trim() === INBOX_HEADING);
+  if (at !== -1) {
+    const next = kept.slice(at + 1).findIndex((line) => line.trim() !== "");
+    if (next === -1 || kept[at + 1 + next]?.startsWith("#")) kept.splice(at, 1);
+  }
+  const body = kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+
+  const files = new Map(deps.store.files());
+  // The notes file stays, blank: it is the one every scope falls back to.
+  if (body === "" && path !== NOTES_FILE) files.delete(path);
+  else files.set(path, body === "" ? "" : `${body}\n`);
+  return commitAdapter(deps, files, {
+    reason: `forget: ${text.slice(0, 120)}`,
+    actor,
+    enforceBudget: false,
+  });
+};
+
 /**
  * One-time move of the flat `learnings` table into the adapter.
  *

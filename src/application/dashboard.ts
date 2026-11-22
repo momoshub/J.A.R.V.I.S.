@@ -29,7 +29,7 @@ import type { SlackDirectory } from "./slackDirectory.ts";
 import type { StatsRepo } from "../infrastructure/db/statsRepo.ts";
 import { fillDays, offsetMsOf, statsDays, windowStart } from "../domain/dashboardStats.ts";
 import { logAndIgnore } from "./ignoredError.ts";
-import { rewordLearning, proposeLearning, type LearningApprovalDeps } from "./learningApproval.ts";
+import { removeLearning, rewordLearning, proposeLearning, type LearningApprovalDeps } from "./learningApproval.ts";
 import { AGENT_SOURCE, pendingApiMessage, type LearningSource } from "../domain/learning.ts";
 import {
   briefToInternal,
@@ -590,8 +590,12 @@ export const createDashboardService = (p: DashboardPorts) => {
   removeLearning: (idIn: unknown): Outcome<null> => {
     const id = Number(idIn);
     if (!Number.isInteger(id)) return refuse("Invalid id");
-    p.learnings.remove(id);
-    return done(null);
+    if (!p.learningApproval) {
+      p.learnings.remove(id);
+      return done(null);
+    }
+    const r = removeLearning(p.learningApproval, id, BY);
+    return r.ok ? done(null) : refuse(r.violations.join("; "));
   },
 
   /**

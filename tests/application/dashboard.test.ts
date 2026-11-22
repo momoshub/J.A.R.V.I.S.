@@ -10,6 +10,7 @@ import { createRoleRepo } from "../../src/infrastructure/db/roleRepo.ts";
 import { readLegacyPolicies } from "../../src/infrastructure/db/rolePolicyRepo.ts";
 import { createSettingsRepo } from "../../src/infrastructure/db/settingsRepo.ts";
 import type { SlackAdminPort } from "../../src/application/slackAdmin.ts";
+import type { AdapterDeps } from "../../src/application/adapterMemory.ts";
 import { createLearningsRepo } from "../../src/infrastructure/db/learningsRepo.ts";
 
 const OWNER = "UOWNER1";
@@ -135,6 +136,19 @@ describe("dashboard use cases", () => {
     const withAdapter = ports({ adapter: adapter(), learningApproval: { learnings: repo, clock: () => 5, ownerSlackId: OWNER } });
     expect((await createDashboardService(withAdapter.p).teach("another real fact")).ok).toBe(true);
     expect(repo.pending().map((l) => l.content)).toEqual(["a short fact", "another real fact"]);
+  });
+
+  test("removeLearning drops the adapter line of an active row, and only through the approval deps", () => {
+    const repo = createLearningsRepo(openDatabase(":memory:"));
+    const l = repo.add("a fact", OWNER, 1, "active");
+    const forgotten: string[] = [];
+    // forgetFact reads the adapter's files; an adapter with no such file is a no-op that must not block the delete
+    const adapterDeps = { store: { files: () => new Map<string, string>() }, clock: () => 1 } as unknown as AdapterDeps;
+    const wired = ports({ learningApproval: { learnings: repo, adapter: () => (forgotten.push("read"), adapterDeps), clock: () => 5, ownerSlackId: OWNER } });
+    expect(wired.app.removeLearning("x")).toEqual({ ok: false, error: "Invalid id", status: 400 });
+    expect(wired.app.removeLearning(l.id)).toEqual({ ok: true, value: null });
+    expect(repo.get(l.id)).toBeUndefined();
+    expect(forgotten).toEqual(["read"]);
   });
 
   test("teach is refused when approval is not wired", async () => {

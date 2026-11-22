@@ -113,7 +113,7 @@ export const LEARNINGS_COMMANDS: readonly CommandDef[] = [
     summary: "reword something I have learned",
     run: async ({ deps, actor, args, rest, prefix, fromBrainRun }) => {
       if (adapterDepsOf(deps)) {
-        return `My memory is an adapter now, so there are no numbered learnings to edit. Use \`${prefix} adapter refine\` to curate it, or \`${prefix} adapter revert <id>\` to undo a pass.`;
+        return `My memory is an adapter now, so there are no numbered learnings to edit. Use \`${prefix} adapter refine\` to curate it, or \`${prefix} adapter revert <id>\` to roll back to a revision (everything after it is undone).`;
       }
       if (!deps.learnings || !deps.learningApproval) return "Learnings are not available.";
       const id = Number(args[0]);
@@ -141,7 +141,7 @@ export const LEARNINGS_COMMANDS: readonly CommandDef[] = [
     summary: "make me forget a learning",
     run: ({ deps, args, prefix }) => {
       if (adapterDepsOf(deps)) {
-        return `My memory is an adapter now, so there are no numbered learnings to edit. Use \`${prefix} adapter refine\` to curate it, or \`${prefix} adapter revert <id>\` to undo a pass.`;
+        return `My memory is an adapter now, so there are no numbered learnings to edit. Use \`${prefix} adapter refine\` to curate it, or \`${prefix} adapter revert <id>\` to roll back to a revision (everything after it is undone).`;
       }
       if (!deps.learnings) return "Learnings are not available.";
       const id = Number(args[0]);

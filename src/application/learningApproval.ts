@@ -12,9 +12,10 @@
  * Memory is either the flat `learnings` table or the adapter. Pending rows
  * always live in the table; approving one in adapter mode files the fact into
  * the adapter (where the prompt reads it) and drops the row, so there is still
- * ONE store of what the bot knows.
+ * ONE store of what the bot knows. Deleting an active row takes its adapter
+ * line with it (`removeLearning`), as a new revision.
  */
-import { rememberFact, type AdapterDeps } from "./adapterMemory.ts";
+import { forgetFact, rememberFact, type AdapterDeps } from "./adapterMemory.ts";
 import {
   AGENT_SOURCE,
   LEARNING_APPROVE_ACTION,
@@ -249,6 +250,30 @@ export const decideLearning = async (
   deps.log?.(`learning #${id} approved by ${by}`);
   await settle(deps, l, "approve", by, !adapter);
   return { kind: "approved", learning: l, warnings };
+};
+
+export type Removed =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly violations: readonly string[] };
+
+/**
+ * Delete a learning, and its line in the adapter when it was filed there.
+ *
+ * Only an ACTIVE row can have been written to the adapter (pending and
+ * rejected ones never were, and a duplicate of an approved fact must not take
+ * the approved one with it). The adapter goes first, as its own revision, so a
+ * refused write leaves the row and the fact both in place instead of a delete
+ * that half happened.
+ */
+export const removeLearning = (deps: LearningApprovalDeps, id: number, by: string): Removed => {
+  const l = deps.learnings.get(id);
+  const adapter = deps.adapter?.();
+  if (l && l.status === "active" && adapter) {
+    const r = forgetFact(adapter, l.content, { kind: "global" }, by);
+    if (!r.ok) return { ok: false, violations: r.violations };
+  }
+  deps.learnings.remove(id);
+  return { ok: true };
 };
 
 export type PressOutcome =
