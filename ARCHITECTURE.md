@@ -323,7 +323,7 @@ Orchestrates the domain and depends on **ports**, not concrete adapters.
 - `githubApp.ts` - calls from the GitHub App: dedupe/queue, identity mapping, the turn, the answer back
 - `workflow.ts`, `workflowFront.ts`, `workflowContinue.ts` - long tasks driven from one thread on a durable session
 - `accessRequests.ts` - unknown people ask the owner and admins, who decide with a reaction; on ✅ the person's original message (stored whole, with its Slack ts) is answered as a normal turn through the Slack intake, falling back to a short "you are in" line if the replay fails
-- `adapterMemory.ts`, `botProfile.ts`, `claudeTokens.ts` - memory, instance identity and CLI tokens
+- `adapterMemory.ts`, `botProfile.ts`, `claudeTokens.ts` - memory, instance identity and CLI tokens (`adapterMemory.ts` also holds `rememberFact` / `forgetFact`: `adapter forget <fact>` drops one fact's line as a new revision, since an approved fact has no learnings row left to delete by id)
 - `slackAdmin.ts`, `draftReply.ts` - Console + power tools port, AI reply drafting
 - `conversationDirectory.ts` - every channel and DM (`conversations.list`, all cursor pages) held in memory for the Console sidebar's search, refreshed every 10 min, a failed refresh keeps the last list
 - `dashboard.ts` - the dashboard's use cases (users, roles, memory, identity, commands, usage, modals) over narrow ports, returning an `Outcome` the server maps to a status

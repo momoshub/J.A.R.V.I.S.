@@ -12,6 +12,8 @@ import {
   commitAdapter,
   createAdapterReader,
   editAdapterFile,
+  forgetFact,
+  hasFact,
   INBOX_HEADING,
   migrateLearnings,
   rememberFact,
@@ -70,6 +72,89 @@ const setup = (files: Record<string, string> = {}, budget?: number): AdapterDeps
     budget,
   };
 };
+
+describe("forgetFact", () => {
+  test("drops the line rememberFact wrote, as a new revision, and keeps the rest", () => {
+    const deps = setup();
+    rememberFact(deps, "the team ships on Fridays", { kind: "global" }, "U1");
+    rememberFact(deps, "English only", { kind: "global" }, "U1");
+    const r = forgetFact(deps, "the team ships on Fridays", { kind: "global" }, "U1");
+    expect(r.ok).toBe(true);
+    const notes = deps.store.load().notes;
+    expect(notes).not.toContain("the team ships on Fridays");
+    expect(notes).toContain("English only");
+    expect(deps.revisions?.list().length).toBe(3);
+    expect(deps.revisions?.list()[0]?.reason).toContain("forget:");
+  });
+
+  test("matches a multi-line fact the way rememberFact flattened it", () => {
+    const deps = setup();
+    rememberFact(deps, "line one\n\nline two", { kind: "global" }, "U1");
+    forgetFact(deps, "line one\n\nline two", { kind: "global" }, "U1");
+    expect(deps.store.load().notes).not.toContain("line one");
+  });
+
+  test("finds the line wherever a refine pass moved it, and leaves other facts alone", () => {
+    const deps = setup({ "memory/NOTES.md": "# Notes\n## Deploys\n- ships on Fridays\n- never on Mondays\n" });
+    forgetFact(deps, "ships on Fridays", { kind: "global" }, "U1");
+    expect(deps.store.files().get("memory/NOTES.md")).toBe("# Notes\n## Deploys\n- never on Mondays\n");
+  });
+
+  test("a fact that is not there is a no-op and records nothing", () => {
+    const deps = setup();
+    rememberFact(deps, "kept", { kind: "global" }, "U1");
+    const before = deps.revisions?.list().length;
+    expect(forgetFact(deps, "never taught", { kind: "global" }, "U1")).toEqual({ ok: true, warnings: [] });
+    expect(forgetFact(deps, "kept as a longer line", { kind: "global" }, "U1").ok).toBe(true);
+    expect(forgetFact(deps, "  ", { kind: "global" }, "U1").ok).toBe(true);
+    expect(deps.revisions?.list().length).toBe(before);
+    expect(deps.store.load().notes).toContain("kept");
+  });
+
+  test("the inbox heading goes with its last line, but not while it still has one", () => {
+    const deps = setup();
+    rememberFact(deps, "one", { kind: "global" }, "U1");
+    rememberFact(deps, "two", { kind: "global" }, "U1");
+    forgetFact(deps, "one", { kind: "global" }, "U1");
+    expect(deps.store.load().notes).toContain(INBOX_HEADING);
+    forgetFact(deps, "two", { kind: "global" }, "U1");
+    expect(deps.store.load().notes).not.toContain(INBOX_HEADING);
+  });
+
+  test("a CRLF file is matched and comes back clean", () => {
+    const deps = setup({ "memory/NOTES.md": "# Notes\r\n\r\n## Recently taught\r\n- one\r\n- two\r\n\r\n\r\n## Other\r\n- keep\r\n" });
+    forgetFact(deps, "one", { kind: "global" }, "U1");
+    forgetFact(deps, "two", { kind: "global" }, "U1");
+    expect(deps.store.files().get("memory/NOTES.md")).toBe("# Notes\n\n## Other\n- keep\n");
+  });
+
+  test("a refused commit leaves the file as it was and records nothing", () => {
+    // a file already over its max_bytes is a hard violation, whatever is removed
+    const deps = setup({ "memory/NOTES.md": `# Notes\n- gone\n${"- filler line\n".repeat(900)}` });
+    const before = deps.store.files().get("memory/NOTES.md");
+    const r = forgetFact(deps, "gone", { kind: "global" }, "U1");
+    expect(r.ok).toBe(false);
+    expect(deps.store.files().get("memory/NOTES.md")).toBe(before);
+    expect(deps.revisions?.list().length).toBe(0);
+  });
+
+  test("hasFact sees exactly what rememberFact wrote, and nothing looser", () => {
+    const deps = setup();
+    rememberFact(deps, "ships on Fridays", { kind: "global" }, "U1");
+    expect(hasFact(deps, "  ships on Fridays ", { kind: "global" })).toBe(true);
+    expect(hasFact(deps, "ships on", { kind: "global" })).toBe(false);
+    expect(hasFact(deps, "", { kind: "global" })).toBe(false);
+  });
+
+  test("a person's file is removed when its last fact goes; later revisions survive", () => {
+    const deps = setup();
+    rememberFact(deps, "prefers short answers", { kind: "person", id: "U7" }, "U1");
+    rememberFact(deps, "stays", { kind: "global" }, "U1");
+    forgetFact(deps, "prefers short answers", { kind: "person", id: "U7" }, "U1");
+    expect(deps.store.load().people.has("U7")).toBe(false);
+    expect(deps.store.load().notes).toContain("stays");
+  });
+});
 
 describe("rememberFact", () => {
   test("a fact lands under the inbox heading and is readable back", () => {

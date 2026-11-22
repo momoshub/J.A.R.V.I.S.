@@ -6,12 +6,28 @@ import {
   LEARNING_REJECT_ACTION,
   approvalCore,
   approvalText,
+  factWordings,
   parseLearnArgs,
   pendingApiMessage,
   pendingReply,
   refusalText,
   settledText,
 } from "../../src/domain/learning.ts";
+
+describe("factWordings", () => {
+  test("a plain fact has one wording", () => {
+    expect(factWordings("  ships on Fridays ")).toEqual(["ships on Fridays"]);
+  });
+
+  test("what Slack escaped is also tried decoded, typed form first", () => {
+    expect(factWordings("docs: <https://x.y/a?b=1&amp;c=2>")).toEqual(["docs: <https://x.y/a?b=1&amp;c=2>", "docs: https://x.y/a?b=1&c=2"]);
+    expect(factWordings("see <https://x.y|the docs> &lt;now&gt;")).toEqual(["see <https://x.y|the docs> &lt;now&gt;", "see https://x.y <now>"]);
+  });
+
+  test("a multi-line typing is flattened like a stored fact", () => {
+    expect(factWordings("a\n  b")).toEqual(["a b"]);
+  });
+});
 
 describe("parseLearnArgs", () => {
   test("a plain sentence is a fact", () => {

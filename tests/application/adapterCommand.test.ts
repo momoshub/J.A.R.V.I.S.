@@ -9,6 +9,7 @@ import { createLearningsRepo } from "../../src/infrastructure/db/learningsRepo.t
 import { createAdapterRevisionRepo } from "../../src/infrastructure/db/adapterRevisionRepo.ts";
 import { createAdapterStore } from "../../src/infrastructure/adapter/adapterStore.ts";
 import { dispatchCommand, type CommandDeps } from "../../src/application/commands.ts";
+import { rememberFact } from "../../src/application/adapterMemory.ts";
 import { adapterDepsOf } from "../../src/application/commands/shared.ts";
 import type { AllowedUser } from "../../src/domain/types.ts";
 
@@ -154,6 +155,50 @@ describe("the adapter command", () => {
     expect(out).toContain("Reverted to #1");
     expect(d.adapterStore?.load().notes).toContain("first");
     expect(d.adapterStore?.load().notes).not.toContain("second");
+  });
+
+  test("forget drops an approved fact by its text, as a new revision, and keeps the rest", async () => {
+    const d = deps();
+    await run(d, "learn the staging deploy needs the VPN");
+    await run(d, "learn lunch is at noon");
+    const out = await run(d, "adapter forget the staging deploy needs the VPN");
+    expect(out).toContain("Forgotten");
+    const notes = d.adapterStore?.load().notes ?? "";
+    expect(notes).not.toContain("staging deploy");
+    expect(notes).toContain("lunch is at noon");
+    expect(d.adapterRevisions?.list().length).toBe(3);
+  });
+
+  test("forget says so when no note matches exactly, and needs a fact", async () => {
+    const d = deps();
+    await run(d, "learn lunch is at noon");
+    expect(await run(d, "adapter forget lunch")).toContain("no note that says exactly that");
+    expect(await run(d, "adapter forget")).toContain("Which fact?");
+    expect(d.adapterStore?.load().notes).toContain("lunch is at noon");
+  });
+
+  test("forget finds a fact stored as Slack sent it or raw, however it is typed", async () => {
+    const d = deps();
+    // an owner-typed learn is stored as Slack escaped it; an approved API fact is stored raw
+    await run(d, "learn escaped: <https://x.y/a?b=1&amp;c=2>");
+    rememberFact(adapterDepsOf(d)!, "raw: https://x.y/a?b=1&c=2", { kind: "global" }, "U1");
+    expect(await run(d, "adapter forget escaped: <https://x.y/a?b=1&amp;c=2>")).toContain("Forgotten");
+    expect(await run(d, "adapter forget raw: <https://x.y/a?b=1&amp;c=2>")).toContain("Forgotten");
+    expect(d.adapterStore?.load().notes).not.toContain("x.y");
+  });
+
+  test("forget matches a fact typed over two indented lines", async () => {
+    const d = deps();
+    await run(d, "learn a b");
+    expect(await run(d, "adapter forget a\n   b")).toContain("Forgotten");
+  });
+
+  test("forget is never run by a turn for itself", async () => {
+    const d = deps();
+    await run(d, "learn lunch is at noon");
+    const out = await dispatchCommand(d, actor, "C1", "adapter forget lunch is at noon", { prefix: "X/jv", fromBrainRun: true });
+    expect(out).toContain("not something a turn runs for itself");
+    expect(d.adapterStore?.load().notes).toContain("lunch is at noon");
   });
 
   test("revert without an id says which command lists them", async () => {
