@@ -14,7 +14,7 @@
  * the adapter (where the prompt reads it) and drops the row, so there is still
  * ONE store of what the bot knows.
  */
-import { hasFact, rememberFact, type AdapterDeps, type MemoryTarget } from "./adapterMemory.ts";
+import { rememberFact, rememberFactIn, type AdapterDeps, type MemoryTarget } from "./adapterMemory.ts";
 import {
   AGENT_SOURCE,
   GLOBAL_SCOPE,
@@ -250,13 +250,10 @@ export const decideLearning = async (
   const scope = opts.scope ?? l.scope;
   let warnings: readonly string[] = [];
   if (adapter) {
-    // One file per channel of the scope. A fact already filed (an earlier try that stopped part-way) is skipped, not doubled.
-    for (const target of adapterTargets(scope)) {
-      if (hasFact(adapter, l.content, target)) continue;
-      const r = rememberFact(adapter, l.content, target, by);
-      if (!r.ok) return { kind: "failed", violations: r.violations };
-      warnings = [...warnings, ...r.warnings];
-    }
+    // One commit for every file of the scope: all of them hold the fact or none does, so a refused write leaves nothing behind.
+    const r = rememberFactIn(adapter, l.content, adapterTargets(scope), by);
+    if (!r.ok) return { kind: "failed", violations: r.violations };
+    warnings = r.warnings;
   }
   if (!deps.learnings.decide(id, "active", by, now)) return { kind: "refused", why: "decided" };
   if (opts.scope && !adapter) deps.learnings.setScope(id, opts.scope);

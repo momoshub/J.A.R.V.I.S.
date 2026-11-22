@@ -132,6 +132,35 @@ describe("the adapter command", () => {
     expect(d.adapterStore?.load().notes).toContain("everyone reviews before merging");
   });
 
+  test("with an adapter, forget finds a channel-scoped fact in every channel note that holds it and the global notes", async () => {
+    const d = deps();
+    const r = await proposeLearning(d.learningApproval!, "billing deploys go through the pod", "agent", undefined, ["C0TEAM00001", "C0OTHER0001"]);
+    expect(await run(d, `learn approve ${r.ok ? r.learning.id : -1}`)).toContain("Approved");
+    await run(d, "learn the staging deploy needs the VPN");
+    const before = d.adapterStore?.load();
+    expect(before?.channels.get("C0TEAM00001")).toContain("billing deploys go through the pod");
+    expect(before?.channels.get("C0OTHER0001")).toContain("billing deploys go through the pod");
+
+    expect(await run(d, "adapter forget billing deploys go through the pod")).toContain("Forgotten");
+    const after = d.adapterStore?.load();
+    expect(after?.channels.get("C0TEAM00001") ?? "").not.toContain("billing deploys");
+    expect(after?.channels.get("C0OTHER0001") ?? "").not.toContain("billing deploys");
+    expect(after?.notes).toContain("staging deploy needs the VPN");
+    expect(await run(d, "adapter forget billing deploys go through the pod")).toContain("no note that says exactly that");
+  });
+
+  test("with an adapter, a multi-channel approval is all or nothing: a refused channel leaves no note changed and the learning pending", async () => {
+    const d = deps();
+    const store = d.adapterStore!;
+    // a note already over its declared size: any commit that includes it is refused
+    store.write(new Map([...store.files(), ["memory/channels/C0OTHER0001.md", "x".repeat(9000)]]));
+    const r = await proposeLearning(d.learningApproval!, "billing deploys go through the pod", "agent", undefined, ["C0TEAM00001", "C0OTHER0001"]);
+    const id = r.ok ? r.learning.id : -1;
+    expect(await run(d, `learn approve ${id}`)).not.toContain("Approved");
+    expect(store.load().channels.get("C0TEAM00001") ?? "").not.toContain("billing deploys");
+    expect(d.learnings!.get(id)?.status).toBe("pending");
+  });
+
   test("with an adapter, a rejected learning never reaches the notes", async () => {
     const d = deps();
     const member: AllowedUser = { slackId: "U0EXE0001", role: "executer", displayName: "Eli", addedBy: "system", createdAt: 0 };

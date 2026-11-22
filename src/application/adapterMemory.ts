@@ -120,18 +120,8 @@ export const commitAdapter = (
 /** The line `rememberFact` writes for a fact, so the two cannot drift apart. */
 const bulletOf = (text: string): string => `- ${text.trim().replace(/\n+/g, " ")}`;
 
-/** Append a fact under the inbox heading of whichever file its scope names. */
-export const rememberFact = (
-  deps: AdapterDeps,
-  fact: string,
-  target: MemoryTarget,
-  actor: string,
-): CommitResult => {
-  const text = fact.trim();
-  if (!text) return { ok: false, violations: ["Nothing to remember."] };
-
-  const files = new Map(deps.store.files());
-  const path = fileFor(target);
+/** Put a fact's line under the inbox heading of one file in `files`. */
+const addBullet = (files: Map<string, string>, path: string, text: string): void => {
   const current = files.get(path) ?? "";
   const bullet = bulletOf(text);
 
@@ -147,6 +137,26 @@ export const rememberFact = (
     next = `${head}${INBOX_HEADING}\n${bullet}\n`;
   }
   files.set(path, next);
+};
+
+/**
+ * Append a fact under the inbox heading of whichever files its scope names, in
+ * ONE commit: either every file holds it afterwards or none does. A target that
+ * already holds the line is skipped, so a retry never doubles it.
+ */
+export const rememberFactIn = (
+  deps: AdapterDeps,
+  fact: string,
+  targets: readonly MemoryTarget[],
+  actor: string,
+): CommitResult => {
+  const text = fact.trim();
+  if (!text) return { ok: false, violations: ["Nothing to remember."] };
+
+  const files = new Map(deps.store.files());
+  const missing = targets.filter((t) => !hasFact(deps, text, t));
+  if (missing.length === 0) return { ok: true, warnings: [] };
+  for (const t of missing) addBullet(files, fileFor(t), text);
 
   return commitAdapter(deps, files, {
     reason: `learn: ${text.slice(0, 120)}`,
@@ -154,6 +164,14 @@ export const rememberFact = (
     enforceBudget: false,
   });
 };
+
+/** Append a fact under the inbox heading of whichever file its scope names. */
+export const rememberFact = (
+  deps: AdapterDeps,
+  fact: string,
+  target: MemoryTarget,
+  actor: string,
+): CommitResult => rememberFactIn(deps, fact, [target], actor);
 
 /** Does the scope's file hold exactly this fact as a line? */
 export const hasFact = (deps: AdapterDeps, fact: string, target: MemoryTarget): boolean => {
@@ -179,31 +197,58 @@ export const forgetFact = (
   fact: string,
   target: MemoryTarget,
   actor: string,
+): CommitResult => forgetFactFrom(deps, fact, [fileFor(target)], actor);
+
+/** The channel notes a fact may have been filed into by a scoped approval. */
+const channelFiles = (deps: AdapterDeps): string[] =>
+  [...deps.store.files().keys()].filter((p) => p.startsWith(`${CHANNELS_DIR}/`));
+
+/** Where an approved fact can live: the global notes and every channel note. */
+export const factPaths = (deps: AdapterDeps, fact: string): string[] => {
+  const text = fact.trim();
+  if (!text) return [];
+  const bullet = bulletOf(text);
+  const held = (path: string): boolean =>
+    (deps.store.files().get(path) ?? "").replace(/\r\n/g, "\n").split("\n").some((line) => line.trim() === bullet);
+  return [NOTES_FILE, ...channelFiles(deps)].filter(held);
+};
+
+/** Drop a fact from the global notes and every channel note that holds it, in one revision. */
+export const forgetFactEverywhere = (deps: AdapterDeps, fact: string, actor: string): CommitResult =>
+  forgetFactFrom(deps, fact, factPaths(deps, fact), actor);
+
+const forgetFactFrom = (
+  deps: AdapterDeps,
+  fact: string,
+  paths: readonly string[],
+  actor: string,
 ): CommitResult => {
   const text = fact.trim();
   if (!text) return { ok: true, warnings: [] };
-  const path = fileFor(target);
-  const current = deps.store.files().get(path);
-  if (current === undefined) return { ok: true, warnings: [] };
-
-  const bullet = bulletOf(text);
-  // An imported file may carry CRLF; work on LF so blank runs collapse and the file is rewritten clean.
-  const lines = current.replace(/\r\n/g, "\n").split("\n");
-  const kept = lines.filter((line) => line.trim() !== bullet);
-  if (kept.length === lines.length) return { ok: true, warnings: [] };
-
-  // An inbox heading left with nothing under it is noise in every prompt.
-  const at = kept.findIndex((line) => line.trim() === INBOX_HEADING);
-  if (at !== -1) {
-    const next = kept.slice(at + 1).findIndex((line) => line.trim() !== "");
-    if (next === -1 || kept[at + 1 + next]?.startsWith("#")) kept.splice(at, 1);
-  }
-  const body = kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
-
   const files = new Map(deps.store.files());
-  // The notes file stays, blank: it is the one every scope falls back to.
-  if (body === "" && path !== NOTES_FILE) files.delete(path);
-  else files.set(path, body === "" ? "" : `${body}\n`);
+  const bullet = bulletOf(text);
+  let changed = false;
+  for (const path of paths) {
+    const current = files.get(path);
+    if (current === undefined) continue;
+    // An imported file may carry CRLF; work on LF so blank runs collapse and the file is rewritten clean.
+    const lines = current.replace(/\r\n/g, "\n").split("\n");
+    const kept = lines.filter((line) => line.trim() !== bullet);
+    if (kept.length === lines.length) continue;
+    changed = true;
+
+    // An inbox heading left with nothing under it is noise in every prompt.
+    const at = kept.findIndex((line) => line.trim() === INBOX_HEADING);
+    if (at !== -1) {
+      const next = kept.slice(at + 1).findIndex((line) => line.trim() !== "");
+      if (next === -1 || kept[at + 1 + next]?.startsWith("#")) kept.splice(at, 1);
+    }
+    const body = kept.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+    // The notes file stays, blank: it is the one every scope falls back to.
+    if (body === "" && path !== NOTES_FILE) files.delete(path);
+    else files.set(path, body === "" ? "" : `${body}\n`);
+  }
+  if (!changed) return { ok: true, warnings: [] };
   return commitAdapter(deps, files, {
     reason: `forget: ${text.slice(0, 120)}`,
     actor,

@@ -4,7 +4,7 @@ import { factWordings } from "../../domain/learning.ts";
 import { refinePrompt } from "../../domain/refinePrompt.ts";
 import { adapterRules, isBlank } from "../../domain/adapter.ts";
 import { ALWAYS_ON_BUDGET, describeCheck } from "../../domain/adapterCheck.ts";
-import { adapterStatus, commitAdapter, forgetFact, hasFact, migrateLearnings, revertAdapter } from "../adapterMemory.ts";
+import { adapterStatus, commitAdapter, factPaths, forgetFactEverywhere, migrateLearnings, revertAdapter } from "../adapterMemory.ts";
 import { type CommandDef, adapterDepsOf, botNameOf } from "./shared.ts";
 
 /** A refine pass reads every file and rewrites most of them. */
@@ -64,11 +64,11 @@ export const ADAPTER_COMMANDS: readonly CommandDef[] = [
         const fact = rest.slice(rest.toLowerCase().indexOf("forget") + "forget".length).trim();
         if (!fact) return `Which fact? \`${prefix} adapter forget <the fact, as written in my notes>\` (see \`${prefix} learnings\`)`;
         // Slack escaped what was typed, the store may hold it either way.
-        const stored = factWordings(fact).find((w) => hasFact(a, w, { kind: "global" }));
+        const stored = factWordings(fact).find((w) => factPaths(a, w).length > 0);
         if (stored === undefined) {
           return "I have no note that says exactly that. Copy the line from `learnings`, without the leading dash.";
         }
-        const result = forgetFact(a, stored, { kind: "global" }, actor.slackId);
+        const result = forgetFactEverywhere(a, stored, actor.slackId);
         return result.ok
           ? `Forgotten${result.revision ? ` (revision #${result.revision})` : ""}.\n\n${adapterStatus(a)}`
           : `Could not forget it:\n${result.violations.map((v) => `- ${v}`).join("\n")}`;
