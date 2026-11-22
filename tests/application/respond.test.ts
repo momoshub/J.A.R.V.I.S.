@@ -414,6 +414,240 @@ describe("respond", () => {
     expect(seen).toEqual(["the long one"]); // the dropped one never spawned
   });
 
+  describe("messages queued behind a running turn", () => {
+    /** An llm whose first call is held until released; every call's last message is recorded. */
+    const held = () => {
+      const asked: string[] = [];
+      let release!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      const brain: LlmPort = {
+        complete: async (p) => {
+          const last = p.messages[p.messages.length - 1]?.content ?? "";
+          asked.push(last);
+          if (asked.length === 1) await gate;
+          return `reply ${asked.length}`;
+        },
+      };
+      return { brain, asked, release };
+    };
+    const inbound = { channelId: "C1", slackUserId: OWNER, threadTs: "700.1" };
+    const tick = (ms = 10) => new Promise((r) => setTimeout(r, ms));
+
+    test("when the running turn finishes, everything queued behind it is ONE turn with all of it", async () => {
+      const { brain, asked, release } = held();
+      const deps = build(brain);
+      deps.threadQueue = createThreadQueue();
+      deps.runs = createRunRegistry();
+      const started: string[] = [];
+
+      const a = respond(deps, { ...inbound, text: "the long one", messageTs: "700.1" }, undefined, () => void started.push("a"));
+      await tick();
+      const rest = ["b: do this", "c: and this", "d: also this", "e: last thing"].map((text, i) =>
+        respond(deps, { ...inbound, text, messageTs: `700.${i + 2}` }, undefined, () => void started.push(text[0]!)),
+      );
+      await tick();
+      expect(asked).toHaveLength(1); // only a is running
+      release();
+
+      const results = await Promise.all([a, ...rest]);
+      expect(asked).toHaveLength(2); // a, then ONE turn for b..e - not four
+      for (const t of ["b: do this", "c: and this", "d: also this", "e: last thing"]) expect(asked[1]).toContain(t);
+      expect(asked[1]!.indexOf("b: do this")).toBeLessThan(asked[1]!.indexOf("e: last thing"));
+      expect(asked[1]).toContain("4 messages");
+      // one reply, to the newest message's caller; the three merged ones post nothing
+      expect(results.map((r) => r.kind)).toEqual(["reply", "ignored", "ignored", "ignored", "reply"]);
+      expect(results[4]).toEqual({ kind: "reply", text: "reply 2" });
+      // only the caller that answers has its thinking card armed
+      expect(started).toEqual(["a", "e"]);
+      // no run is left tracked for a merged message
+      expect(deps.runs.all()).toEqual([]);
+    });
+
+    test("stopping the running turn does not drop the queued ones: they run at once, as one turn", async () => {
+      const runs = createRunRegistry();
+      const asked: string[] = [];
+      const deps = build({
+        complete: async (p) => {
+          asked.push(p.messages[p.messages.length - 1]?.content ?? "");
+          if (asked.length === 1) {
+            await new Promise<void>((_res, reject) => {
+              p.signal?.addEventListener("abort", () => reject(new Error("claude CLI exited with code 143: no output")));
+            });
+          }
+          return "answered the batch";
+        },
+      });
+      deps.threadQueue = createThreadQueue();
+      deps.runs = runs;
+
+      const a = respond(deps, { ...inbound, text: "the long one", messageTs: "700.1" });
+      await tick();
+      const rest = ["one", "two", "three", "four"].map((text, i) => respond(deps, { ...inbound, text, messageTs: `700.${i + 2}` }));
+      await tick();
+
+      // the press hits only the running turn, never the four waiting
+      const running = runs.current("C1:700.1");
+      expect(running?.what).toBe("the long one");
+      expect(runs.inThread("C1:700.1").filter((r) => r.state === "queued")).toHaveLength(4);
+      runs.stop(running!.id, OWNER);
+
+      expect(await a).toEqual({ kind: "ignored" });
+      const results = await Promise.all(rest);
+      expect(asked).toHaveLength(2);
+      for (const t of ["one", "two", "three", "four"]) expect(asked[1]).toContain(t);
+      expect(results.filter((r) => r.kind === "reply")).toEqual([{ kind: "reply", text: "answered the batch" }]);
+      expect(results.filter((r) => r.kind === "ignored")).toHaveLength(3);
+      expect(runs.all()).toEqual([]);
+    });
+
+    test("stopping while only queued messages exist stops nothing: they keep waiting", async () => {
+      const runs = createRunRegistry();
+      const deps = build(llm("ok"));
+      deps.threadQueue = createThreadQueue();
+      deps.runs = runs;
+      // a turn the bot started holds the thread; a person's message waits behind it
+      let release!: () => void;
+      const holder = deps.threadQueue.run("C1:700.1", () => new Promise<void>((r) => (release = r)));
+      const waiting = respond(deps, { ...inbound, text: "waiting here", messageTs: "700.2" });
+      await tick();
+
+      expect(runs.current("C1:700.1")).toBeUndefined(); // nothing running to stop
+      expect(runs.stopThread("C1:700.1", OWNER)).toBeUndefined();
+      expect(runs.inThread("C1:700.1")).toHaveLength(1); // and the queued one is untouched
+
+      release();
+      await holder;
+      expect(await waiting).toEqual({ kind: "reply", text: "ok" });
+    });
+
+    test("messages that arrive while the combined turn runs queue again and form the next batch", async () => {
+      const { brain, asked, release } = held();
+      const deps = build(brain);
+      deps.threadQueue = createThreadQueue();
+      deps.runs = createRunRegistry();
+      // slow second call, so there is a window while the combined turn runs
+      const slowed: LlmPort = {
+        complete: async (p) => {
+          const out = await brain.complete(p);
+          if (asked.length === 2) await tick(40);
+          return out;
+        },
+      };
+      deps.llm = slowed;
+
+      const a = respond(deps, { ...inbound, text: "the long one", messageTs: "700.1" });
+      await tick();
+      const first = ["b1", "b2"].map((text, i) => respond(deps, { ...inbound, text, messageTs: `700.${i + 2}` }));
+      await tick();
+      release();
+      await tick(15); // the combined turn is running now
+      expect(asked).toHaveLength(2);
+      const next = ["n1", "n2", "n3"].map((text, i) => respond(deps, { ...inbound, text, messageTs: `700.${i + 4}` }));
+
+      await Promise.all([a, ...first, ...next]);
+      expect(asked).toHaveLength(3); // a, {b1,b2}, {n1,n2,n3}
+      expect(asked[1]).toContain("b2");
+      expect(asked[1]).not.toContain("n1");
+      for (const t of ["n1", "n2", "n3"]) expect(asked[2]).toContain(t);
+    });
+
+    test("commands are not queued, and other threads stay parallel", async () => {
+      const { brain, asked, release } = held();
+      const deps = build(brain);
+      deps.threadQueue = createThreadQueue();
+      deps.runs = createRunRegistry();
+      const a = respond(deps, { ...inbound, text: "the long one", messageTs: "700.1" });
+      await tick();
+      const command = await respond(deps, { ...inbound, text: "!whoami", messageTs: "700.2" });
+      expect(command.kind).toBe("reply");
+      const elsewhere = await respond(deps, { channelId: "C1", slackUserId: OWNER, text: "other thread", threadTs: "800.1", messageTs: "800.1" });
+      expect(elsewhere.kind).toBe("reply");
+      expect(asked).toHaveLength(2); // the long one, and the other thread's turn
+      release();
+      await a;
+    });
+
+    test("a failed turn does not break the chain: the batch runs, and a failed batch does not stop the next", async () => {
+      const asked: string[] = [];
+      const deps = build({
+        complete: async (p) => {
+          asked.push(p.messages[p.messages.length - 1]?.content ?? "");
+          if (asked.length === 1) {
+            await new Promise((r) => setTimeout(r, 20));
+            throw new Error("the first turn blew up");
+          }
+          if (asked.length === 2) throw new Error("the batch blew up too");
+          return "fine";
+        },
+      });
+      deps.threadQueue = createThreadQueue();
+      deps.runs = createRunRegistry();
+
+      const a = respond(deps, { ...inbound, text: "first", messageTs: "700.1" }).catch((e: Error) => e.message);
+      await tick(5);
+      const rest = ["b", "c"].map((text, i) => respond(deps, { ...inbound, text, messageTs: `700.${i + 2}` }).catch((e: Error) => e.message));
+      const newest = respond(deps, { ...inbound, text: "newest", messageTs: "700.9" }).catch((e: Error) => e.message);
+      expect(await a).toBe("the first turn blew up");
+      // the batch (b, c, newest) ran despite the failure ahead, and its own failure reached only the newest caller
+      expect(await Promise.all(rest)).toEqual([{ kind: "ignored" }, { kind: "ignored" }]);
+      expect(await newest).toBe("the batch blew up too");
+      expect(asked[1]).toContain("newest");
+      // and the thread still works after a failed batch
+      expect(await respond(deps, { ...inbound, text: "after the batch", messageTs: "700.10" })).toEqual({ kind: "reply", text: "fine" });
+      expect(asked).toHaveLength(3);
+      expect(deps.runs.all()).toEqual([]);
+    });
+
+    test("a turn the bot started keeps its own turn, and so does another person's message", async () => {
+      const { brain, asked, release } = held();
+      const deps = build(brain);
+      deps.threadQueue = createThreadQueue();
+      deps.runs = createRunRegistry();
+      deps.users.upsert({ slackId: "Upal", role: "pal", displayName: "Pal", addedBy: "x", createdAt: 1 });
+
+      const a = respond(deps, { ...inbound, text: "the long one", messageTs: "700.1" });
+      await tick();
+      const queued = [
+        respond(deps, { ...inbound, text: "mine one", messageTs: "700.2" }),
+        respond(deps, { ...inbound, text: "watch ready", messageTs: "700.3", unprompted: true }),
+        respond(deps, { ...inbound, text: "mine two", messageTs: "700.4" }),
+        respond(deps, { ...inbound, slackUserId: "Upal", text: "pal says hi", messageTs: "700.5" }),
+        respond(deps, { ...inbound, slackUserId: "Upal", text: "pal again", messageTs: "700.6" }),
+      ];
+      await tick();
+      release();
+      await Promise.all([a, ...queued]);
+      // a, mine one, the hand-back, mine two, then the pal's two together: never merged across the bot's turn or across people
+      expect(asked).toHaveLength(5);
+      expect(asked[1]).toBe("mine one");
+      expect(asked[2]).toBe("watch ready");
+      expect(asked[3]).toBe("mine two");
+      expect(asked[4]).toContain("pal says hi");
+      expect(asked[4]).toContain("pal again");
+    });
+
+    test("a queued message stopped by id before its turn is left out of the batch", async () => {
+      const runs = createRunRegistry();
+      const { brain, asked, release } = held();
+      const deps = build(brain);
+      deps.threadQueue = createThreadQueue();
+      deps.runs = runs;
+
+      const a = respond(deps, { ...inbound, text: "the long one", messageTs: "700.1" });
+      await tick();
+      const rest = ["keep one", "never mind this", "keep two"].map((text, i) => respond(deps, { ...inbound, text, messageTs: `700.${i + 2}` }));
+      runs.stop(runs.inThread("C1:700.1").find((r) => r.what === "never mind this")!.id, OWNER);
+      release();
+
+      await Promise.all([a, ...rest]);
+      expect(asked).toHaveLength(2);
+      expect(asked[1]).toContain("keep one");
+      expect(asked[1]).toContain("keep two");
+      expect(asked[1]).not.toContain("never mind this");
+      expect(runs.all()).toEqual([]);
+    });
+  });
+
   test("owner can add a member via command end to end", async () => {
     const deps = build(llm("x"));
     await respond(deps, { channelId: "C1", slackUserId: OWNER, text: "!add <@UNEW>" });

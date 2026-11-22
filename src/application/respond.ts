@@ -17,6 +17,7 @@ import { SIGNATURES } from "../domain/messageFooter.ts";
 import { requestAccess } from "./accessRequests.ts";
 import { reviewRequestIn } from "../domain/reviewRequest.ts";
 import { nameOfRequest } from "../domain/runControl.ts";
+import { coalesceKind, queuedInput } from "../domain/queuedBatch.ts";
 import { sessionThreadKey } from "../domain/agentSession.ts";
 import { isRestartCut, type RunRegistry } from "./runRegistry.ts";
 import type { ThreadQueue } from "./threadQueue.ts";
@@ -29,7 +30,8 @@ export type RespondDeps = HandleMessageDeps & Pick<FrontDeps, "workerCalls"> & {
   /**
    * Serialises the turns of one thread. Without it two messages sent a few
    * minutes apart run at once, doing the same work twice and resuming the same
-   * CLI session from two processes.
+   * CLI session from two processes. What a person types while a turn runs is
+   * merged into one turn when it ends (`coalesce`), not one turn each.
    */
   threadQueue?: ThreadQueue;
   /** In-flight turns, so one can be stopped from a button or a command. */
@@ -42,6 +44,15 @@ export type RespondDeps = HandleMessageDeps & Pick<FrontDeps, "workerCalls"> & {
   draining?: () => boolean;
   /** Failed workflow steps in a row, per workflow id, so a failure is retried once. */
   stepFailures?: Map<number, number>;
+};
+
+/** One inbound chat message waiting for, or taking, its turn - everything a turn needs from the call that asked for it. */
+type PendingTurn = {
+  inbound: InboundMessage;
+  sink?: LlmStreamSink;
+  onTurnStart?: () => void;
+  tracked?: ReturnType<RunRegistry["track"]>;
+  runId: string;
 };
 
 /** The footer's `trigger`, when the bot's own sender (not a person) named one on the inbound. */
@@ -122,7 +133,12 @@ export const respond = async (
       ...(workflowThread ? { background: true } : {}),
       ...(inbound.inboxRowId !== undefined ? { inboxRowId: inbound.inboxRowId } : {}),
     });
-    const chatTurn = async (): Promise<HandleResult> => {
+    const own: PendingTurn = { inbound, sink, onTurnStart, tracked, runId };
+    // `lead` is the message whose caller answers (its stream, its thinking
+    // card, its run), `inbound` is what the turn reads: the lead's own message,
+    // or everything a person queued behind the turn before it, folded into one.
+    const chatTurn = async (lead: PendingTurn, inbound: InboundMessage): Promise<HandleResult> => {
+      const { tracked, sink, onTurnStart, runId } = lead;
       // Called off while it waited its turn, so it never spawns anything.
       if (tracked?.signal.aborted) return { kind: "ignored" };
       tracked?.running();
@@ -241,13 +257,51 @@ export const respond = async (
       }
     };
 
+    // Everything one person typed while a turn was running, answered together:
+    // the batch's messages are already in the thread, in order, so the turn
+    // reads them from there and replies once. Only the newest message's caller
+    // answers; the others settle as ignored the moment the batch starts, so no
+    // second reply and no stream or run is left open for them. A message
+    // stopped by id while it queued is left out of the batch.
+    const runBatch = (items: readonly PendingTurn[]): Promise<HandleResult> => {
+      const live = items.filter((i) => !i.tracked?.signal.aborted);
+      const lead = live[live.length - 1] ?? items[items.length - 1]!;
+      // Folded into the lead's turn: they no longer wait, and nothing of them
+      // is left in the registry to hold a restart open or to be stopped twice.
+      for (const i of items) if (i !== lead) i.tracked?.done();
+      const texts = live.map((i) => cleanInboundText(i.inbound.text)).filter((t) => t.length > 0);
+      if (live.length < 2 || texts.length < 2) return chatTurn(lead, lead.inbound);
+      const who = deps.users.get(lead.inbound.slackUserId)?.displayName || lead.inbound.displayName || `<@${lead.inbound.slackUserId}>`;
+      const humanMessages = live.flatMap((i) => i.inbound.humanMessages ?? []);
+      return chatTurn(lead, {
+        ...lead.inbound,
+        text: queuedInput(who, texts),
+        coalesced: texts.length,
+        ...(live.some((i) => i.inbound.mentioned) ? { mentioned: true } : {}),
+        ...(humanMessages.length > 0 ? { humanMessages } : {}),
+      });
+    };
+
     // Chat and workflow turns share the thread's one session, so they take it
     // in turns. Commands are left free: a review is its own process, and
     // queueing one behind a long chat turn would make it look dead. A message
     // that waits behind a running turn says nothing: it queues and runs in turn.
     const queue = deps.threadQueue;
-    if (!queue) return chatTurn();
-    return queue.run(key, chatTurn);
+    if (!queue) return chatTurn(own, inbound);
+    // A turn the bot started itself keeps its own turn (see `coalesceKind`).
+    const kind = coalesceKind(inbound);
+    if (kind === undefined) return queue.run(key, () => chatTurn(own, inbound));
+    return queue.coalesce<PendingTurn, HandleResult>({
+      key,
+      kind,
+      item: own,
+      runBatch,
+      merged: { kind: "ignored" },
+      leader: (items) => {
+        const at = items.findLastIndex((i) => !i.tracked?.signal.aborted);
+        return at < 0 ? items.length - 1 : at;
+      },
+    });
   }
 
   const decision = decideAccess(inbound.slackUserId, deps.ownerSlackId, deps.users.get);

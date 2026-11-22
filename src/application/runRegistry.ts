@@ -87,7 +87,12 @@ export type RunRegistry = {
    * long as anyone cares to leave it there.
    */
   stop: (id: string, by: string) => TrackedRun | undefined;
-  /** Stop whatever is running in a thread. Returns what was stopped. */
+  /**
+   * Stop whatever is RUNNING in a thread. Returns what was stopped. Only the
+   * running turn: messages waiting behind it are never touched, so after a stop
+   * the queued batch starts at once as one turn (`threadQueue.coalesce`); with
+   * nothing running it is a no-op.
+   */
   stopThread: (key: string, by: string) => TrackedRun | undefined;
   /** Every tracked run, whatever thread it is in - for a status report. */
   all: () => TrackedRun[];
