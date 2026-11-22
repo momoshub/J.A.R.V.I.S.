@@ -153,7 +153,7 @@ export const CHAT_COMMANDS: readonly CommandDef[] = [
       const question = rest.trim();
       if (!question) return `Ask me something: \`${prefix} ask <question>\``;
       if (!deps.llm) return "My brain is not wired up right now.";
-      const ctx = deps.promptContext?.() ?? { learnings: [] };
+      const ctx = deps.promptContext?.(channelId) ?? { learnings: [] };
       const system = buildSystemPrompt({ botName: ctx.botName, base: ctx.base, learnings: ctx.learnings, slackExtraMethods: ctx.slackExtraMethods });
       const reply = await deps.llm.complete({
         system,
@@ -175,7 +175,7 @@ export const CHAT_COMMANDS: readonly CommandDef[] = [
       const question = rest.trim();
       if (!question) return `What is the side question? \`${prefix} btw <question>\``;
       if (!deps.llm) return "My brain is not wired up right now.";
-      const ctx = deps.promptContext?.() ?? { learnings: [] };
+      const ctx = deps.promptContext?.(channelId) ?? { learnings: [] };
       // Read the thread, do NOT join it: stored history, never the session.
       // Resuming would put the aside into the context the real work runs in,
       // which is the one thing this command exists to avoid.

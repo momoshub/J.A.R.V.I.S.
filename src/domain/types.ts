@@ -82,6 +82,8 @@ export type Learning = {
   readonly sourceChannel: string;
   readonly sourceThreadTs: string;
   readonly sourceRunId: string;
+  /** Channel ids it applies in; empty = global (every channel), which is every row from before scopes existed. */
+  readonly scope: readonly string[];
 };
 
 /** Editable pieces that shape the bot's system prompt. */

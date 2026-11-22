@@ -48,6 +48,67 @@ export type LearningSource = {
   readonly runId: string;
 };
 
+/**
+ * Where a learning applies: the channel ids it is injected in, empty for global
+ * (every channel - what every learning was before scopes, and the default).
+ */
+export type LearningScope = readonly string[];
+
+export const GLOBAL_SCOPE: LearningScope = [];
+
+/** A Slack channel, private channel or DM id. */
+const CHANNEL_ID = /^[CGD][A-Z0-9]{8,}$/;
+
+/** `<#C123|name>`, `<#C123>` or a bare id, as a channel id; undefined for anything else. */
+export const channelIdOf = (token: string): string | undefined =>
+  /^<#([CGD][A-Z0-9]{8,})(?:\|[^>]*)?>$/.exec(token)?.[1] ?? (CHANNEL_ID.test(token) ? token : undefined);
+
+/** Does a learning with this scope reach a turn in `channel`? A turn with no known channel only gets global ones. */
+export const appliesIn = (scope: LearningScope, channel?: string): boolean =>
+  scope.length === 0 || (!!channel && scope.includes(channel));
+
+/** Stored form: comma-separated, deduplicated, empty for global. */
+export const serializeScope = (scope: LearningScope): string => [...new Set(scope)].join(",");
+
+export const parseStoredScope = (raw: string): LearningScope => raw.split(",").map((c) => c.trim()).filter(Boolean);
+
+/** For the owner's notice and lists. Ids in code ticks, never a `<#C..>` mention: Slack echoes those back in another form and the press check compares the notice whole. */
+export const scopeLabel = (scope: LearningScope): string =>
+  scope.length === 0 ? "global (every channel)" : `only in ${scope.map((c) => `\`${c}\``).join(", ")}`;
+
+/**
+ * The scope words of `learn approve <id> <scope>`: `global`, or channel ids /
+ * mentions only. Anything else is undefined, so "approve 3 people for access"
+ * stays a fact instead of a malformed command.
+ */
+export const scopeFromWords = (words: readonly string[]): LearningScope | undefined => {
+  if (words.length === 1 && (words[0] ?? "").toLowerCase() === "global") return GLOBAL_SCOPE;
+  const ids = words.map(channelIdOf);
+  return words.length > 0 && ids.every((c) => c !== undefined) ? [...new Set(ids as string[])] : undefined;
+};
+
+/**
+ * The scope a proposal asks for, as the API receives it: absent or `global` is
+ * global, `channel` is the channel of the turn that proposes it (the proposer
+ * marking it channel-specific), or an explicit list of channel ids.
+ */
+export const proposedScope = (
+  input: unknown,
+  sourceChannel?: string,
+): { readonly ok: true; readonly scope: LearningScope } | { readonly ok: false; readonly error: string } => {
+  if (input === undefined || input === null || input === "" || input === "global") return { ok: true, scope: GLOBAL_SCOPE };
+  if (input === "channel") {
+    return sourceChannel
+      ? { ok: true, scope: [sourceChannel] }
+      : { ok: false, error: 'scope "channel" needs the turn\'s run ticket (X-Jarvis-Ticket) so I know which channel it is. Send an explicit list of channel ids, or leave scope out for global.' };
+  }
+  if (Array.isArray(input) && input.length > 0 && input.length <= 10) {
+    const ids = input.map((c) => (typeof c === "string" ? channelIdOf(c.trim()) : undefined));
+    if (ids.every((c) => c !== undefined)) return { ok: true, scope: [...new Set(ids as string[])] };
+  }
+  return { ok: false, error: 'scope must be "global", "channel", or a list of 1-10 channel ids' };
+};
+
 /** A fact on one line, the way it is stored and shown. */
 export const oneLine = (fact: string): string => fact.trim().replace(/\s*\n+\s*/g, " ");
 
@@ -71,7 +132,8 @@ export const factWordings = (typed: string): readonly string[] => {
 export type LearnArgs =
   | { readonly kind: "fact"; readonly text: string }
   | { readonly kind: "pending" }
-  | { readonly kind: "approve"; readonly id: number }
+  /** `scope` set by `approve <id> global|<channels>`: the owner changes where it applies as they approve. */
+  | { readonly kind: "approve"; readonly id: number; readonly scope?: LearningScope }
   | { readonly kind: "reject"; readonly id: number }
   /** `approve` / `reject` with no id: a usage line, never a fact. */
   | { readonly kind: "usage"; readonly verb: "approve" | "reject" };
@@ -91,6 +153,8 @@ export const parseLearnArgs = (rest: string): LearnArgs => {
     if (words.length === 1) return { kind: "usage", verb };
     const id = /^#?(\d+)$/.exec(words[1] ?? "");
     if (words.length === 2 && id) return { kind: verb, id: Number(id[1]) };
+    const scope = verb === "approve" && id ? scopeFromWords(words.slice(2)) : undefined;
+    if (scope && id) return { kind: "approve", id: Number(id[1]), scope };
   }
   return { kind: "fact", text };
 };
@@ -105,11 +169,18 @@ const whoAsked = (by: string): string => (by === AGENT_SOURCE || !by ? "one of m
  * Its icons are written as shortcodes: Slack hands block text back with emoji as `:shortcode:`,
  * so a unicode 🧠 here never matched the fingerprint of the pressed message.
  */
-export const approvalText = (id: number, content: string, by: string, sourceLink?: string): string =>
+export const approvalText = (
+  id: number,
+  content: string,
+  by: string,
+  sourceLink?: string,
+  scope: LearningScope = GLOBAL_SCOPE,
+): string =>
   [
     `:brain: ${whoAsked(by)} wants me to remember this (learning #${id}). It is NOT part of my memory until you approve it:`,
     approvalCore(content),
-    "Approve adds it to what I carry into every reply, in every channel. Reject discards it.",
+    `Scope: ${scopeLabel(scope)}. Approve adds it to what I carry into ${scope.length === 0 ? "every reply, in every channel" : "replies there"}. Reject discards it.`,
+    `To change the scope, approve by typing \`learn approve ${id} global\` or \`learn approve ${id} <channel id>\` instead of the button.`,
     ...(sourceLink ? [`Proposed in <${sourceLink}|this thread>.`] : []),
   ].join("\n");
 

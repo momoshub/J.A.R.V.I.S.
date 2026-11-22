@@ -87,7 +87,7 @@ export type HandleMessageDeps = {
   ownerSlackId: string;
   contextWindow?: number;
   /** Supplies the editable base prompt + learnings; defaults to the built-in personality. */
-  promptContext?: () => PromptContext;
+  promptContext?: (channelId?: string) => PromptContext;
   /** Learnings repo, for the `learn`/`learnings` commands. */
   learnings?: LearningsRepo;
   /** The memory adapter, for the `adapter` command; replaces `learnings`. */
@@ -487,7 +487,7 @@ export const handleMessage = async (
   const history =
     (await loadThread(deps, inbound)) ??
     deps.messages.recentForThread(inbound.channelId, inbound.threadTs ?? "", window);
-  const ctx = deps.promptContext?.() ?? { learnings: [] };
+  const ctx = deps.promptContext?.(inbound.channelId) ?? { learnings: [] };
   const participants = collectParticipants(deps, history, inbound);
   // Needed before the prompt is built: a sandboxed turn cannot read the
   // adapter's files, so it must not be offered skills it could never open.

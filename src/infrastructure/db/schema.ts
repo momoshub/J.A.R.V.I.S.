@@ -116,6 +116,23 @@ export const migrate = (db: Database): void => {
   migrateBackgroundJobs(db);
   migrateReviewRuns(db);
   migrateLinkedThreads(db);
+  migrateLearningScope(db);
+};
+
+/**
+ * Migration v45: a learning has a scope.
+ *
+ * `scope_channels` is a comma-separated list of channel ids the learning applies
+ * in; empty means global (every channel), so every existing row keeps injecting
+ * exactly as before. Additive column with a default, so a rerun is a no-op.
+ */
+const migrateLearningScope = (db: Database): void => {
+  const cols = db.query<{ name: string }, []>("PRAGMA table_info(learnings)").all().map((c) => c.name);
+  if (!cols.includes("scope_channels")) db.exec("ALTER TABLE learnings ADD COLUMN scope_channels TEXT NOT NULL DEFAULT ''");
+  const { user_version } = db.query<{ user_version: number }, []>("PRAGMA user_version").get() ?? {
+    user_version: 0,
+  };
+  if (user_version < 45) db.exec("PRAGMA user_version = 45;");
 };
 
 /**

@@ -868,3 +868,103 @@ describe("where the notice goes", () => {
     expect(text).toContain("X-Jarvis-Session: $BOT_SESSION_ID");
   });
 });
+
+describe("learning scope", () => {
+  const BILLING = "C0TEAM00001";
+  const OTHER = "C0OTHER001";
+  const source = { channel: BILLING, threadTs: "1.1", runId: "" };
+
+  test("migration: an older table gets a global scope on every existing row, and a rerun changes nothing", () => {
+    const old = openDatabase(":memory:");
+    old.exec("ALTER TABLE learnings DROP COLUMN scope_channels");
+    old.exec("PRAGMA user_version = 44");
+    old.exec("INSERT INTO learnings (content, created_by, created_at, status) VALUES ('an old fact', 'U1', 1, 'active')");
+    migrate(old);
+    migrate(old);
+    const repo = createLearningsRepo(old);
+    expect(repo.list().map((l) => ({ content: l.content, scope: l.scope }))).toEqual([{ content: "an old fact", scope: [] }]);
+    expect(injectedLearnings(repo, "C0OTHER0001")).toEqual(["an old fact"]);
+    expect(old.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version).toBeGreaterThanOrEqual(45);
+    const scoped = repo.add("scoped fact here", "agent", 2, "active", undefined, [BILLING, OTHER]);
+    expect(repo.get(scoped.id)?.scope).toEqual([BILLING, OTHER]);
+    repo.setScope(scoped.id, []);
+    expect(repo.get(scoped.id)?.scope).toEqual([]);
+  });
+
+  test("injection: global reaches every channel, a scoped learning only its own, a turn with no channel only global", () => {
+    const d = build();
+    d.learnings!.add("global fact for all", "U1", 1, "active");
+    d.learnings!.add("billing only fact here", "U1", 2, "active", undefined, [BILLING]);
+    d.learnings!.add("pending billing fact here", "U1", 3, "pending", undefined, [BILLING]);
+    expect(injectedLearnings(d.learnings!, BILLING)).toEqual(["global fact for all", "billing only fact here"]);
+    expect(injectedLearnings(d.learnings!, OTHER)).toEqual(["global fact for all"]);
+    expect(injectedLearnings(d.learnings!)).toEqual(["global fact for all"]);
+  });
+
+  test("a proposal keeps its scope, the owner's notice shows it, and approving keeps it", async () => {
+    const d = build();
+    const r = await proposeLearning(d.learningApproval!, FACT, AGENT_SOURCE, source, [BILLING]);
+    const row = d.learnings!.get(r.ok ? r.learning.id : -1)!;
+    expect(row.scope).toEqual([BILLING]);
+    expect(slackCalls.posts[0]?.text).toContain(`Scope: only in \`${BILLING}\``);
+    expect(await run(d, actor(), "learn pending")).toContain(`only in \`${BILLING}\``);
+    expect(await run(d, actor(), `learn approve ${row.id}`)).toContain(`Approved #${row.id} (only in`);
+    expect(injectedLearnings(d.learnings!, BILLING)).toEqual([FACT]);
+    expect(injectedLearnings(d.learnings!, OTHER)).toEqual([]);
+    expect(await run(d, actor(), "learnings")).toContain(`#${row.id} (only in`);
+  });
+
+  test("a proposal with no scope is global, as before", async () => {
+    const d = build();
+    const r = await proposeLearning(d.learningApproval!, FACT, AGENT_SOURCE, source);
+    expect(d.learnings!.get(r.ok ? r.learning.id : -1)?.scope).toEqual([]);
+    expect(slackCalls.posts[0]?.text).toContain("Scope: global (every channel)");
+  });
+
+  test("the owner changes the scope as they approve: narrowing and widening", async () => {
+    const d = build();
+    const a = await proposeLearning(d.learningApproval!, FACT, AGENT_SOURCE, source);
+    const aId = a.ok ? a.learning.id : -1;
+    expect(await run(d, actor(), `learn approve ${aId} ${OTHER}`)).toContain(`only in \`${OTHER}\``);
+    expect(injectedLearnings(d.learnings!, OTHER)).toEqual([FACT]);
+    expect(injectedLearnings(d.learnings!, BILLING)).toEqual([]);
+
+    const b = await proposeLearning(d.learningApproval!, "another settled fact here", AGENT_SOURCE, source, [BILLING]);
+    const bId = b.ok ? b.learning.id : -1;
+    expect(await run(d, actor(), `learn approve ${bId} global`)).toContain("global (every channel)");
+    expect(injectedLearnings(d.learnings!, OTHER)).toEqual([FACT, "another settled fact here"]);
+  });
+
+  test("only the owner can set a scope: a member's `approve <id> global` is refused, not saved", async () => {
+    const d = build();
+    await proposeLearning(d.learningApproval!, FACT, AGENT_SOURCE, source, [BILLING]);
+    const [row] = d.learnings!.pending();
+    expect(await run(d, MEMBER, `learn approve ${row!.id} global`)).toContain("Only the owner");
+    expect(d.learnings!.get(row!.id)).toMatchObject({ status: "pending", scope: [BILLING] });
+  });
+
+  test("the approval button keeps the proposed scope", async () => {
+    const d = build();
+    const r = await proposeLearning(d.learningApproval!, FACT, AGENT_SOURCE, source, [BILLING]);
+    const id = r.ok ? r.learning.id : -1;
+    const row = d.learnings!.get(id)!;
+    const out = await decideLearningPress(d.learningApproval!, {
+      slackUserId: OWNER,
+      actionId: LEARNING_APPROVE_ACTION,
+      value: String(id),
+      channel: row.noticeChannel,
+      messageTs: row.noticeTs,
+      shown: [approvalCore(FACT)],
+      blocks: shownBy(row),
+    });
+    expect(out).toEqual({ kind: "approved", id });
+    expect(injectedLearnings(d.learnings!, OTHER)).toEqual([]);
+    expect(injectedLearnings(d.learnings!, BILLING)).toEqual([FACT]);
+  });
+
+  test("the prompt text tells the agent how to mark a fact channel-specific", () => {
+    const text = buildSystemPrompt({ botName: "Jarvis", learnUrl: "http://127.0.0.1:2002/api/learnings" });
+    expect(text).toContain('"scope":"channel"');
+    expect(text).toContain("Scope:");
+  });
+});

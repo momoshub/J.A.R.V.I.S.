@@ -93,7 +93,7 @@ export type CommandDeps = {
   /** Measures what an Orca worker used, for `worker-cost`. */
   workerUsage?: WorkerUsagePort;
   llm?: LlmPort;
-  promptContext?: () => PromptContext;
+  promptContext?: (channelId?: string) => PromptContext;
   botInfo?: () => { botName: string; model: string };
   commandLog?: CommandLogRepo;
   /** Names of disabled commands (managed from the dashboard). */

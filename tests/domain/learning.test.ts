@@ -5,12 +5,17 @@ import {
   LEARNING_APPROVE_ACTION,
   LEARNING_REJECT_ACTION,
   approvalCore,
+  appliesIn,
   approvalText,
+  channelIdOf,
   factWordings,
   parseLearnArgs,
   pendingApiMessage,
   pendingReply,
+  proposedScope,
   refusalText,
+  scopeFromWords,
+  scopeLabel,
   settledText,
 } from "../../src/domain/learning.ts";
 
@@ -100,5 +105,58 @@ describe("approval wording", () => {
     expect(LEARNING_APPROVE_ACTION.startsWith(LEARNING_ACTION_PREFIX)).toBe(true);
     expect(LEARNING_REJECT_ACTION.startsWith(LEARNING_ACTION_PREFIX)).toBe(true);
     expect(LEARNING_ACTION_PREFIX.startsWith("jv:")).toBe(true);
+  });
+});
+
+describe("learning scope", () => {
+  test("channel ids come from a bare id or a mention, nothing else", () => {
+    expect(channelIdOf("C0TEST00001")).toBe("C0TEST00001");
+    expect(channelIdOf("<#C0TEST00001|billing>")).toBe("C0TEST00001");
+    expect(channelIdOf("<#C0TEST00001>")).toBe("C0TEST00001");
+    expect(channelIdOf("billing")).toBeUndefined();
+    expect(channelIdOf("U0123456789")).toBeUndefined();
+  });
+
+  test("global applies everywhere, a channel list only in those channels (and never with no channel)", () => {
+    expect(appliesIn([], "C0TEST00001")).toBe(true);
+    expect(appliesIn([], undefined)).toBe(true);
+    expect(appliesIn(["C0TEST00001"], "C0TEST00001")).toBe(true);
+    expect(appliesIn(["C0TEST00001"], "C0OTHER0001")).toBe(false);
+    expect(appliesIn(["C0TEST00001"], undefined)).toBe(false);
+  });
+
+  test("the scope words are `global` or channel ids only", () => {
+    expect(scopeFromWords(["global"])).toEqual([]);
+    expect(scopeFromWords(["C0TEST00001", "<#C0TEST00002|x>", "C0TEST00001"])).toEqual(["C0TEST00001", "C0TEST00002"]);
+    expect(scopeFromWords(["people", "for", "access"])).toBeUndefined();
+    expect(scopeFromWords(["global", "C0TEST00001"])).toBeUndefined();
+    expect(scopeFromWords([])).toBeUndefined();
+  });
+
+  test("approve <id> <scope> is a subcommand, approve <id> <words> is still a fact", () => {
+    expect(parseLearnArgs("approve 3 global")).toEqual({ kind: "approve", id: 3, scope: [] });
+    expect(parseLearnArgs("approve #3 C0TEST00001")).toEqual({ kind: "approve", id: 3, scope: ["C0TEST00001"] });
+    expect(parseLearnArgs("approve 3")).toEqual({ kind: "approve", id: 3 });
+    expect(parseLearnArgs("approve 3 people for access")).toEqual({ kind: "fact", text: "approve 3 people for access" });
+    expect(parseLearnArgs("reject 3 global")).toEqual({ kind: "fact", text: "reject 3 global" });
+  });
+
+  test("a proposal's scope: absent is global, `channel` is the source channel, a list is validated", () => {
+    expect(proposedScope(undefined, "C0TEST00001")).toEqual({ ok: true, scope: [] });
+    expect(proposedScope("global", "C0TEST00001")).toEqual({ ok: true, scope: [] });
+    expect(proposedScope("channel", "C0TEST00001")).toEqual({ ok: true, scope: ["C0TEST00001"] });
+    expect(proposedScope("channel", undefined)).toMatchObject({ ok: false });
+    expect(proposedScope(["C0TEST00001", "C0TEST00002"])).toEqual({ ok: true, scope: ["C0TEST00001", "C0TEST00002"] });
+    expect(proposedScope(["billing"])).toMatchObject({ ok: false });
+    expect(proposedScope([])).toMatchObject({ ok: false });
+    expect(proposedScope(7)).toMatchObject({ ok: false });
+  });
+
+  test("the notice shows the scope in code ticks, never as a mention", () => {
+    expect(approvalText(7, "x", "U0PAL0001")).toContain("Scope: global (every channel)");
+    const scoped = approvalText(7, "x", "U0PAL0001", undefined, ["C0TEST00001"]);
+    expect(scoped).toContain("Scope: only in `C0TEST00001`");
+    expect(scoped).not.toContain("<#");
+    expect(scopeLabel([])).toBe("global (every channel)");
   });
 });

@@ -137,6 +137,22 @@ describe("dashboard use cases", () => {
     expect(repo.pending().map((l) => l.content)).toEqual(["a short fact", "another real fact"]);
   });
 
+  test("teach takes an optional scope: channel needs the turn's source, a list is validated, the default is global", async () => {
+    const repo = createLearningsRepo(openDatabase(":memory:"));
+    const app = createDashboardService(ports({ learningApproval: { learnings: repo, clock: () => 5, ownerSlackId: OWNER } }).p);
+    const source = { channel: "C0TEAM00001", threadTs: "1.1", runId: "" };
+    expect((await app.teach("a fact about billing only", source, "channel")).ok).toBe(true);
+    expect((await app.teach("a fact about two channels", source, ["C0TEAM00001", "C0OTHER001"])).ok).toBe(true);
+    expect((await app.teach("a fact about everything here", source)).ok).toBe(true);
+    expect((await app.teach("a fact with no ticket at all", undefined, "channel")).ok).toBe(false);
+    expect((await app.teach("a fact with a bad scope", source, "billing")).ok).toBe(false);
+    expect(repo.pending().map((l) => [l.content, l.scope])).toEqual([
+      ["a fact about billing only", ["C0TEAM00001"]],
+      ["a fact about two channels", ["C0TEAM00001", "C0OTHER001"]],
+      ["a fact about everything here", []],
+    ]);
+  });
+
   test("teach is refused when approval is not wired", async () => {
     expect(await ports().app.teach("x")).toEqual({ ok: false, error: "Learnings are not wired up", status: 503 });
   });

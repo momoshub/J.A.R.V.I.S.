@@ -9,7 +9,7 @@
  */
 import type { DbClient } from "./client.ts";
 import type { Learning } from "../../domain/types.ts";
-import type { LearningSource, LearningStatus } from "../../domain/learning.ts";
+import { parseStoredScope, serializeScope, type LearningScope, type LearningSource, type LearningStatus } from "../../domain/learning.ts";
 
 type Row = {
   id: number;
@@ -23,6 +23,7 @@ type Row = {
   source_channel: string;
   source_thread_ts: string;
   source_run_id: string;
+  scope_channels: string;
 };
 
 const toLearning = (row: Row): Learning => ({
@@ -37,6 +38,7 @@ const toLearning = (row: Row): Learning => ({
   sourceChannel: row.source_channel,
   sourceThreadTs: row.source_thread_ts,
   sourceRunId: row.source_run_id,
+  scope: parseStoredScope(row.scope_channels),
 });
 
 export type LearningsRepo = {
@@ -47,7 +49,9 @@ export type LearningsRepo = {
   /** Any learning whatever its status. */
   get: (id: number) => Learning | undefined;
   /** The status is explicit: nothing is saved active by accident. */
-  add: (content: string, createdBy: string, createdAt: number, status: LearningStatus, source?: LearningSource) => Learning;
+  add: (content: string, createdBy: string, createdAt: number, status: LearningStatus, source?: LearningSource, scope?: LearningScope) => Learning;
+  /** Where it applies: a channel id list, empty for global. */
+  setScope: (id: number, scope: LearningScope) => void;
   /** New wording, and the status it now has (a rewording by anyone but the owner is pending again). */
   update: (id: number, content: string, status: LearningStatus) => void;
   /** Where the owner's Approve / Reject message for a pending learning lives. */
@@ -68,8 +72,8 @@ export const createLearningsRepo = (db: DbClient): LearningsRepo => {
   );
   const getStmt = db.query<Row, { $id: number }>("SELECT * FROM learnings WHERE id = $id");
   const insertStmt = db.query(
-    `INSERT INTO learnings (content, created_by, created_at, status, source_channel, source_thread_ts, source_run_id)
-     VALUES ($content, $createdBy, $createdAt, $status, $sourceChannel, $sourceThreadTs, $sourceRunId) RETURNING *`,
+    `INSERT INTO learnings (content, created_by, created_at, status, source_channel, source_thread_ts, source_run_id, scope_channels)
+     VALUES ($content, $createdBy, $createdAt, $status, $sourceChannel, $sourceThreadTs, $sourceRunId, $scope) RETURNING *`,
   );
   const updateStmt = db.query(
     `UPDATE learnings
@@ -87,6 +91,7 @@ export const createLearningsRepo = (db: DbClient): LearningsRepo => {
     `UPDATE learnings SET status = $status, decided_by = $by, decided_at = $at
       WHERE id = $id AND status != $status`,
   );
+  const scopeStmt = db.query("UPDATE learnings SET scope_channels = $scope WHERE id = $id");
   const removeStmt = db.query("DELETE FROM learnings WHERE id = $id");
 
   return {
@@ -96,7 +101,7 @@ export const createLearningsRepo = (db: DbClient): LearningsRepo => {
       const row = getStmt.get({ $id: id });
       return row ? toLearning(row) : undefined;
     },
-    add: (content, createdBy, createdAt, status, source) => {
+    add: (content, createdBy, createdAt, status, source, scope) => {
       const row = insertStmt.get({
         $content: content,
         $createdBy: createdBy,
@@ -105,6 +110,7 @@ export const createLearningsRepo = (db: DbClient): LearningsRepo => {
         $sourceChannel: source?.channel ?? "",
         $sourceThreadTs: source?.threadTs ?? "",
         $sourceRunId: source?.runId ?? "",
+        $scope: serializeScope(scope ?? []),
       }) as Row;
       return toLearning(row);
     },
@@ -119,6 +125,9 @@ export const createLearningsRepo = (db: DbClient): LearningsRepo => {
     },
     decide: (id, status, by, at) =>
       Number(decideStmt.run({ $id: id, $status: status, $by: by, $at: at }).changes) > 0,
+    setScope: (id, scope) => {
+      scopeStmt.run({ $id: id, $scope: serializeScope(scope) });
+    },
     remove: (id) => {
       removeStmt.run({ $id: id });
     },
