@@ -107,7 +107,7 @@ export type RunRegistry = {
    * folded into), even after the run is gone: each row is checked against its
    * own budget, at its own time, and must still be found cut.
    */
-  restartCutRun: (rowId: number) => TrackedRun | undefined;
+  restartCutRun: (rowId: number) => { run: TrackedRun; rows: readonly number[] } | undefined;
   /** Every tracked run, whatever thread it is in - for a status report. */
   all: () => TrackedRun[];
   /**
@@ -151,7 +151,7 @@ export const createRunRegistry = (clock: () => number = () => Date.now()): RunRe
   let idle: (channelId: string, threadTs: string) => void = () => {};
   // Rows a restart's cut covered, with the run that carried them. Kept past the
   // run: the process is about to be replaced, so this stays small.
-  const cutRows = new Map<number, { run: TrackedRun; at: number }>();
+  const cutRows = new Map<number, { run: TrackedRun; rows: readonly number[]; at: number }>();
 
   const settle = (base: string): void => {
     const mark = processing.get(base);
@@ -175,7 +175,10 @@ export const createRunRegistry = (clock: () => number = () => Date.now()): RunRe
       const now = clock();
       for (const [row, c] of cutRows) if (now - c.at > CUT_ROWS_TTL_MS) cutRows.delete(row);
       const rows = [entry.run.inboxRowId, ...(entry.run.foldedRows ?? [])].filter((r): r is number => r !== undefined);
-      for (const row of rows) cutRows.set(row, { run: entry.run, at: now });
+      // The first cut to cover a row owns it: a folded row's own run is stopped
+      // a moment before it stops the turn that carries it, and that turn's
+      // whole batch is what the row belongs to.
+      for (const row of rows) if (!cutRows.has(row)) cutRows.set(row, { run: entry.run, rows, at: now });
     }
     return entry.run;
   };
@@ -215,7 +218,7 @@ export const createRunRegistry = (clock: () => number = () => Date.now()): RunRe
       const entry = byId.get(id);
       if (entry) entry.run.foldedRows = [...(entry.run.foldedRows ?? []), ...rowIds];
     },
-    restartCutRun: (rowId) => cutRows.get(rowId)?.run,
+    restartCutRun: (rowId) => cutRows.get(rowId),
     streamOpened: (channelId, messageTs, streamTs) => {
       const entry = [...byId.values()].find((e) => e.run.channelId === channelId && e.run.messageTs === messageTs);
       if (!entry) return false;
@@ -283,7 +286,7 @@ export const cutForRestart = (runs: RunRegistry, rowId: number): TrackedRun[] =>
   // Already cut by the run it is folded into (or its own row, cut a moment
   // ago through a sibling): the row is still a cut one.
   const earlier = runs.restartCutRun(rowId);
-  return earlier ? [earlier] : [];
+  return earlier ? [earlier.run] : [];
 };
 
 /** Whether this turn was stopped by a restart's budget rather than by a person. */
@@ -308,13 +311,16 @@ export const holdThreads = (cut: readonly TrackedRun[]): { channelId: string; th
  * What the receiver calls when a row runs past its restart budget: cut the
  * turns it started and tell each thread to hold on - once per thread for the
  * whole drain, since two messages in one thread both run over within a tick
- * of each other. True when something was cut.
+ * of each other. Returns every inbox row the cut covers (the row itself, and
+ * the rows folded into the same combined turn): the receiver holds them all at
+ * once, because the turn unwinds and their handlers return before their own
+ * budgets come due. Empty when nothing was cut.
  */
 export const createRestartCutter = (
   runs: RunRegistry,
   post: (channelId: string, text: string, threadTs?: string) => void,
   notice: string,
-): ((rowId: number) => boolean) => {
+): ((rowId: number) => readonly number[]) => {
   const told = new Set<string>();
   return (rowId) => {
     const cut = cutForRestart(runs, rowId);
@@ -324,7 +330,13 @@ export const createRestartCutter = (
       told.add(key);
       post(t.channelId, notice, t.threadTs);
     }
-    return cut.length > 0;
+    if (cut.length === 0) return [];
+    const rows = new Set<number>([rowId, ...(runs.restartCutRun(rowId)?.rows ?? [])]);
+    for (const r of cut) {
+      if (r.inboxRowId !== undefined) rows.add(r.inboxRowId);
+      for (const f of r.foldedRows ?? []) rows.add(f);
+    }
+    return [...rows];
   };
 };
 

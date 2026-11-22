@@ -168,12 +168,12 @@ describe("the restart's wiring", () => {
     runs.track(run({ id: "c", inboxRowId: 3, key: "C2:1.1", channelId: "C2", threadTs: "1.1" }));
     const posts: string[] = [];
     const cutter = createRestartCutter(runs, (ch, text, ts) => void posts.push(`${ch}/${ts}:${text}`), "hold on");
-    expect(cutter(1)).toBe(true);
-    expect(cutter(2)).toBe(true);
-    expect(cutter(3)).toBe(true);
+    expect(cutter(1)).toEqual([1]);
+    expect(cutter(2)).toEqual([2]);
+    expect(cutter(3)).toEqual([3]);
     expect(posts).toEqual(["C1/100.1:hold on", "C2/1.1:hold on"]);
     // nothing running for a row: nothing cut, nothing posted
-    expect(cutter(4)).toBe(false);
+    expect(cutter(4)).toEqual([]);
     expect(posts).toHaveLength(2);
   });
 
