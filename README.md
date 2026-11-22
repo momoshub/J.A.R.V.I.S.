@@ -1051,7 +1051,7 @@ they wait as one group, and when a ends - finished, failed or stopped - they run
 as ONE turn with one reply. The turn reads them from the thread, so each keeps its
 author, timestamp, attachments and links, and is told these were several messages
 sent while it was busy. The newest message carries the turn (its stream and
-reply); the others settle at once and post nothing.
+reply); the others settle when it ends and post nothing (their inbox rows stay open until then, so a restart that cuts the turn re-delivers each of them).
 
 Only a person's own typed messages from the same author merge. Every turn the bot
 starts itself (a watch hand-back, a worker's question, a loop, a nudge, a
