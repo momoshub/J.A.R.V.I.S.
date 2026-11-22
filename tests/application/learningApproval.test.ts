@@ -246,6 +246,11 @@ describe("the Approve / Reject buttons", () => {
     expect(settledText("rejected", 1, FACT, OWNER)).not.toMatch(pictographic);
   });
 
+  test("the notice has no bare `<`: Slack echoes it escaped and the press would never match", () => {
+    const text = approvalText(1, FACT, MEMBER.slackId, "https://example.slack.com/archives/C1/p1", ["C1"]);
+    expect(text.match(/<(?![@#!]|https?:)/g)).toBeNull();
+  });
+
   test("the owner's press counts on the DM as Slack echoes it, quote marker escaped", async () => {
     const { row, press } = await proposed();
     const blocks = JSON.parse(JSON.stringify(shownBy(row)).replaceAll("> ", "&gt; ")) as unknown[];

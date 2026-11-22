@@ -180,7 +180,8 @@ export const approvalText = (
     `:brain: ${whoAsked(by)} wants me to remember this (learning #${id}). It is NOT part of my memory until you approve it:`,
     approvalCore(content),
     `Scope: ${scopeLabel(scope)}. Approve adds it to what I carry into ${scope.length === 0 ? "every reply, in every channel" : "replies there"}. Reject discards it.`,
-    `To change the scope, approve by typing \`learn approve ${id} global\` or \`learn approve ${id} <channel id>\` instead of the button.`,
+    // Escaped: Slack echoes a bare `<...>` back as `&lt;...&gt;`, which breaks the press fingerprint.
+    `To change the scope, approve by typing \`learn approve ${id} global\` or \`learn approve ${id} &lt;channel id&gt;\` instead of the button.`,
     ...(sourceLink ? [`Proposed in <${sourceLink}|this thread>.`] : []),
   ].join("\n");
 
