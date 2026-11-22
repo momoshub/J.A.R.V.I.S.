@@ -13,14 +13,12 @@ import {
   createAdapterReader,
   editAdapterFile,
   forgetFact,
+  hasFact,
   INBOX_HEADING,
   migrateLearnings,
   rememberFact,
   revertAdapter,
 } from "../../src/application/adapterMemory.ts";
-import { removeLearning } from "../../src/application/learningApproval.ts";
-import { openDatabase } from "../../src/infrastructure/db/client.ts";
-import { createLearningsRepo } from "../../src/infrastructure/db/learningsRepo.ts";
 
 const MANIFEST = `
 template:
@@ -123,6 +121,31 @@ describe("forgetFact", () => {
     expect(deps.store.load().notes).not.toContain(INBOX_HEADING);
   });
 
+  test("a CRLF file is matched and comes back clean", () => {
+    const deps = setup({ "memory/NOTES.md": "# Notes\r\n\r\n## Recently taught\r\n- one\r\n- two\r\n\r\n\r\n## Other\r\n- keep\r\n" });
+    forgetFact(deps, "one", { kind: "global" }, "U1");
+    forgetFact(deps, "two", { kind: "global" }, "U1");
+    expect(deps.store.files().get("memory/NOTES.md")).toBe("# Notes\n\n## Other\n- keep\n");
+  });
+
+  test("a refused commit leaves the file as it was and records nothing", () => {
+    // a file already over its max_bytes is a hard violation, whatever is removed
+    const deps = setup({ "memory/NOTES.md": `# Notes\n- gone\n${"- filler line\n".repeat(900)}` });
+    const before = deps.store.files().get("memory/NOTES.md");
+    const r = forgetFact(deps, "gone", { kind: "global" }, "U1");
+    expect(r.ok).toBe(false);
+    expect(deps.store.files().get("memory/NOTES.md")).toBe(before);
+    expect(deps.revisions?.list().length).toBe(0);
+  });
+
+  test("hasFact sees exactly what rememberFact wrote, and nothing looser", () => {
+    const deps = setup();
+    rememberFact(deps, "ships on Fridays", { kind: "global" }, "U1");
+    expect(hasFact(deps, "  ships on Fridays ", { kind: "global" })).toBe(true);
+    expect(hasFact(deps, "ships on", { kind: "global" })).toBe(false);
+    expect(hasFact(deps, "", { kind: "global" })).toBe(false);
+  });
+
   test("a person's file is removed when its last fact goes; later revisions survive", () => {
     const deps = setup();
     rememberFact(deps, "prefers short answers", { kind: "person", id: "U7" }, "U1");
@@ -130,56 +153,6 @@ describe("forgetFact", () => {
     forgetFact(deps, "prefers short answers", { kind: "person", id: "U7" }, "U1");
     expect(deps.store.load().people.has("U7")).toBe(false);
     expect(deps.store.load().notes).toContain("stays");
-  });
-});
-
-describe("deleting a learning", () => {
-  const withAdapter = () => {
-    const adapter = setup();
-    const repo = createLearningsRepo(openDatabase(":memory:"));
-    const deps = { learnings: repo, adapter: () => adapter, clock: () => 5, ownerSlackId: "U1" };
-    return { adapter, repo, deps };
-  };
-
-  test("an active row takes its adapter line with it, as a new revision", () => {
-    const { adapter, repo, deps } = withAdapter();
-    const l = repo.add("ships on Fridays", "U1", 1, "active");
-    rememberFact(adapter, l.content, { kind: "global" }, "U1");
-    rememberFact(adapter, "a later fact", { kind: "global" }, "U1");
-    expect(removeLearning(deps, l.id, "dashboard")).toEqual({ ok: true });
-    expect(repo.get(l.id)).toBeUndefined();
-    expect(adapter.store.load().notes).not.toContain("ships on Fridays");
-    expect(adapter.store.load().notes).toContain("a later fact");
-    expect(adapter.revisions?.list().length).toBe(3);
-  });
-
-  test("a pending row never touches the adapter, even when an approved fact says the same", () => {
-    const { adapter, repo, deps } = withAdapter();
-    rememberFact(adapter, "same words", { kind: "global" }, "U1");
-    const p = repo.add("same words", "agent", 1, "pending");
-    expect(removeLearning(deps, p.id, "dashboard")).toEqual({ ok: true });
-    expect(repo.get(p.id)).toBeUndefined();
-    expect(adapter.store.load().notes).toContain("same words");
-    expect(adapter.revisions?.list().length).toBe(1);
-  });
-
-  test("an id that is already gone, or no adapter, still deletes without error", () => {
-    const { repo, deps } = withAdapter();
-    expect(removeLearning(deps, 999, "dashboard")).toEqual({ ok: true });
-    const l = repo.add("flat", "U1", 1, "active");
-    expect(removeLearning({ ...deps, adapter: undefined }, l.id, "dashboard")).toEqual({ ok: true });
-    expect(repo.list()).toEqual([]);
-  });
-
-  test("a refused adapter write leaves the row in place", () => {
-    const { adapter, repo, deps } = withAdapter();
-    const l = repo.add("keep me", "U1", 1, "active");
-    rememberFact(adapter, l.content, { kind: "global" }, "U1");
-    const refusing = { ...adapter, store: { ...adapter.store, write: () => { throw new Error("disk full"); } } };
-    const r = removeLearning({ ...deps, adapter: () => refusing }, l.id, "dashboard");
-    expect(r).toEqual({ ok: false, violations: ["disk full"] });
-    expect(repo.get(l.id)).toBeDefined();
-    expect(adapter.store.load().notes).toContain("keep me");
   });
 });
 

@@ -117,6 +117,9 @@ export const commitAdapter = (
   return { ok: true, revision: revision?.id, warnings: overBudget };
 };
 
+/** The line `rememberFact` writes for a fact, so the two cannot drift apart. */
+const bulletOf = (text: string): string => `- ${text.trim().replace(/\n+/g, " ")}`;
+
 /** Append a fact under the inbox heading of whichever file its scope names. */
 export const rememberFact = (
   deps: AdapterDeps,
@@ -130,7 +133,7 @@ export const rememberFact = (
   const files = new Map(deps.store.files());
   const path = fileFor(target);
   const current = files.get(path) ?? "";
-  const bullet = `- ${text.replace(/\n+/g, " ")}`;
+  const bullet = bulletOf(text);
 
   let next: string;
   if (current.includes(INBOX_HEADING)) {
@@ -152,16 +155,22 @@ export const rememberFact = (
   });
 };
 
-/** The line `rememberFact` writes for a fact, so the two cannot drift apart. */
-const bulletOf = (text: string): string => `- ${text.trim().replace(/\n+/g, " ")}`;
+/** Does the scope's file hold exactly this fact as a line? */
+export const hasFact = (deps: AdapterDeps, fact: string, target: MemoryTarget): boolean => {
+  const text = fact.trim();
+  if (!text) return false;
+  const bullet = bulletOf(text);
+  return (deps.store.files().get(fileFor(target)) ?? "").split("\n").some((line) => line.trim() === bullet);
+};
 
 /**
  * Drop a fact's line from whichever file its scope names, as a NEW revision.
  *
  * The inverse of `rememberFact`, for a learning that is deleted after it was
  * filed: revert cannot do it, because it rolls back TO a revision and would
- * undo every later import and refine with it. Matches the bullet exactly
- * (ignoring surrounding whitespace and CRLF), wherever in the file a refine
+ * undo every later import and refine with it. Reached by `adapter forget`, because
+ * an approved fact has no learnings row left to delete by id. Matches the bullet exactly
+ * (ignoring surrounding whitespace, CRLF included), wherever in the file a refine
  * pass moved it, and removes the inbox heading when that was its last line.
  * A fact that is not there is a no-op that records nothing.
  */
@@ -178,7 +187,8 @@ export const forgetFact = (
   if (current === undefined) return { ok: true, warnings: [] };
 
   const bullet = bulletOf(text);
-  const lines = current.split("\n");
+  // An imported file may carry CRLF; work on LF so blank runs collapse and the file is rewritten clean.
+  const lines = current.replace(/\r\n/g, "\n").split("\n");
   const kept = lines.filter((line) => line.trim() !== bullet);
   if (kept.length === lines.length) return { ok: true, warnings: [] };
 

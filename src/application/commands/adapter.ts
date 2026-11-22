@@ -3,7 +3,7 @@
 import { refinePrompt } from "../../domain/refinePrompt.ts";
 import { adapterRules, isBlank } from "../../domain/adapter.ts";
 import { ALWAYS_ON_BUDGET, describeCheck } from "../../domain/adapterCheck.ts";
-import { adapterStatus, commitAdapter, migrateLearnings, revertAdapter } from "../adapterMemory.ts";
+import { adapterStatus, commitAdapter, forgetFact, hasFact, migrateLearnings, revertAdapter } from "../adapterMemory.ts";
 import { type CommandDef, adapterDepsOf, botNameOf } from "./shared.ts";
 
 /** A refine pass reads every file and rewrites most of them. */
@@ -14,7 +14,7 @@ export const ADAPTER_COMMANDS: readonly CommandDef[] = [
     name: "adapter",
     aliases: ["memory"],
     minRole: "admin",
-    usage: "[status|check|history|refine [note]|revert <id>|export|import <dir>|migrate]",
+    usage: "[status|check|history|refine [note]|revert <id>|forget <fact>|export|import <dir>|migrate]",
     summary: "inspect and curate what I remember (`revert <id>` rolls back to that revision: everything after it is undone)",
     // Bookkeeping the brain runs for itself (export, import, status...) is
     // plumbing: posted into the thread it was just noise between replies.
@@ -53,6 +53,21 @@ export const ADAPTER_COMMANDS: readonly CommandDef[] = [
         return result.ok
           ? `Reverted to #${id}${result.revision ? ` (now #${result.revision})` : ""}. Everything after #${id} is undone.\n\n${adapterStatus(a)}`
           : `Could not revert:\n${result.violations.map((v) => `- ${v}`).join("\n")}`;
+      }
+
+      if (sub === "forget") {
+        // Dropping a fact is a write to memory like `learn`: the owner's own
+        // typed line, never something a turn runs for itself.
+        if (ctx.fromBrainRun) return "Forgetting a fact is the owner's own typed line, not something a turn runs for itself.";
+        const fact = rest.slice(rest.toLowerCase().indexOf("forget") + "forget".length).trim();
+        if (!fact) return `Which fact? \`${prefix} adapter forget <the fact, as written in my notes>\` (see \`${prefix} learnings\`)`;
+        if (!hasFact(a, fact, { kind: "global" })) {
+          return "I have no note that says exactly that. Copy the line from `learnings`, without the leading dash.";
+        }
+        const result = forgetFact(a, fact, { kind: "global" }, actor.slackId);
+        return result.ok
+          ? `Forgotten${result.revision ? ` (revision #${result.revision})` : ""}.\n\n${adapterStatus(a)}`
+          : `Could not forget it:\n${result.violations.map((v) => `- ${v}`).join("\n")}`;
       }
 
       if (sub === "migrate") {
@@ -97,7 +112,7 @@ export const ADAPTER_COMMANDS: readonly CommandDef[] = [
       }
 
       if (sub !== "refine")
-        return `Which one? \`${prefix} adapter [status|check|history|refine|revert <id>|export|import <dir>|migrate]\``;
+        return `Which one? \`${prefix} adapter [status|check|history|refine|revert <id>|forget <fact>|export|import <dir>|migrate]\``;
 
       if (!deps.llm) return "My brain is not wired up right now.";
       const note = rest.slice(rest.toLowerCase().indexOf("refine") + "refine".length).trim();

@@ -156,6 +156,34 @@ describe("the adapter command", () => {
     expect(d.adapterStore?.load().notes).not.toContain("second");
   });
 
+  test("forget drops an approved fact by its text, as a new revision, and keeps the rest", async () => {
+    const d = deps();
+    await run(d, "learn the staging deploy needs the VPN");
+    await run(d, "learn lunch is at noon");
+    const out = await run(d, "adapter forget the staging deploy needs the VPN");
+    expect(out).toContain("Forgotten");
+    const notes = d.adapterStore?.load().notes ?? "";
+    expect(notes).not.toContain("staging deploy");
+    expect(notes).toContain("lunch is at noon");
+    expect(d.adapterRevisions?.list().length).toBe(3);
+  });
+
+  test("forget says so when no note matches exactly, and needs a fact", async () => {
+    const d = deps();
+    await run(d, "learn lunch is at noon");
+    expect(await run(d, "adapter forget lunch")).toContain("no note that says exactly that");
+    expect(await run(d, "adapter forget")).toContain("Which fact?");
+    expect(d.adapterStore?.load().notes).toContain("lunch is at noon");
+  });
+
+  test("forget is never run by a turn for itself", async () => {
+    const d = deps();
+    await run(d, "learn lunch is at noon");
+    const out = await dispatchCommand(d, actor, "C1", "adapter forget lunch is at noon", { prefix: "X/jv", fromBrainRun: true });
+    expect(out).toContain("owner's own typed line");
+    expect(d.adapterStore?.load().notes).toContain("lunch is at noon");
+  });
+
   test("revert without an id says which command lists them", async () => {
     expect(await run(deps(), "adapter revert")).toContain("adapter history");
   });
