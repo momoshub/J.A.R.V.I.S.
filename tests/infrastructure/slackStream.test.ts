@@ -132,6 +132,42 @@ describe("createSlackStream", () => {
     expect(await s.finish()).toBe(false);
   });
 
+  test("finish returns false when a rollover could not close its message", async () => {
+    const messages: { text: string; stopFails: boolean }[] = [];
+    const make = (): Streamer => {
+      const m = { text: "", stopFails: messages.length === 0 };
+      messages.push(m);
+      return {
+        append: async (a) => void (m.text += (a as Call).markdown_text ?? ""),
+        stop: async () => {
+          if (m.stopFails) throw new Error("message_not_in_streaming_state");
+        },
+        ts: `ts.${messages.length}`,
+      };
+    };
+    const logs: string[] = [];
+    const s = createSlackStream(make, (l) => void logs.push(l));
+    s.sink({ type: "text", delta: "a".repeat(10_000) });
+    s.sink({ type: "text", delta: "b".repeat(3_000) });
+    expect(await s.finish()).toBe(false);
+    expect(logs.some((l) => l.includes("rollover stop failed"))).toBe(true);
+    expect(s.parts.map((p) => p.ts)).toEqual(["ts.1", "ts.2"]);
+  });
+
+  test("a message that opened but took no append is an orphan, not a part", async () => {
+    const s = createSlackStream(() => ({
+      append: async () => {
+        throw new Error("message_not_in_streaming_state");
+      },
+      stop: async () => {},
+      ts: "9.9",
+    }));
+    s.sink({ type: "text", delta: "hello" });
+    expect(await s.finish()).toBe(false);
+    expect(s.parts).toEqual([]);
+    expect(s.orphans).toEqual(["9.9"]);
+  });
+
   test("finish returns false when stop fails", async () => {
     const f = fakeStreamer({ failStop: true });
     const s = createSlackStream(f.make);

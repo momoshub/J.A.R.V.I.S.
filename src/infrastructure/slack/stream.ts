@@ -6,7 +6,8 @@
  * cards) and `stop` at the end - no manual edits, so no edit rate limiting. The
  * stream is started lazily on the first event, so non-streaming replies (e.g.
  * `!commands`) never open one. Appends are serialised on a promise chain so they
- * never overlap; if any step fails the caller falls back to a plain post.
+ * never overlap; if any step fails (an append, a rollover's stop, the final
+ * stop) `finish` answers false and the caller falls back to a plain post.
  *
  * The caller can arm a "thinking" step (`showThinkingAfter`), which appears only
  * if the turn is still silent when the delay is up and auto-completes as soon as
@@ -108,6 +109,12 @@ export type SlackStream = {
    * append for are listed: one whose first append failed never existed.
    */
   readonly parts: readonly StreamPart[];
+  /**
+   * ts of messages Slack opened but never took an append for: blank, and never
+   * part of the reply. The caller removes them when it falls back to a post, so
+   * the thread does not keep an empty message next to the answer.
+   */
+  readonly orphans: readonly string[];
   /** Await pending appends and close the stream. False if it broke or showed no content. */
   finish: () => Promise<boolean>;
   /**
@@ -192,6 +199,11 @@ export const createSlackStream = (
   let streamer: Streamer | undefined;
   let chain: Promise<unknown> = Promise.resolve();
   let broke = false;
+  /**
+   * A rollover could not close its message. What it buffered may never have
+   * reached Slack, so the stream cannot claim to have delivered the reply.
+   */
+  let lost = false;
   let thinkingShown = false;
   let thinkingDone = false;
   let contentShown = false;
@@ -241,8 +253,11 @@ export const createSlackStream = (
     detailsIn.clear();
     try {
       await streamer.stop();
-    } catch {
-      // nothing more to do about it; the continuation still goes out
+    } catch (e) {
+      // The continuation still goes out, but this message may be blank:
+      // `finish` reports the reply as not delivered, so the caller rewrites or posts it whole.
+      log(`stream rollover stop failed: ${errMsg(e)}`);
+      lost = true;
     }
     streamer = undefined;
     used = 0;
@@ -617,6 +632,10 @@ export const createSlackStream = (
     get parts() {
       return opened.flatMap((o) => (o.live && o.streamer.ts ? [{ ts: o.streamer.ts, text: o.text }] : []));
     },
+    get orphans() {
+      const kept = new Set(opened.flatMap((o) => (o.live && o.streamer.ts ? [o.streamer.ts] : [])));
+      return opened.flatMap((o) => (!o.live && o.streamer.ts && !kept.has(o.streamer.ts) ? [o.streamer.ts] : []));
+    },
     abandon: async () => {
       cancelPending();
       if (!streamer) return {};
@@ -654,7 +673,7 @@ export const createSlackStream = (
         log(`stream stop failed: ${errMsg(e)}`);
         return false;
       }
-      return contentShown && !broke;
+      return contentShown && !broke && !lost;
     },
   };
 };

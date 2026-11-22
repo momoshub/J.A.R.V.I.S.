@@ -340,7 +340,7 @@ Concrete implementations of the seams and the transports.
 - `slack/gateway.ts` - the gateway's socket, writing envelopes to the inbox
 - `slack/inboxReceiver.ts` - the Bolt receiver that reads the inbox instead of a socket
 - `slack/app.ts` - Bolt listeners + slash commands mapping Slack events to `respond`
-- `slack/stream.ts` (+ `domain/fences.ts`, which `toSlackMarkdown` also runs so a finished or one-shot `markdown` block gets the same fence fix) - bridges the `LlmStreamSink` onto Slack's `chatStream` (text + `task_update` tool cards held to five reusable slots, Block Kit fences; a blocks chunk Slack refuses is written as its words and the stream carries on), falling back to a single post
+- `slack/stream.ts` (+ `domain/fences.ts`, which `toSlackMarkdown` also runs so a finished or one-shot `markdown` block gets the same fence fix) - bridges the `LlmStreamSink` onto Slack's `chatStream` (text + `task_update` tool cards held to five reusable slots, Block Kit fences; a blocks chunk Slack refuses is written as its words and the stream carries on; a failed append, rollover stop or final stop makes `finish` answer false and `app.ts` rewrites the first message or posts the full reply, so a streamed message is never left blank), falling back to a single post
 - `slack/adminClient.ts` - `SlackAdminPort` over the Slack Web API; every post and edit carries the signed footer (`by` names the poster; `post` also takes a turn's usage, so an unwatched turn's reply shows the same usage line as a live one), falling back to bare text when Slack refuses the blocks
 - `slack/offlineAlarmClient.ts` - the offline alarm's scheduled-message calls
 - `inbox/inboxRepo.ts` - the inbox queue shared by both processes

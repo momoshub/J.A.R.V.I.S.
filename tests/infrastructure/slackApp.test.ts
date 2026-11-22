@@ -82,6 +82,8 @@ const build = (opts: {
   /** `chat.update` throws on any message carrying blocks other than markdown/context, as Slack does on `invalid_blocks`. */
   refuseUpdateBlocks?: boolean;
   threadQueue?: ThreadQueue;
+  /** `chat.update` fails on every call, as it does on a message Slack has closed for good. */
+  updateThrows?: boolean;
   /** `agents.sessions.setStatus` fails, as it does for a session Slack no longer has. */
   statusThrows?: boolean;
   /** The run registry, wired to idle the session the way `createSlackApp` does. */
@@ -120,6 +122,8 @@ const build = (opts: {
     thinkingAfterMs: opts.thinkingAfterMs ?? 5,
   };
   const said: { text: string; reply_broadcast?: boolean }[] = [];
+  /** Every post as it was sent, thread included. */
+  const posts: { text: string; thread_ts?: string }[] = [];
   const updates: Record<string, unknown>[] = [];
   const deletes: string[] = [];
   const apiCalls: { method: string; args: Record<string, unknown> }[] = [];
@@ -136,6 +140,7 @@ const build = (opts: {
     },
     chat: {
       update: async (a) => {
+        if (opts.updateThrows) throw new Error("message_not_in_streaming_state");
         if (opts.refuseUpdateBlocks && (a.blocks as { type: string }[] | undefined)?.some((b) => b.type !== "markdown" && b.type !== "context"))
           throw new Error("invalid_blocks");
         updates.push(a);
@@ -160,9 +165,10 @@ const build = (opts: {
     say: async (m) => {
       if (opts.refuseBlocks && m.blocks?.some((b) => b.type !== "markdown" && b.type !== "context")) throw new Error("invalid_blocks");
       said.push({ text: m.text, ...(m.reply_broadcast ? { reply_broadcast: true } : {}) });
+      posts.push({ text: m.text, ...(m.thread_ts ? { thread_ts: m.thread_ts } : {}) });
     },
   });
-  return { handle, msg, said, updates, deletes, apiCalls, rec, messages, logs, opened: () => streams, briefs: deps.briefs };
+  return { handle, msg, said, posts, updates, deletes, apiCalls, rec, messages, logs, opened: () => streams, briefs: deps.briefs };
 };
 
 const streamingLlm = (final: string, events: LlmStreamEvent[] = []): LlmPort => ({
@@ -330,6 +336,89 @@ describe("createHandler streaming truth table", () => {
     expect(said).toHaveLength(0);
     expect(updates).toHaveLength(1);
     expect(updates[0]).toMatchObject({ ts: "222.2", text: "the full answer" });
+  });
+
+  test("append fails: the full reply is posted into the same thread, and the blank message is removed", async () => {
+    const rec: Recorded = { appends: [], stops: 0, stopThrows: false, appendThrows: true };
+    const r = build({
+      llm: streamingLlm("the full answer", [{ type: "text", delta: "the full " }, { type: "text", delta: "answer" }]),
+      streamUpdates: true,
+      rec,
+    });
+    await r.handle(r.msg("hi", "000.9"));
+    expect(r.posts).toEqual([{ text: "the full answer", thread_ts: "000.9" }]);
+    expect(r.deletes).toEqual(["222.2"]);
+  });
+
+  test("stop fails and Slack refuses the rewrite: the full reply is posted into the same thread", async () => {
+    const rec: Recorded = { appends: [], stops: 0, stopThrows: true, appendThrows: false };
+    const r = build({
+      llm: streamingLlm("the full answer", [{ type: "text", delta: "half of it" }]),
+      streamUpdates: true,
+      rec,
+      updateThrows: true,
+    });
+    await r.handle(r.msg("hi", "000.9"));
+    expect(r.updates).toHaveLength(0);
+    expect(r.posts).toEqual([{ text: "the full answer", thread_ts: "000.9" }]);
+  });
+
+  test("a rollover whose stop fails still gets the whole reply, on the first message", async () => {
+    // only the rollover's stop fails: the final stop succeeds, so nothing but the lost flag says the head may be blank
+    const rec: Recorded = { appends: [], stops: 0, stopThrows: false, appendThrows: false };
+    const head = "a".repeat(10_000);
+    const tail = "b".repeat(3_000);
+    let made = 0;
+    const r = build({
+      llm: streamingLlm(head + tail, [{ type: "text", delta: head }, { type: "text", delta: tail }]),
+      streamUpdates: true,
+      rec,
+    });
+    const client = r.msg("hi", "000.9").client;
+    client.chatStream = () => {
+      const first = made++ === 0;
+      return {
+        append: async () => {},
+        stop: async () => {
+          if (first) throw new Error("message_not_in_streaming_state");
+        },
+        ts: first ? "222.2" : "222.3",
+      };
+    };
+    await r.handle({ ...r.msg("hi", "000.9"), client });
+    expect(r.posts).toHaveLength(0);
+    expect(r.updates.map((u) => u.ts)).toEqual(["222.2"]);
+    expect(String(r.updates[0]?.text)).toBe(head + tail);
+    expect(r.deletes).toEqual(["222.3"]);
+  });
+
+  test("no double post: a stream that delivered the reply is not posted again, even when the tidy-up fails", async () => {
+    const r = build({
+      llm: streamingLlm("hello there", [{ type: "text", delta: "hello there" }]),
+      streamUpdates: true,
+      updateThrows: true,
+    });
+    await r.handle(r.msg("hi", "000.9"));
+    expect(r.posts).toHaveLength(0);
+    expect(r.rec.stops).toBe(1);
+    expect(r.deletes).toHaveLength(0);
+  });
+
+  test("a failed stream does not stick the thread: the session goes back to active and the next message is answered", async () => {
+    const rec: Recorded = { appends: [], stops: 0, stopThrows: true, appendThrows: true };
+    const r = build({
+      llm: streamingLlm("an answer", [{ type: "text", delta: "an answer" }]),
+      streamUpdates: true,
+      rec,
+      updateThrows: true,
+    });
+    await r.handle(r.msg("first", "100.5", "100.5"));
+    await r.handle(r.msg("second", "100.5", "100.6"));
+    expect(r.posts.map((p) => p.text)).toEqual(["an answer", "an answer"]);
+    expect(r.posts.every((p) => p.thread_ts === "100.5")).toBe(true);
+    const statuses = r.apiCalls.filter((c) => c.method === "agents.sessions.setStatus");
+    expect(statuses.length).toBeGreaterThanOrEqual(2);
+    expect(statuses.every((c) => c.args.status === "active")).toBe(true);
   });
 
   test("a closed stream that rolled over keeps the answer on its first message only", async () => {
