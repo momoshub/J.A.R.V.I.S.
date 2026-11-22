@@ -141,6 +141,9 @@ const build = (opts: {
     chat: {
       update: async (a) => {
         if (opts.updateThrows) throw new Error("message_not_in_streaming_state");
+        // Slack caps all markdown blocks of one message at 12,000 characters.
+        const markdown = (a.blocks as { type: string; text?: string }[] | undefined)?.reduce((n, b) => n + (b.type === "markdown" ? (b.text?.length ?? 0) : 0), 0) ?? 0;
+        if (markdown > 12_000) throw new Error("invalid_blocks");
         if (opts.refuseUpdateBlocks && (a.blocks as { type: string }[] | undefined)?.some((b) => b.type !== "markdown" && b.type !== "context"))
           throw new Error("invalid_blocks");
         updates.push(a);
@@ -361,10 +364,11 @@ describe("createHandler streaming truth table", () => {
     await r.handle(r.msg("hi", "000.9"));
     expect(r.updates).toHaveLength(0);
     expect(r.posts).toEqual([{ text: "the full answer", thread_ts: "000.9" }]);
+    expect(r.deletes).toEqual(["222.2"]);
   });
 
-  test("a rollover whose stop fails still gets the whole reply, on the first message", async () => {
-    // only the rollover's stop fails: the final stop succeeds, so nothing but the lost flag says the head may be blank
+  test("a rollover whose stop fails and a reply too long to rewrite: the stream messages go, the full reply is posted once", async () => {
+    // only the rollover's stop fails, so nothing but the lost flag says the head may be blank
     const rec: Recorded = { appends: [], stops: 0, stopThrows: false, appendThrows: false };
     const head = "a".repeat(10_000);
     const tail = "b".repeat(3_000);
@@ -386,9 +390,34 @@ describe("createHandler streaming truth table", () => {
       };
     };
     await r.handle({ ...r.msg("hi", "000.9"), client });
+    expect(r.updates).toHaveLength(0);
+    expect(r.posts).toEqual([{ text: head + tail, thread_ts: "000.9" }]);
+    expect(r.deletes.sort()).toEqual(["222.2", "222.3"]);
+  });
+
+  test("a rollover whose stop fails and a reply that fits: rewritten onto the first message, rest deleted", async () => {
+    const rec: Recorded = { appends: [], stops: 0, stopThrows: false, appendThrows: false };
+    const head = "a".repeat(10_000);
+    let made = 0;
+    const r = build({
+      llm: streamingLlm(`${head} done`, [{ type: "text", delta: head }, { type: "text", delta: "b".repeat(2_000) }]),
+      streamUpdates: true,
+      rec,
+    });
+    const client = r.msg("hi", "000.9").client;
+    client.chatStream = () => {
+      const first = made++ === 0;
+      return {
+        append: async () => {},
+        stop: async () => {
+          if (first) throw new Error("message_not_in_streaming_state");
+        },
+        ts: first ? "222.2" : "222.3",
+      };
+    };
+    await r.handle({ ...r.msg("hi", "000.9"), client });
     expect(r.posts).toHaveLength(0);
     expect(r.updates.map((u) => u.ts)).toEqual(["222.2"]);
-    expect(String(r.updates[0]?.text)).toBe(head + tail);
     expect(r.deletes).toEqual(["222.3"]);
   });
 
@@ -402,6 +431,23 @@ describe("createHandler streaming truth table", () => {
     expect(r.posts).toHaveLength(0);
     expect(r.rec.stops).toBe(1);
     expect(r.deletes).toHaveLength(0);
+  });
+
+  test("with the run registry, a first append that failed still puts the session back to active", async () => {
+    const rec: Recorded = { appends: [], stops: 0, stopThrows: true, appendThrows: true };
+    const r = build({
+      llm: streamingLlm("an answer", [{ type: "text", delta: "an answer" }]),
+      streamUpdates: true,
+      rec,
+      runs: createRunRegistry(),
+    });
+    await r.handle(r.msg("first", "100.5", "100.5"));
+    await new Promise((res) => setTimeout(res, 0));
+    const statuses = r.apiCalls.filter((c) => c.method === "agents.sessions.setStatus");
+    expect(statuses).toEqual([
+      { method: "agents.sessions.setStatus", args: { channel_id: "C1", thread_ts: "100.5", status: "active" } },
+    ]);
+    expect(r.posts.map((p) => p.text)).toEqual(["an answer"]);
   });
 
   test("a failed stream does not stick the thread: the session goes back to active and the next message is answered", async () => {

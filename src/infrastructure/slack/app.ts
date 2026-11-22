@@ -670,6 +670,10 @@ export const createHandler =
         // is still there, showing half the reply. Posting the answer as a new
         // message under it read as the reply twice, so it is rewritten instead.
         if (await rewriteDeadStream()) return;
+        // The rewrite was refused (a reply past Slack's markdown cap, or a message it no longer
+        // edits): the stream's messages hold a partial or blank copy, and the whole post below
+        // replaces them - left in place they sit above it and repeat part of it.
+        await dropQuiet(msg, parts, log);
         // Converted at the boundary, not merely asked for in the prompt: a rule
         // the model may ignore is not a guarantee, and what it ignores is the
         // one thing the reader sees.
