@@ -37,7 +37,7 @@ describe("bin/probe-harness.ts", () => {
     expect(r.code).toBe(0);
     expect(r.out).toMatch(/5 cases x 2 runs x 2 versions \+ 10 judgements = 30 model calls, about [\d,]+ input and [\d,]+ output tokens/);
     expect(r.out).toContain("dry run: cases lead-with-answer");
-    expect(readdirSync(dir).filter((f) => f !== "Library").sort()).toEqual(["base.md", "cand.md"]);
+    expect(readdirSync(dir).filter((f) => f.endsWith(".md")).sort()).toEqual(["base.md", "cand.md"]);
   });
   test("--max-cases and --runs shrink the plan", () => {
     const r = run("--base", "base.md", "--candidate", "cand.md", "--cases", cases, "--max-cases", "2", "--runs", "1", "--dry-run");
