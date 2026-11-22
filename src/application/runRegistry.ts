@@ -52,6 +52,12 @@ export type TrackedRun = {
    * the row finds the turn to stop.
    */
   readonly inboxRowId?: number;
+  /**
+   * The inbox rows of the messages folded into this run (`fold`): what one
+   * person queued behind a turn is answered inside the newest message's run,
+   * so a restart's cut of this run is a cut of their rows too.
+   */
+  foldedRows?: number[];
   /** Mutable: a stop flips it to `stopping`, which the next press must see. */
   state: RunState;
   /** Set once someone stops it; the Slack id of whoever did. */
@@ -94,6 +100,14 @@ export type RunRegistry = {
    * nothing running it is a no-op.
    */
   stopThread: (key: string, by: string) => TrackedRun | undefined;
+  /** Record that these inbox rows are answered inside run `id`. */
+  fold: (id: string, rowIds: readonly number[]) => void;
+  /**
+   * The run a restart cut that covered this inbox row (its own, or one it was
+   * folded into), even after the run is gone: each row is checked against its
+   * own budget, at its own time, and must still be found cut.
+   */
+  restartCutRun: (rowId: number) => TrackedRun | undefined;
   /** Every tracked run, whatever thread it is in - for a status report. */
   all: () => TrackedRun[];
   /**
@@ -119,6 +133,8 @@ export type RunRegistry = {
 
 type Entry = { run: TrackedRun; abort: AbortController };
 
+const CUT_ROWS_TTL_MS = 60 * 60_000;
+
 const FRONT_SUFFIX = frontKeyOf("");
 
 /** A run's thread key without the workflow front's lane suffix. */
@@ -133,6 +149,9 @@ export const createRunRegistry = (clock: () => number = () => Date.now()): RunRe
   // or a workflow worker step that never goes through the Slack handler.
   const processing = new Map<string, { channelId: string; threadTs: string }>();
   let idle: (channelId: string, threadTs: string) => void = () => {};
+  // Rows a restart's cut covered, with the run that carried them. Kept past the
+  // run: the process is about to be replaced, so this stays small.
+  const cutRows = new Map<number, { run: TrackedRun; at: number }>();
 
   const settle = (base: string): void => {
     const mark = processing.get(base);
@@ -152,6 +171,12 @@ export const createRunRegistry = (clock: () => number = () => Date.now()): RunRe
     // The reason is who stopped it, so a restart's cut can be told apart
     // from a person pressing stop (`isRestartCut`).
     entry.abort.abort(by);
+    if (by === RESTART_STOPPER) {
+      const now = clock();
+      for (const [row, c] of cutRows) if (now - c.at > CUT_ROWS_TTL_MS) cutRows.delete(row);
+      const rows = [entry.run.inboxRowId, ...(entry.run.foldedRows ?? [])].filter((r): r is number => r !== undefined);
+      for (const row of rows) cutRows.set(row, { run: entry.run, at: now });
+    }
     return entry.run;
   };
 
@@ -186,6 +211,11 @@ export const createRunRegistry = (clock: () => number = () => Date.now()): RunRe
       const entry = [...byId.values()].find((e) => e.run.key === key && e.run.state === "running");
       return entry ? stopEntry(entry, by) : undefined;
     },
+    fold: (id, rowIds) => {
+      const entry = byId.get(id);
+      if (entry) entry.run.foldedRows = [...(entry.run.foldedRows ?? []), ...rowIds];
+    },
+    restartCutRun: (rowId) => cutRows.get(rowId)?.run,
     streamOpened: (channelId, messageTs, streamTs) => {
       const entry = [...byId.values()].find((e) => e.run.channelId === channelId && e.run.messageTs === messageTs);
       if (!entry) return false;
@@ -243,12 +273,18 @@ export const RESTART_STOPPER = "restart";
  * is still running (it finished, or it was never a tracked turn), in which
  * case the row is left alone.
  */
-export const cutForRestart = (runs: RunRegistry, rowId: number): TrackedRun[] =>
-  runs
+export const cutForRestart = (runs: RunRegistry, rowId: number): TrackedRun[] => {
+  const stopped = runs
     .all()
-    .filter((r) => r.inboxRowId === rowId)
+    .filter((r) => r.inboxRowId === rowId || r.foldedRows?.includes(rowId))
     .map((r) => runs.stop(r.id, RESTART_STOPPER))
     .filter((r): r is TrackedRun => r !== undefined);
+  if (stopped.length > 0) return stopped;
+  // Already cut by the run it is folded into (or its own row, cut a moment
+  // ago through a sibling): the row is still a cut one.
+  const earlier = runs.restartCutRun(rowId);
+  return earlier ? [earlier] : [];
+};
 
 /** Whether this turn was stopped by a restart's budget rather than by a person. */
 export const isRestartCut = (signal: AbortSignal | undefined): boolean =>

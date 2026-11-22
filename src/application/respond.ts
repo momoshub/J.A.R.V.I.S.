@@ -275,6 +275,11 @@ export const respond = async (
       const lead = items[leadAt]!;
       const live = items.filter((i) => !i.tracked?.signal.aborted);
       const merged = items.filter((i) => i !== lead);
+      // A restart's cut of this turn must hold every row folded into it.
+      deps.runs?.fold(
+        lead.runId,
+        merged.map((i) => i.inbound.inboxRowId).filter((r): r is number => r !== undefined),
+      );
       try {
         // A restart's cut of a folded message's row is a cut of the turn that
         // carries it.

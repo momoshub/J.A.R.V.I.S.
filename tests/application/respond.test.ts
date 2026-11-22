@@ -4,7 +4,7 @@ import { createUserRepo } from "../../src/infrastructure/db/userRepo.ts";
 import { createMessageRepo } from "../../src/infrastructure/db/messageRepo.ts";
 import { respond, type RespondDeps } from "../../src/application/respond.ts";
 import { createThreadQueue } from "../../src/application/threadQueue.ts";
-import { createRunRegistry, RESTART_STOPPER } from "../../src/application/runRegistry.ts";
+import { createRunRegistry, cutForRestart, RESTART_STOPPER } from "../../src/application/runRegistry.ts";
 import { createWorkflowRepo } from "../../src/infrastructure/db/workflowRepo.ts";
 import { createTurnLogRepo } from "../../src/infrastructure/db/turnLogRepo.ts";
 import { createWatchRepo } from "../../src/infrastructure/db/watchRepo.ts";
@@ -624,6 +624,39 @@ describe("respond", () => {
       expect(asked[3]).toBe("mine two");
       expect(asked[4]).toContain("pal says hi");
       expect(asked[4]).toContain("pal again");
+    });
+
+    test("a restart's budget holds EVERY row of a combined turn, each checked at its own time", async () => {
+      const runs = createRunRegistry();
+      const { brain, release } = held();
+      const deps = build({
+        complete: async (p) => {
+          const out = await brain.complete(p);
+          if (p.messages.some((m) => m.content.includes("3 messages"))) {
+            await new Promise<void>((_res, reject) => p.signal?.addEventListener("abort", () => reject(new Error("claude CLI exited with code 143: no output"))));
+          }
+          return out;
+        },
+      });
+      deps.threadQueue = createThreadQueue();
+      deps.runs = runs;
+      const a = respond(deps, { ...inbound, text: "the long one", messageTs: "700.1", inboxRowId: 1 });
+      await tick();
+      const rest = [2, 3, 4].map((row) => respond(deps, { ...inbound, text: `msg ${row}`, messageTs: `700.${row}`, inboxRowId: row }));
+      release();
+      await a;
+      await tick(20); // the combined turn (rows 2, 3, 4; 4 is the newest) is running
+
+      // the receiver checks each row at its own budget, oldest first
+      const held2 = cutForRestart(runs, 2);
+      expect(held2.length).toBeGreaterThan(0);
+      expect(await Promise.all(rest)).toEqual([{ kind: "ignored" }, { kind: "ignored" }, { kind: "ignored" }]);
+      expect(runs.all()).toEqual([]); // the turn has unwound and every run is gone
+      // ... and the others, checked after that, are still found cut: nothing is left to finish and close
+      expect(cutForRestart(runs, 3).length).toBeGreaterThan(0);
+      expect(cutForRestart(runs, 4).length).toBeGreaterThan(0);
+      // a row that was never part of it is not
+      expect(cutForRestart(runs, 99)).toEqual([]);
     });
 
     test("a lone queued message stopped by id leaves no run behind", async () => {
