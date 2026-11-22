@@ -51,6 +51,23 @@ export type LearningSource = {
 /** A fact on one line, the way it is stored and shown. */
 export const oneLine = (fact: string): string => fact.trim().replace(/\s*\n+\s*/g, " ");
 
+/**
+ * The wordings a typed fact may be stored under. Slack hands a command over
+ * escaped (`&amp;`, `&lt;`, `<url|label>`), and a fact typed through `learn` is
+ * stored that way, while one that came through the API is stored raw; so the
+ * typed text and its decoded form are both tried, in that order.
+ */
+export const factWordings = (typed: string): readonly string[] => {
+  const one = oneLine(typed);
+  const decoded = one
+    .replace(/<([^<>|]+)\|[^<>]*>/g, "$1")
+    .replace(/<([^<>]+)>/g, "$1")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
+  return decoded === one ? [one] : [one, decoded];
+};
+
 export type LearnArgs =
   | { readonly kind: "fact"; readonly text: string }
   | { readonly kind: "pending" }
