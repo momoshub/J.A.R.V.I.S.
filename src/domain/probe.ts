@@ -60,7 +60,7 @@ export const PROBE_USAGE = `usage: bun bin/probe-harness.ts (--path <file> [--ba
   --max-cases <n>      cases to use, 1-${HARD_MAX_CASES} (default ${DEFAULT_MAX_CASES}), in file-name order
   --model <name>       model that answers the cases (default ${DEFAULT_MODEL})
   --judge-model <name> model that compares the answers (default ${DEFAULT_JUDGE_MODEL})
-  --out <file>         report file (default logs/probe-<UTC stamp>.md)
+  --out <file>         report file (default probe-<UTC stamp>.md in the system temp folder)
   --dry-run            print the plan and the estimated token spend, call no model
   --help               this text`;
 

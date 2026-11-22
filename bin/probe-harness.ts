@@ -13,9 +13,10 @@
 // spend and calls no model; the estimate is printed before every real run too.
 //
 // The text under test is the whole system prompt of the answering call (`--system-prompt`),
-// so a skill or guide is probed as the instructions it adds to nothing else. The calls are
+// so a skill or guide is probed as the instructions it adds to nothing else. It takes plain
+// text (a skill, a guide, an exported prompt), not a TypeScript module that builds one. The calls are
 // sandboxed: no tools at all (`--tools ""`, so nothing to read, write or post), no MCP
-// servers and no Slack (`--strict-mcp-config`, none given), no skills, no saved session,
+// servers and no Slack (`--strict-mcp-config`, none given), no skills, no saved session, no user or project settings (`--setting-sources local`: no hooks, plugins or CLAUDE.md of the host),
 // an empty temp folder as cwd, and an environment cut down to what the CLI needs to log
 // in. It measures how the model WRITES to a message, not what it does with tools.
 //
@@ -42,8 +43,8 @@ import {
   textLabel,
 } from "../src/domain/probe.ts";
 
-/** Calls in flight at once: enough to finish in minutes, few enough not to trip a rate limit. */
-const CONCURRENCY = 4;
+/** Pairs in flight at once (each runs its base and candidate answers side by side, so up to twice this many calls): enough to finish in minutes, few enough not to trip a rate limit. */
+const CONCURRENCY = 3;
 const CALL_TIMEOUT_MS = 300_000;
 /** What the CLI needs to find its login and nothing else: no Slack token, no GitHub token, no BOT_* helper. */
 const ENV_KEEP = ["PATH", "HOME", "USER", "LANG", "LC_ALL", "TERM", "TMPDIR", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL"];
@@ -66,22 +67,26 @@ if (options.help) {
   process.exit(0);
 }
 
-const readText = (file: string): string => {
-  let text: string;
-  try {
-    text = readFileSync(file, "utf8");
-  } catch {
-    return fail(`cannot read ${file}`);
-  }
-  if (text.trim() === "") fail(`${file} is empty`);
-  if (text.length > MAX_TEXT_CHARS) fail(`${file} is ${text.length} chars, over the ${MAX_TEXT_CHARS} a prompt or skill should be`);
+const checked = (label: string, text: string): string => {
+  if (text.trim() === "") return fail(`${label} is empty`);
+  if (text.includes("\0")) return fail(`${label} is binary, not a prompt or skill text`);
+  if (text.length > MAX_TEXT_CHARS) return fail(`${label} is ${text.length} chars, over the ${MAX_TEXT_CHARS} a prompt or skill should be`);
   return text;
 };
 
+const readText = (file: string): string => {
+  try {
+    return checked(file, readFileSync(file, "utf8"));
+  } catch (err) {
+    if (err instanceof Error && "code" in err) return fail(`cannot read ${file}`);
+    throw err;
+  }
+};
+
 const gitShow = (ref: string, path: string): string => {
-  const proc = Bun.spawnSync({ cmd: ["git", "show", `${ref}:${path}`], stdout: "pipe", stderr: "pipe" });
+  const proc = Bun.spawnSync({ cmd: ["git", "show", `${ref}:./${path}`], stdout: "pipe", stderr: "pipe" });
   if (proc.exitCode !== 0) return fail(`cannot read ${path} at ${ref}: ${new TextDecoder().decode(proc.stderr).trim()}`);
-  return new TextDecoder().decode(proc.stdout);
+  return checked(`${path} at ${ref}`, new TextDecoder().decode(proc.stdout));
 };
 
 let baseText: string;
@@ -138,7 +143,7 @@ const ask = async (cwd: string, model: string, system: string, prompt: string): 
   const proc = Bun.spawn({
     cmd: [
       "claude", "-p", prompt, "--output-format", "json", "--model", model, "--system-prompt", system,
-      "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence", "--tools", "",
+      "--strict-mcp-config", "--setting-sources", "local", "--disable-slash-commands", "--no-session-persistence", "--tools", "",
     ],
     cwd,
     env: sandboxEnv(),

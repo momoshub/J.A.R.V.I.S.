@@ -1551,9 +1551,9 @@ Identity and learnings are stored in the DB and applied on the next reply - no r
 A change to the system prompt, an adapter skill or a prompt guide changes what the model does, and a reader cannot see that in a diff. `bin/probe-harness.ts` runs the same replay cases on the text before and after the change and has a judge model compare the answers pairwise, after Harness2's Propose-Probe-Compose ([google-research/harness2](https://github.com/google-research/harness2)). It needs no ground truth: it compares behaviour.
 
 ```bash
-# the file as it is now against the same path on origin/main
-bun bin/probe-harness.ts --path src/domain/personality.ts --dry-run   # the plan and the estimated token spend, no model called
-bun bin/probe-harness.ts --path src/domain/personality.ts
+# a plain-text file as it is now against the same path on origin/main (a skill, a guide, an exported prompt - not a .ts module that builds one)
+bun bin/probe-harness.ts --path docs/some-prompt.md --dry-run   # the plan and the estimated token spend, no model called
+bun bin/probe-harness.ts --path docs/some-prompt.md
 
 # or two files, e.g. a skill exported with `X/jv adapter export` before and after an edit
 bun bin/probe-harness.ts --base old/SKILL.md --candidate new/SKILL.md --runs 3 --out probe.md
@@ -1570,9 +1570,9 @@ bun bin/probe-harness.ts --base old/SKILL.md --candidate new/SKILL.md --runs 3 -
 | `--out <file>` | `probe-<stamp>.md` in the system temp folder | the markdown report |
 | `--dry-run` | off | print the plan and estimate, call nothing |
 
-Each case is a past user message written without private content (no Slack ids, no names, no urls: the repo is public) and the traits a good answer shows. The answering calls are sandboxed: the text under test is the whole system prompt, there are no tools, no MCP servers and no Slack, no saved session, an empty working folder, and an environment holding only what the CLI needs to log in. So it measures how the model writes to a message, not what it does with tools. Before any call the script prints an estimate of the token spend (default run: 5 cases x 2 runs x 2 versions + 10 judgements = 30 calls, roughly 35k input and 10k output tokens), and after the run the real figure.
+Each case is a past user message written without private content (no Slack ids, no names, no urls: the repo is public) and the traits a good answer shows. The answering calls are sandboxed: the text under test is the whole system prompt, there are no tools, no MCP servers and no Slack, no saved session, no user or project settings (no hooks, plugins or CLAUDE.md of the host), an empty working folder, and an environment holding only what the CLI needs to log in. So it measures how the model writes to a message, not what it does with tools. Before any call the script prints an estimate of the token spend (default run: 5 cases x 2 runs x 2 versions + 10 judgements = 30 calls, roughly 35k input and 10k output tokens for a near-empty text; every answer call carries the whole text, so a long one adds about 1k input tokens per 4k chars per call - trust the printed estimate), and after the run the real figure.
 
-The report gives the totals (candidate wins, base wins, ties), a row per case, and what each version did in the judge's words for every pair that was not a tie. A handful of pairs is a signal, not a measurement: read the contrasts, and rerun with a higher `--runs` before a close call. Paste the report in the PR body of every docs, prompt-text or skill change (the `jarvis-source` skill says so). Add a case in `docs/probe-cases/` when a voice or behaviour rule keeps slipping.
+The report gives the totals (candidate wins, base wins, ties), a row per case, and what each version did in the judge's words for every pair that was not a tie. A handful of pairs is a signal, not a measurement: read the contrasts, and rerun with a higher `--runs` before a close call. Paste the report in the PR body of every docs, prompt-text or skill change (the `jarvis-source` skill step follows this PR: the skill lives in the DB). Add a case in `docs/probe-cases/` when a voice or behaviour rule keeps slipping.
 
 ## Testing
 
