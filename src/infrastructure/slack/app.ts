@@ -536,6 +536,9 @@ export const createHandler =
       // armed, and only finishing cancels it.
       const streamed = stream ? await stream.finish() : false;
       const parts = stream?.parts ?? [];
+      // A stream that broke may have opened a message it never wrote into. That
+      // one is blank, so it goes before the reply is rewritten or posted whole.
+      if (!streamed) await dropQuiet(msg, (stream?.orphans ?? []).map((ts) => ({ ts })), log);
       // A turn that posted its answer into this thread itself does not stream a closing reply: every
       // stream message goes, the messages the turn posted are never touched. Only the posts of THIS turn
       // count (keyed by its run ticket). The turn keeps its reply by putting KEEP_REPLY on a line of it.
@@ -667,6 +670,10 @@ export const createHandler =
         // is still there, showing half the reply. Posting the answer as a new
         // message under it read as the reply twice, so it is rewritten instead.
         if (await rewriteDeadStream()) return;
+        // The rewrite was refused (a reply past Slack's markdown cap, or a message it no longer
+        // edits): the stream's messages hold a partial or blank copy, and the whole post below
+        // replaces them - left in place they sit above it and repeat part of it.
+        await dropQuiet(msg, parts, log);
         // Converted at the boundary, not merely asked for in the prompt: a rule
         // the model may ignore is not a guarantee, and what it ignores is the
         // one thing the reader sees.
@@ -706,8 +713,12 @@ export const createHandler =
       // `onSessionIdle`), which this turn's own `done()` already did unless its
       // stream opened after that.
       if (turnTicket) deps.selfPosts?.clear(turnTicket);
-      if (streamOpened && !deps.runs) await idleSession(msg.client, msg.channelId, msg.threadTs, log);
-      else if (openedUntracked) deps.runs?.sessionMayIdle(msg.channelId, msg.threadTs ?? msg.messageTs);
+      // A stream whose first append failed never reported `onOpen`, yet Slack may
+      // already have put the session in `processing` (startStream) and keeps the
+      // stop button up: `started` covers that, so a broken stream cannot stick the thread.
+      const touched = streamOpened || stream?.started === true;
+      if (touched && !deps.runs) await idleSession(msg.client, msg.channelId, msg.threadTs, log);
+      else if (openedUntracked || (touched && !streamOpened)) deps.runs?.sessionMayIdle(msg.channelId, msg.threadTs ?? msg.messageTs);
     }
   };
 };
