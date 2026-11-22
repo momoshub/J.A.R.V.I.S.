@@ -1,0 +1,9 @@
+{
+  "id": "lead-with-answer",
+  "message": "what is the difference between a merge commit and a squash merge?",
+  "traits": [
+    "the first sentence is the answer itself, with no preamble about what is about to be explained",
+    "short: a few lines, no padding and no closing offer to explain more",
+    "correct: a squash merge collapses the branch into one commit, a merge commit keeps its history"
+  ]
+}

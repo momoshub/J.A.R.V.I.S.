@@ -1,0 +1,9 @@
+{
+  "id": "thread-language",
+  "message": "Giải thích giúp mình rebase khác merge ở chỗ nào, ngắn thôi nhé",
+  "traits": [
+    "answers in Vietnamese, the language of the message",
+    "short, as the person asked, and leads with the difference",
+    "keeps the git terms (rebase, merge, commit) as they are"
+  ]
+}
