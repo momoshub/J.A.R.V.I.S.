@@ -435,7 +435,10 @@ real repository, so its brief uses absolute paths.
   forbid them.
 - Only user-scope servers by name are excluded. The `claude.ai` connectors are
   remote and start no process, and the bot's own turns have their own list
-  (`UNAUTHENTICATED_MCP_SERVERS`).
+  (`UNAUTHENTICATED_MCP_SERVERS`). A turn the owner's own message started is the exception: it runs
+  on the host's interactive login with every claude.ai connector and server an interactive `claude`
+  on the Mac has (minus unauthenticated ones and the claude.ai Slack connector, which acts as the
+  owner's own identity), so it bills that login rather than the setup token.
 - A name that matches no server in `~/.claude.json` excludes nothing, so boot
   logs it as a warning.
 
@@ -454,10 +457,10 @@ Every chat turn, for every role, can also look in Datadog itself: the host runs
 a Datadog MCP server (`claude mcp add --scope user --transport http datadog
 https://mcp.datadoghq.com/v1/mcp`, authenticated once with OAuth in a browser;
 the claude.ai Datadog connector cannot reach a chat turn, which runs on a
-`claude setup-token` credential). Until that OAuth is done the server is listed in
+`claude setup-token` credential). Until that OAuth is done a server stays in
 `UNAUTHENTICATED_MCP_SERVERS` (`src/infrastructure/llm/mcpConfig.ts`) and no bot turn loads it:
 an unauthenticated server makes the CLI inject a needs-authentication notice that the model
-copies into its reply. Remove it from that list once authenticated. Only the read tools are exposed - logs, RUM,
+copies into its reply. Datadog is authenticated and off that list; `figma` is still on it. Only the read tools are exposed - logs, RUM,
 spans, metrics, monitors, incidents, dashboards; anything that edits a notebook
 or dashboard, and `execute_code`, is denied. `investigate` stays the route for a
 full investigation on the host login, and the fallback when that server's login

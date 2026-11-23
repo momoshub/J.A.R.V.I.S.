@@ -17,6 +17,7 @@ import { listCommandInfo } from "../../src/application/commands.ts";
 import { createSlackProxy } from "../../src/application/slackProxy.ts";
 import type { SlackAdminPort } from "../../src/application/slackAdmin.ts";
 import { createSlackTickets } from "../../src/application/slackTickets.ts";
+import { createOwnerTickets } from "../../src/application/ownerTickets.ts";
 
 const OWNER = "U0OWNER0001";
 
@@ -79,6 +80,22 @@ describe("dashboard static + api", () => {
     expect(res.status).toBe(200);
     expect((await res.json()) as { restarting: boolean }).toMatchObject({ ok: true, restarting: true });
     expect(asked).toEqual(["picked up a fix"]);
+  });
+
+  describe("the owner ticket endpoint", () => {
+    test("a live ticket redeems; unknown, revoked and missing ones are 403, and an unwired bot is 503", async () => {
+      const tickets = createOwnerTickets(() => 0);
+      const d = build({ ownerTickets: tickets });
+      const token = tickets.issue();
+      const ok = await d.dash.handle(postJson("/api/owner-ticket", { ticket: token }));
+      expect(ok.status).toBe(200);
+      expect(await ok.json()).toEqual({ ok: true });
+      tickets.revoke(token);
+      expect((await d.dash.handle(postJson("/api/owner-ticket", { ticket: token }))).status).toBe(403);
+      expect((await d.dash.handle(postJson("/api/owner-ticket", { ticket: "jvow_nope" }))).status).toBe(403);
+      expect((await d.dash.handle(postJson("/api/owner-ticket", {}))).status).toBe(403);
+      expect((await build().dash.handle(postJson("/api/owner-ticket", { ticket: token }))).status).toBe(503);
+    });
   });
 
   describe("the Slack proxy endpoints", () => {

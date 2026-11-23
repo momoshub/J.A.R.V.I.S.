@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   backgroundCutOffNotice,
+  OWNER_FALLBACK_COOLDOWN_MS,
+  OWNER_FALLBACK_LINE,
   createClaudeCliLlm,
   isReactCall,
   payerOf,
@@ -258,7 +260,7 @@ describe("createClaudeCliLlm", () => {
     expect(flag).toBe("false");
     expect(strict).toBe("yes");
     const servers = JSON.parse(Buffer.from(cfg!, "base64").toString()).mcpServers;
-    expect(Object.keys(servers)).toEqual(["notion", "acme-pg-prod"]);
+    expect(Object.keys(servers)).toEqual(["datadog", "notion", "acme-pg-prod"]);
     // the stdio server runs behind the lazy proxy, the http one is untouched
     expect(servers["acme-pg-prod"].args).toEqual([
       "--no-env-file", expect.stringContaining("mcp-lazy-proxy.ts"), "--name", "acme-pg-prod", "--cache-dir", expect.stringContaining("mcp-schema-cache"), "--", "x",
@@ -267,7 +269,7 @@ describe("createClaudeCliLlm", () => {
 
     // a role that may not use a database server does not get it started at all
     const sandboxed = (await llm.complete({ system: "s", messages: [{ role: "user", content: "hi" }], policy: { skipPermissions: false, disallowedTools: ["mcp__acme-pg-prod"] } })).split(" ");
-    expect(Object.keys(JSON.parse(Buffer.from(sandboxed[2]!, "base64").toString()).mcpServers)).toEqual(["notion"]);
+    expect(Object.keys(JSON.parse(Buffer.from(sandboxed[2]!, "base64").toString()).mcpServers)).toEqual(["datadog", "notion"]);
 
     // a caller's own token is a bot turn too
     const own = await llm.complete({ system: "s", messages: [{ role: "user", content: "hi" }], oauthToken: "sk-ant-oat01-theirs" });
@@ -287,6 +289,61 @@ describe("createClaudeCliLlm", () => {
     expect(out.startsWith("[]")).toBe(true);
     expect(out).not.toContain("--strict-mcp-config");
     expect(out).not.toContain("--mcp-config");
+  });
+
+  test("an owner-ticketed spawn runs on the host login with the connectors: not strict, figma stubbed, Slack connector denied", async () => {
+    // --strict-mcp-config drops the claude.ai connectors (measured), so an owner turn must not pass it
+    const dir = mkdtempSync(join(tmpdir(), "jarvis-claudejson-"));
+    const claudeJsonPath = join(dir, "claude.json");
+    writeFileSync(claudeJsonPath, JSON.stringify({ mcpServers: { figma: { type: "http" }, datadog: { type: "http" }, "acme-pg-prod": { command: "x" } } }));
+    const bin = fakeBin(
+      `#!/usr/bin/env bash\ncat > /dev/null\necho "{\\"type\\":\\"result\\",\\"subtype\\":\\"success\\",\\"is_error\\":false,\\"result\\":\\"$(printf '%s' "[$ENABLE_CLAUDEAI_MCP_SERVERS][$CLAUDE_CODE_OAUTH_TOKEN][$JARVIS_OWNER_TICKET][$JARVIS_OWNER_API_URL][$BOT_MCP_DENY] $*" | base64 | tr -d '[:space:]')\\"}"`,
+    );
+    const prev = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "sk-ant-oat01-bots";
+    try {
+      const ended: string[] = [];
+      const llm = createClaudeCliLlm({
+        binPath: bin,
+        claudeJsonPath,
+        ownerApiUrl: "http://127.0.0.1:1/api/owner-ticket",
+        ownerTicket: (bill) => (bill?.actor === "UOWNER" ? { token: "jvow_t", end: () => void ended.push("jvow_t") } : undefined),
+      });
+      const full = { skipPermissions: true, disallowedTools: ["Bash(aws logs:*)"] };
+      const ask = async (params: Record<string, unknown>): Promise<string> =>
+        Buffer.from(await llm.complete({ system: "s", messages: [{ role: "user", content: "hi" }], ...params }), "base64").toString();
+      const out = await ask({ policy: full, bill: { actor: "UOWNER", kind: "chat" } });
+      expect(out.startsWith("[][][jvow_t][http://127.0.0.1:1/api/owner-ticket][")).toBe(true);
+      expect(out).not.toContain("--strict-mcp-config");
+      expect(out).toContain("--disallowedTools mcp__claude_ai_Slack");
+      // the mcp CLI is held to the same denial
+      expect(out).toContain('mcp__claude_ai_Slack"]');
+      const cfg = JSON.parse(out.split("--mcp-config ")[1]!.split(" ")[0]!).mcpServers;
+      expect(cfg.figma).toEqual({ type: "stdio", command: "/usr/bin/false", args: [] });
+      expect(cfg.datadog).toEqual({ type: "http" });
+      expect(cfg["acme-pg-prod"].args).toContain("--");
+      // the ticket ends with the process
+      expect(ended).toEqual(["jvow_t"]);
+
+      // anyone else, a restricted turn, a caller's token and a preset host-login run get no owner access
+      for (const params of [
+        { policy: full, bill: { actor: "UOTHER", kind: "chat" } },
+        { policy: { skipPermissions: false }, bill: { actor: "UOWNER", kind: "chat" } },
+        { policy: full, bill: { actor: "UOWNER", kind: "chat" }, oauthToken: "sk-ant-oat01-theirs" },
+      ]) {
+        const o = await ask(params);
+        expect(o.startsWith("[false]")).toBe(true);
+        expect(o).toContain("--strict-mcp-config");
+        expect(o).not.toContain("claude_ai_Slack");
+        expect(o).toContain("[]["); // no owner ticket
+      }
+      const preset = await ask({ policy: full, bill: { actor: "UOWNER", kind: "chat" }, useHostLogin: true });
+      expect(preset.startsWith("[][][][][")).toBe(true); // host login, but no owner ticket of its own
+      expect(preset).not.toContain("--mcp-config");
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+      else process.env.CLAUDE_CODE_OAUTH_TOKEN = prev;
+    }
   });
 
   test("a host-login spawn drops a connector switch-off inherited from the parent env", async () => {
@@ -1498,4 +1555,201 @@ describe("createClaudeCliLlm timeout", () => {
     );
     expect(Date.now() - started).toBeLessThan(12_000);
   }, 20_000);
+});
+
+describe("owner turn falls back to the bot's token when the host login is refused", () => {
+  const OWNER = { actor: "UOWNER", kind: "chat" } as const;
+  const full = { skipPermissions: true };
+  const okEvents = [{ type: "result", subtype: "success", is_error: false, result: "carried on" }];
+
+  /**
+   * A fake CLI that refuses (`ownerEvents`) while JARVIS_OWNER_TICKET is set and answers (`okEvents`) otherwise, logging
+   * every spawn. With `leavesTranscript` the refused run also leaves a session behind, and a fresh --session-id on it errors.
+   */
+  const setup = (ownerEvents: unknown[], opts: { json?: boolean; leavesTranscript?: boolean } = {}) => {
+    const dir = mkdtempSync(join(tmpdir(), "jarvis-claude-owner-"));
+    const refusedPath = join(dir, "refused.ndjson");
+    const okPath = join(dir, "ok.ndjson");
+    const logPath = join(dir, "spawns.log");
+    const usedPath = join(dir, "used");
+    const lines = (events: unknown[]) => events.map((e) => JSON.stringify(e)).join("\n") + "\n";
+    writeFileSync(refusedPath, lines(ownerEvents));
+    writeFileSync(okPath, lines(okEvents));
+    writeFileSync(logPath, "");
+    const claudeJsonPath = join(dir, "claude.json");
+    writeFileSync(claudeJsonPath, JSON.stringify({ mcpServers: { datadog: { type: "http" } } }));
+    const bin = fakeBin(
+      `#!/usr/bin/env bash\ncat > /dev/null\n` +
+        `echo "[$ENABLE_CLAUDEAI_MCP_SERVERS][$CLAUDE_CODE_OAUTH_TOKEN][$JARVIS_OWNER_TICKET] $*" >> ${logPath}\n` +
+        `if [ -n "$JARVIS_OWNER_TICKET" ]; then\n  ${opts.leavesTranscript ? `touch ${usedPath}\n  ` : ""}cat ${refusedPath}\n  exit 0\nfi\n` +
+        `if [ -e ${usedPath} ] && [[ "$*" == *--session-id* ]]; then echo "Error: Session ID is already in use." >&2; exit 1; fi\n` +
+        `cat ${okPath}\n`,
+    );
+    const ended: string[] = [];
+    const logged: string[] = [];
+    let at = 1_000_000;
+    const llm = (traced = false) =>
+      createClaudeCliLlm({
+        binPath: bin,
+        claudeJsonPath,
+        clock: () => at,
+        ownerApiUrl: "http://127.0.0.1:1/api/owner-ticket",
+        ownerTicket: (bill) => (bill?.actor === "UOWNER" ? { token: "jvow_t", end: () => void ended.push("jvow_t") } : undefined),
+        ownerFallbackLog: (l) => void logged.push(l),
+        ...(traced ? { onToolTrace: () => {} } : {}),
+      });
+    const spawns = async (): Promise<string[]> => (await Bun.file(logPath).text()).split("\n").filter(Boolean);
+    return { llm, spawns, ended, logged, advance: (ms: number) => void (at += ms) };
+  };
+  const ask = { system: "s", messages: [{ role: "user" as const, content: "hi" }], policy: full, bill: OWNER };
+
+  const withBotToken = async (run: () => Promise<void>) => {
+    const prev = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "sk-ant-oat01-bots";
+    try {
+      await run();
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+      else process.env.CLAUDE_CODE_OAUTH_TOKEN = prev;
+    }
+  };
+
+  const expectOwnerThenToken = (log: string[]) => {
+    expect(log).toHaveLength(2);
+    expect(log[0]!.startsWith("[][][jvow_t]")).toBe(true);
+    expect(log[0]).not.toContain("--strict-mcp-config");
+    expect(log[1]!.startsWith("[false][sk-ant-oat01-bots][]")).toBe(true);
+    expect(log[1]).toContain("--strict-mcp-config");
+    expect(log[1]).not.toContain("claude_ai_Slack");
+  };
+
+  test("stream: a refused owner spawn is run again on the bot's token, once, and logged", async () => {
+    await withBotToken(async () => {
+      const t = setup(refusedEvents);
+      const out = await t.llm().stream!(ask, () => {});
+      expect(out).toBe("carried on");
+      expectOwnerThenToken(await t.spawns());
+      expect(t.logged).toEqual([OWNER_FALLBACK_LINE]);
+      expect(t.ended).toEqual(["jvow_t"]);
+    });
+  });
+
+  test("complete (traced): the same fallback", async () => {
+    await withBotToken(async () => {
+      const t = setup(refusedEvents);
+      expect(await t.llm(true).complete(ask)).toBe("carried on");
+      expectOwnerThenToken(await t.spawns());
+      expect(t.logged).toEqual([OWNER_FALLBACK_LINE]);
+    });
+  });
+
+  test("complete (one-shot json): the same fallback", async () => {
+    await withBotToken(async () => {
+      const t = setup([result401()]);
+      expect(await t.llm().complete(ask)).toBe("carried on");
+      expectOwnerThenToken(await t.spawns());
+      expect(t.logged).toEqual([OWNER_FALLBACK_LINE]);
+    });
+  });
+
+  test("the structured authentication_failed assistant event alone triggers it", async () => {
+    await withBotToken(async () => {
+      const t = setup([synthetic401, { type: "result", subtype: "success", is_error: true, result: "x" }]);
+      expect(await t.llm().stream!(ask, () => {})).toBe("carried on");
+      expectOwnerThenToken(await t.spawns());
+    });
+  });
+
+  test("content already emitted: no retry, the auth error stands", async () => {
+    await withBotToken(async () => {
+      const t = setup([...textBlock("partial answer"), synthetic401, result401()]);
+      const err = await caught(t.llm().stream!(ask, () => {}));
+      expect(isClaudeAuthError(err)).toBe(true);
+      expect(await t.spawns()).toHaveLength(1);
+      expect(t.logged).toEqual([]);
+    });
+  });
+
+  test("an error that is not a structured refusal is not retried", async () => {
+    await withBotToken(async () => {
+      const t = setup([{ type: "result", subtype: "success", is_error: true, result: "Failed to authenticate. API Error: 401 revoked" }]);
+      await t.llm().stream!(ask, () => {});
+      expect(await t.spawns()).toHaveLength(1);
+      expect(t.logged).toEqual([]);
+    });
+  });
+
+  test("the failure is remembered: the next owner turns skip the host login until the window ends", async () => {
+    await withBotToken(async () => {
+      const t = setup(refusedEvents);
+      const llm = t.llm();
+      await llm.stream!(ask, () => {});
+      expect(await t.spawns()).toHaveLength(2);
+      // inside the window: straight to the token, no ticket, no failed spawn
+      t.advance(OWNER_FALLBACK_COOLDOWN_MS - 1);
+      expect(await llm.stream!(ask, () => {})).toBe("carried on");
+      let log = await t.spawns();
+      expect(log).toHaveLength(3);
+      expect(log[2]!.startsWith("[false][sk-ant-oat01-bots][]")).toBe(true);
+      expect(t.ended).toEqual(["jvow_t"]);
+      // past it: the host login is tried again (and refused again here)
+      t.advance(2);
+      await llm.stream!(ask, () => {});
+      log = await t.spawns();
+      expect(log).toHaveLength(5);
+      expect(log[3]!.startsWith("[][][jvow_t]")).toBe(true);
+      expect(t.logged).toEqual([OWNER_FALLBACK_LINE, OWNER_FALLBACK_LINE]);
+    });
+  });
+
+  test("a refused spawn with no owner ticket is unchanged: it throws and nothing is retried", async () => {
+    await withBotToken(async () => {
+      const logged: string[] = [];
+      const bin = fakeEventsBin(refusedEvents, 0);
+      const wiring = {
+        ownerTicket: (bill: BillingContext | undefined) => (bill?.actor === "UOWNER" ? { token: "jvow_x", end: () => {} } : undefined),
+        ownerFallbackLog: (l: string) => void logged.push(l),
+      };
+      const llm = createClaudeCliLlm({ binPath: bin, ...wiring });
+      const oneShot = createClaudeCliLlm({ binPath: fakeEventsBin([result401()], 0), ...wiring });
+      for (const params of [
+        { ...ask, bill: { actor: "UOTHER", kind: "chat" } },
+        { ...ask, oauthToken: "sk-ant-oat01-theirs" },
+        { ...ask, useHostLogin: true },
+        { ...ask, policy: { skipPermissions: false } },
+      ]) {
+        expect(isClaudeAuthError(await caught(llm.stream!(params, () => {})))).toBe(true);
+        expect(isClaudeAuthError(await caught(oneShot.complete(params)))).toBe(true);
+      }
+      expect(logged).toEqual([]);
+    });
+  });
+
+  test("a fresh session whose refused run left a transcript is resumed by the retry", async () => {
+    await withBotToken(async () => {
+      for (const path of ["stream", "oneshot"] as const) {
+        const t = setup(path === "stream" ? refusedEvents : [result401()], { leavesTranscript: true });
+        const session = { id: "11111111-1111-4111-8111-111111111111", resume: false };
+        const out = path === "stream" ? await t.llm().stream!({ ...ask, session }, () => {}) : await t.llm().complete({ ...ask, session });
+        expect(out).toBe("carried on");
+        const log = await t.spawns();
+        expect(log).toHaveLength(3);
+        expect(log[0]).toContain(`--session-id ${session.id}`);
+        expect(log[1]).toContain(`--session-id ${session.id}`);
+        expect(log[2]).toContain(`--resume ${session.id}`);
+        expect(log[2]!.startsWith("[false][sk-ant-oat01-bots][]")).toBe(true);
+      }
+    });
+  });
+
+  test("a resumed session is resumed again on the retry", async () => {
+    await withBotToken(async () => {
+      const t = setup(refusedEvents);
+      const session = { id: "22222222-2222-4222-8222-222222222222", resume: true };
+      expect(await t.llm().stream!({ ...ask, session }, () => {})).toBe("carried on");
+      const log = await t.spawns();
+      expect(log).toHaveLength(2);
+      expect(log.every((l) => l.includes(`--resume ${session.id}`))).toBe(true);
+    });
+  });
 });

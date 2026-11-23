@@ -35,6 +35,26 @@ export type CliIo = {
   readonly out: (line: string) => void;
   readonly err: (line: string) => void;
   readonly now?: () => Date;
+  /** For the owner-ticket check; the global `fetch` when absent. */
+  readonly fetchFn?: typeof fetch;
+};
+
+/**
+ * A turn the owner started carries an owner ticket (`JARVIS_OWNER_TICKET`, `application/ownerTickets.ts`) and the URL to
+ * redeem it at. Holding one is worth nothing until the bot says it is live, so an env copied out of a finished turn is dead.
+ * Undefined when there is no ticket (a turn of another role, or the owner at a terminal) or it is live; otherwise the reason.
+ */
+export const ownerTicketRefusal = async (env: Readonly<Record<string, string | undefined>>, fetchFn: typeof fetch = fetch): Promise<string | undefined> => {
+  const ticket = env.JARVIS_OWNER_TICKET;
+  if (!ticket) return undefined;
+  const url = env.JARVIS_OWNER_API_URL;
+  if (!url) return "this turn holds an owner ticket but no URL to check it at";
+  try {
+    const res = await fetchFn(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ ticket }), signal: AbortSignal.timeout(10_000) });
+    return res.ok ? undefined : "this turn's owner ticket is no longer valid (the turn it belonged to has ended)";
+  } catch {
+    return "the bot could not be reached to check this turn's owner ticket";
+  }
 };
 
 const DEFAULT_CALL_TIMEOUT_S = 120;
@@ -163,7 +183,7 @@ export const runMcpCli = async (argv: readonly string[], io: CliIo): Promise<num
     }
 
     // The turn's role: refuse here what the turn's own --disallowedTools would refuse.
-    const refusal = mcpCallRefusal(io.env, serverName, toolName);
+    const refusal = mcpCallRefusal(io.env, serverName, toolName) ?? (await ownerTicketRefusal(io.env, io.fetchFn));
     if (refusal) return fail(`refused: ${refusal}`);
     // A tool the cache lists but the owner has not approved is refused by the proxy below; one it does not list at all is a typo.
     if (server.tools && !server.listed.includes(toolName)) return fail(`"${serverName}" lists no tool "${toolName}" (\`mcp search\` finds one)`);
