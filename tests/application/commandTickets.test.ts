@@ -38,6 +38,14 @@ describe("commandTickets", () => {
     expect(plain.ok && plain.ctx).not.toHaveProperty("named");
   });
 
+  test("a turn a watch fired is marked, and an ordinary one is not", () => {
+    const tickets = createCommandTickets(() => 0);
+    const fired = tickets.redeem(tickets.issue({ actor: "U1", channel: "C1", watch: true }));
+    expect(fired.ok && fired.ctx.watch).toBe(true);
+    const plain = tickets.redeem(tickets.issue({ actor: "U1", channel: "C1" }));
+    expect(plain.ok && plain.ctx).not.toHaveProperty("watch");
+  });
+
   test("an unknown or made-up token gets nothing", () => {
     const tickets = createCommandTickets(at({ now: 0 }));
     expect(tickets.redeem("guessed")).toEqual({ ok: false, reason: "unknown", limit: TICKET_USES });

@@ -36,6 +36,11 @@ describe("targetsNamedIn", () => {
     expect(targetsNamedIn("ping <@U0USER00001> and U0USER00001, see https://example.com/C0TEAM00003/x and CHECKS and ABCDEFGHIJ")).toEqual([]);
   });
 
+  test("a bare id needs a digit: capitalised words are not channels", () => {
+    expect(targetsNamedIn("post it after the DEPLOYMENT and the CHANGELOG are in, for GITHUBPAGES")).toEqual([]);
+    expect(targetsNamedIn("post it in C0TEAM00005")).toEqual([{ channel: "C0TEAM00005" }]);
+  });
+
   test("a channel named as a whole absorbs a thread in it", () => {
     expect(targetsNamedIn(`${THREAD} <#C0TEAM00001|eng>`)).toEqual([{ channel: "C0TEAM00001" }]);
   });

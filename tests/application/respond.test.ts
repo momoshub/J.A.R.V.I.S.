@@ -899,6 +899,8 @@ describe("a turn started by a watch can actually DO things", () => {
     // the watch hand-back the owner's watch fires, a bot-started turn, is not their own message
     await respond(spy, { ...fired, slackUserId: OWNER, unprompted: true, trigger: "watch", text: `ready: post the shots in ${link}`, threadTs: "9.2", messageTs: "9.2" });
     expect(issued[1]).not.toHaveProperty("owner");
+    expect(issued[1]).toMatchObject({ watch: true });
+    expect(issued[0]).not.toHaveProperty("watch");
     // someone else typing is never the owner's message
     await respond(spy, { ...fired, slackUserId: "U7", text: `post it in ${link}`, threadTs: "9.3", messageTs: "9.3" });
     expect(issued[2]).not.toHaveProperty("owner");

@@ -8,7 +8,7 @@ import { createSlackProxy } from "../../src/application/slackProxy.ts";
 import { createSlackTickets, slackTicketContext } from "../../src/application/slackTickets.ts";
 import type { SlackAdminPort } from "../../src/application/slackAdmin.ts";
 import type { WatchGrant } from "../../src/domain/writeTargets.ts";
-import { OWNER, actor, build, db } from "./commandsFixture.ts";
+import { OWNER, actor, build, db, slackCalls } from "./commandsFixture.ts";
 
 const THREAD = "https://team.slack.com/archives/C0TEAM00001/p1787122692303399";
 const TS = "1787122692.303399";
@@ -109,6 +109,37 @@ describe("watch: who may give it somewhere to write", () => {
     const watches = createWatchRepo(db);
     await dispatchCommand({ ...deps, watches }, actor(), "C1", `watch --until 30m post it in ${THREAD}`, asOwnerTurn());
     expect(await dispatchCommand({ ...deps, watches }, actor(), "C1", "watch list")).toContain("may write to 1 other place");
+  });
+});
+
+describe("owner-only commands in a turn a watch fired", () => {
+  const FIRED = { threadTs: "9.9", fromBrainRun: true, firedByWatch: true };
+
+  test("post, role and promote are refused: the fired turn reads untrusted content, its reach is the grant", async () => {
+    const deps = build();
+    for (const line of ["post C0TEAM00002 injected text", "role list", "promote <@U0USER00001>"]) {
+      const out = await dispatchCommand(deps, actor(), "C1", line, FIRED);
+      expect(out).toContain("owner-only");
+      expect(out).toContain("started by a watch");
+    }
+    expect(slackCalls.posts).toEqual([]);
+  });
+
+  test("the same lines still run from the owner's own turn and from a turn nobody flagged", async () => {
+    const deps = build();
+    const asOwner = await dispatchCommand(deps, actor(), "C1", "post C0TEAM00002 hello", { threadTs: "9.9", fromBrainRun: true, ownerTurn: { named: [] } });
+    expect(asOwner).toContain("posted");
+    const unflagged = await dispatchCommand(deps, actor(), "C1", "post C0TEAM00002 hello again", { threadTs: "9.9", fromBrainRun: true });
+    expect(unflagged).toContain("posted");
+    expect(slackCalls.posts.map((p) => p.text)).toEqual(["hello", "hello again"]);
+  });
+
+  test("the flag is the run bridge's: a typed line is not a watch-fired turn, and commands that are not owner-only still work", async () => {
+    const deps = build();
+    const watches = createWatchRepo(db);
+    expect(await dispatchCommand({ ...deps, watches }, actor(), "C1", "post C0TEAM00002 typed", { threadTs: "9.9", firedByWatch: true })).toContain("posted");
+    // a fired watch can still set the next watch, which is the point of the hand-back
+    expect(await dispatchCommand({ ...deps, watches }, actor(), "C1", "watch --until 30m look again", FIRED)).toContain("pick this up again");
   });
 });
 

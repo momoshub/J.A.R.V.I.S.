@@ -504,6 +504,8 @@ export const handleMessage = async (
     ...(!!deps.ownerSlackId && typedByPerson(inbound) && decision.user.slackId === deps.ownerSlackId
       ? { owner: true as const, named: targetsNamedIn(inbound.text) }
       : {}),
+    // A turn a watch fired runs as whoever set it (the owner, say), but it read untrusted content: no owner-only command from it.
+    ...(inbound.trigger === "watch" ? { watch: true as const } : {}),
   });
   const window = deps.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
   // The thread itself is the context, read from Slack: the whole of this thread

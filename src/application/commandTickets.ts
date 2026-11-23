@@ -50,6 +50,8 @@ export type TicketContext = {
   owner?: true;
   /** With `owner`: the channels and threads the owner's own message named (links, mentions, ids). */
   named?: readonly WriteTarget[];
+  /** A watch started this turn (`trigger: "watch"`, set by the bot's own watcher): the run bridge refuses owner-only commands in it. */
+  watch?: true;
 };
 
 /**
@@ -109,6 +111,7 @@ export const createCommandTickets = (
         threadTs: entry.threadTs,
         messageTs: entry.messageTs,
         ...(entry.owner ? { owner: true as const, named: entry.named ?? [] } : {}),
+        ...(entry.watch ? { watch: true as const } : {}),
       },
       left: Math.max(0, uses - entry.used),
     };
