@@ -29,7 +29,7 @@ import type {
 } from "../../application/ports.ts";
 import type { PromptMessage } from "../../domain/types.ts";
 import type { ToolPolicy } from "../../domain/toolPolicy.ts";
-import { claudeAuthError, isClaudeAuthError } from "../../domain/threadSession.ts";
+import { claudeAuthError } from "../../domain/threadSession.ts";
 import { runsOrcaWorkerStart } from "../../domain/threadBackground.ts";
 import { isNoiseTool, redactPaths, redactSecrets } from "../../domain/toolVisibility.ts";
 import { scrubSecretEnv } from "../../domain/turnEnv.ts";
@@ -86,6 +86,10 @@ export type ClaudeCliConfig = {
   ownerTicket?: (bill: BillingContext | undefined) => { token: string; end: () => void } | undefined;
   /** Where a child of the turn redeems the owner ticket (`JARVIS_OWNER_API_URL`). A loopback URL, no secret. */
   ownerApiUrl?: string;
+  /** One line to the activity log when an owner turn falls back from the host login to the bot's token (see `OWNER_FALLBACK_LINE`). */
+  ownerFallbackLog?: (line: string) => void;
+  /** Milliseconds now; the cooldown after a refused host login is measured on it. Default `Date.now`. */
+  clock?: () => number;
   /**
    * Agent definitions passed as `--agents`, asked fresh each turn. Replaces
    * built-in agents of the same name, e.g. to pin Explore and Plan's models.
@@ -436,6 +440,15 @@ type OwnerTicket = { token: string; end: () => void };
 const ownerTicketFor = (config: ClaudeCliConfig, bill: BillingContext | undefined, policy: ToolPolicy | undefined, oauthToken?: string, useHostLogin?: boolean): OwnerTicket | undefined =>
   oauthToken || useHostLogin || !skipsPermissions(config, policy) ? undefined : config.ownerTicket?.(bill);
 
+/** How long an owner turn skips the host login after it was refused, so each turn does not pay a failed spawn. */
+export const OWNER_FALLBACK_COOLDOWN_MS = 10 * 60_000;
+
+/** The activity line written when the host login was refused and the turn went on with the bot's token. */
+export const OWNER_FALLBACK_LINE = "owner ticket: host login refused, fell back to the bot token";
+
+/** The CLI's refusal to reuse a `--session-id` whose transcript exists (the retry then resumes it instead). */
+const SESSION_IN_USE = /already in use/i;
+
 /** The turn's policy with the owner-access denials added. */
 const withOwnerDenials = (policy?: ToolPolicy): ToolPolicy => ({
   skipPermissions: policy?.skipPermissions ?? true,
@@ -641,6 +654,24 @@ const isRefusedResult = (r: Record<string, unknown> | undefined): boolean =>
   r?.is_error === true && r.api_error_status === 401;
 
 export const createClaudeCliLlm = (config: ClaudeCliConfig = {}): LlmPort => {
+  const now = config.clock ?? Date.now;
+  // Until when owner turns skip the host login (it was refused). In memory: a restart tries it again.
+  let hostLoginRefusedUntil = 0;
+
+  /** The owner ticket for a run, unless the host login was refused moments ago. */
+  const ticketFor = (bill: BillingContext | undefined, policy: ToolPolicy | undefined, oauthToken?: string, useHostLogin?: boolean): OwnerTicket | undefined =>
+    now() < hostLoginRefusedUntil ? undefined : ownerTicketFor(config, bill, policy, oauthToken, useHostLogin);
+
+  /** An owner spawn was refused (its ticket ended with the process): remember it for a while and say so once. */
+  const hostLoginRefused = (): void => {
+    hostLoginRefusedUntil = now() + OWNER_FALLBACK_COOLDOWN_MS;
+    try {
+      config.ownerFallbackLog?.(OWNER_FALLBACK_LINE);
+    } catch {
+      // a log line is never worth the answer
+    }
+  };
+
   // Whatever goes wrong asking for it, the turn still runs - just without it.
   const turnEnv = async (): Promise<Record<string, string | undefined>> => {
     try {
@@ -686,8 +717,9 @@ export const createClaudeCliLlm = (config: ClaudeCliConfig = {}): LlmPort => {
     }
   };
 
-  const completeOneShot = async ({ system, messages, assistantName, policy, session, oauthToken, useHostLogin, signal, runTicket, bill, onUsage, env }: LlmCompleteParams) => {
-    const ownerTicket = ownerTicketFor(config, bill, policy, oauthToken, useHostLogin);
+  const completeOneShot = async (params: LlmCompleteParams, asOwner = true): Promise<string> => {
+    const { system, messages, assistantName, policy, session, oauthToken, useHostLogin, signal, runTicket, bill, onUsage, env } = params;
+    const ownerTicket = asOwner ? ticketFor(bill, policy, oauthToken, useHostLogin) : undefined;
     const proc = spawnClaude(config, [...buildArgs(config, false, policy, session), "--append-system-prompt", system], renderPrompt(messages, assistantName), policy, oauthToken, useHostLogin, signal, runTicket, session, { ...(await turnEnv()), ...env }, bill, ownerTicket);
     const [stdout, stderr, exitCode] = await Promise.all([
       new Response(proc.stdout).text(),
@@ -695,10 +727,25 @@ export const createClaudeCliLlm = (config: ClaudeCliConfig = {}): LlmPort => {
       proc.exited,
     ]);
     // A refused token can arrive on a failing exit, so its structured 401 is read first.
+    let refused = false;
     try {
-      if (isRefusedResult(JSON.parse(stdout) as Record<string, unknown>)) throw claudeAuthError();
-    } catch (err) {
-      if (isClaudeAuthError(err)) throw err;
+      refused = isRefusedResult(JSON.parse(stdout) as Record<string, unknown>);
+    } catch {
+      // not json: not a refusal either
+    }
+    if (refused) {
+      if (!ownerTicket) throw claudeAuthError();
+      // The host login lapsed: nothing was said yet, so run the request again on the bot's token, without connectors.
+      hostLoginRefused();
+      try {
+        return await completeOneShot(params, false);
+      } catch (err) {
+        // the refused run may have left the transcript behind: claim it by resuming instead
+        if (session && !session.resume && err instanceof Error && SESSION_IN_USE.test(err.message)) {
+          return completeOneShot({ ...params, session: { ...session, resume: true } }, false);
+        }
+        throw err;
+      }
     }
     if (exitCode !== 0) {
       throw new Error(`claude CLI exited with code ${exitCode}: ${stderr.trim() || stdout.trim() || "no output"}`);
@@ -723,8 +770,8 @@ export const createClaudeCliLlm = (config: ClaudeCliConfig = {}): LlmPort => {
    * output carries only the final answer, so a run made that way left no
    * record of what it ran.
    */
-  const runStreaming = async ({ system, messages, assistantName, policy, session, oauthToken, useHostLogin, signal, runTicket, bill, onUsage, onBackgroundTasks, onBackgroundCutOff, onBashCommand, env }: LlmCompleteParams, sink: LlmStreamSink) => {
-    const ownerTicket = ownerTicketFor(config, bill, policy, oauthToken, useHostLogin);
+  const runStreamingOnce = async ({ system, messages, assistantName, policy, session, oauthToken, useHostLogin, signal, runTicket, bill, onUsage, onBackgroundTasks, onBackgroundCutOff, onBashCommand, env }: LlmCompleteParams, sink: LlmStreamSink, asOwner: boolean) => {
+    const ownerTicket = asOwner ? ticketFor(bill, policy, oauthToken, useHostLogin) : undefined;
     const proc = spawnClaude(config, [...buildArgs(config, true, policy, session), "--append-system-prompt", system], renderPrompt(messages, assistantName), policy, oauthToken, useHostLogin, signal, runTicket, session, { ...(await turnEnv()), ...env }, bill, ownerTicket);
     const stderrPromise = new Response(proc.stderr).text();
 
@@ -738,7 +785,10 @@ export const createClaudeCliLlm = (config: ClaudeCliConfig = {}): LlmPort => {
      * children, alive. That is what a wedged turn looked like in production,
      * and it ignored SIGTERM. Reporting a hiccup is never worth a stuck turn.
      */
+    // Did the caller get anything it could show (text, a tool card)? A run refused before that can be run again.
+    let visible = false;
     const emit = (ev: Parameters<LlmStreamSink>[0]): void => {
+      if (ev.type !== "usage") visible = true;
       try {
         const r = sink(ev) as unknown;
         if (r && typeof (r as Promise<void>).catch === "function") (r as Promise<void>).catch(ignoreQuietly("llm stream sink"));
@@ -1005,7 +1055,24 @@ export const createClaudeCliLlm = (config: ClaudeCliConfig = {}): LlmPort => {
     const lead = reactAnswers.map((t) => t.trim()).filter((t) => t && !finalText.includes(t));
     const finished = (finalText ? [...lead, finalText].join("\n\n") : streamedText).trim();
     const refused = authRejected || isRefusedResult(resultEvent);
-    return { exitCode, finished, finalText, resultEvent, refused, stderr: stderrPromise, emit, backgroundTasks, tellsCutOff: !!onBackgroundCutOff };
+    return { exitCode, finished, finalText, resultEvent, refused, stderr: stderrPromise, emit, backgroundTasks, tellsCutOff: !!onBackgroundCutOff, ownerTicket, visible };
+  };
+
+  /**
+   * One streamed run, with the owner fallback: an owner spawn refused (the structured signals only) before anything visible
+   * went out is run again once as a normal token spawn, so a lapsed host login never fails the turn.
+   */
+  const runStreaming = async (params: LlmCompleteParams, sink: LlmStreamSink) => {
+    const first = await runStreamingOnce(params, sink, true);
+    if (!first.refused || !first.ownerTicket || first.visible) return first;
+    hostLoginRefused();
+    const retry = await runStreamingOnce(params, sink, false);
+    const { session } = params;
+    // the refused run may have left the transcript behind: claim it by resuming instead
+    if (session && !session.resume && retry.exitCode !== 0 && !retry.finished && SESSION_IN_USE.test(await retry.stderr)) {
+      return runStreamingOnce({ ...params, session: { ...session, resume: true } }, sink, false);
+    }
+    return retry;
   };
 
   const stream = async (params: LlmCompleteParams, sink: LlmStreamSink) => {
