@@ -99,6 +99,20 @@ export type WatcherDeps = {
 /** How long one predicate may run before it is treated as an error. */
 export const CHECK_TIMEOUT_MS = 30_000;
 
+/**
+ * One line per check, enough to debug a watch that never fires: which watch, which program, how it
+ * ended and how long it took. Never the arguments (a hand-written predicate can carry a secret) and
+ * never the output of an answer - exit 0 prints what was said in a thread. Only a failure to run
+ * (exit 2 and up, or an error) shows the first line of what the check printed, which is its reason.
+ */
+export const describeCheck = (w: { id: number; check: string }, res: CheckResult, ms: number): string => {
+  const program = (w.check.trim().split(/\s+/)[0] ?? "").replace(/^'|'$/g, "").split("/").pop() ?? "";
+  const head = `watch ${w.id} check ${program || "?"} exit=${res.code} in ${ms}ms`;
+  if (res.error) return `${head} error: ${res.error.slice(0, 160)}`;
+  if (res.code < 2) return head;
+  return `${head} printed: ${res.output.trim().split("\n")[0]?.slice(0, 160) ?? ""}`;
+};
+
 export type Watcher = {
   /** Check everything that is due. Safe to call on a timer. */
   tick: () => Promise<void>;
@@ -232,7 +246,9 @@ export const createWatcher = (deps: WatcherDeps): Watcher => {
       return;
     }
 
+    const startedAt = deps.clock();
     const res = await deps.check(w.check, CHECK_TIMEOUT_MS);
+    log(describeCheck(w, res, deps.clock() - startedAt));
     // The check can take seconds, and the watch may have been cancelled while
     // it ran - by `watch cancel`, or because the bot stopped that very worker on
     // purpose. A cancelled watch says nothing and hands nothing back.

@@ -35,7 +35,9 @@ export const createShellCheck = (
         ...(cwd ? { cwd } : {}),
         ...(extra ? { env: { ...process.env, ...extra.env } } : {}),
       });
+      let timedOut = false;
       const timer = setTimeout(() => {
+        timedOut = true;
         // The whole tree: a predicate that pipes is several processes, and
         // killing only the shell leaves the rest holding the pipe open.
         if (proc) stopProcess(proc);
@@ -47,6 +49,9 @@ export const createShellCheck = (
       ]);
       clearTimeout(timer);
       const output = `${out}${err}`.slice(-MAX_OUTPUT);
+      // killed by the clock is a check that cannot answer in time, not a "no": it used to exit non-zero
+      // and be counted as "nothing yet" forever
+      if (timedOut) return { code, output, error: `check timed out after ${Math.round(timeoutMs / 1000)}s` };
       // 127 is "no such command", which is a broken watch rather than a "no".
       if (code === 127) return { code, output, error: output.trim().split("\n")[0] || "command not found" };
       return { code, output };
