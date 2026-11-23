@@ -24,6 +24,8 @@ import { BUG_REPORT_ACTION_PREFIX } from "../../domain/bugReport.ts";
 import { REVIEW_RUN_ACTION_PREFIX } from "../../domain/reviewIdentity.ts";
 import { decideReviewRunPress, reviewRunPressNoticeOf, type ReviewRunApprovalDeps } from "../../application/reviewRunApproval.ts";
 import { LEARNING_ACTION_PREFIX, refusalText } from "../../domain/learning.ts";
+import { HARVEST_ACTION_PREFIX } from "../../domain/harvest.ts";
+import { decideSkillDraftPress, draftPressNotice } from "../../application/learningHarvest.ts";
 import { CODE_ACTION_PREFIX } from "../../domain/cloudwatch.ts";
 import { forHowLong, mayStopRun } from "../../domain/runControl.ts";
 import { frontKeyOf } from "../../domain/workflowFront.ts";
@@ -889,6 +891,7 @@ export const createKitListeners = (
       actionId.startsWith(CODE_ACTION_PREFIX) ||
       actionId.startsWith(LOOP_ACTION_PREFIX) ||
       actionId.startsWith(LEARNING_ACTION_PREFIX) ||
+      actionId.startsWith(HARVEST_ACTION_PREFIX) ||
       actionId.startsWith(BUG_REPORT_ACTION_PREFIX) ||
       actionId.startsWith(REVIEW_RUN_ACTION_PREFIX)
     ) return;
@@ -1515,6 +1518,39 @@ export const createSlackApp = (config: SlackAppConfig, deps: Deps) => {
       }
     } catch (err) {
       log(`learning press failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }) as never);
+
+  // Approve / Reject on a skill draft the learning harvest proposed. Decided
+  // HERE and never handed to the model (the kit listener skips
+  // `HARVEST_ACTION_PREFIX`), by the same rule as a learning: a press that went
+  // through a model turn could be talked into approving what a prompt injection
+  // just drafted.
+  app.action(new RegExp(`^${HARVEST_ACTION_PREFIX}`), (async ({ ack, body, action, client }: Omit<ApprovalArgs, "body"> & { body: ApprovalArgs["body"] & { message?: { ts?: string; thread_ts?: string; edited?: unknown; blocks?: Record<string, unknown>[] } }; client: KitClient }) => {
+    await ack();
+    const by = body.user?.id;
+    const value = action?.value;
+    if (!by || !value || !deps.skillDraftApproval) return;
+    try {
+      const outcome = await decideSkillDraftPress(deps.skillDraftApproval, {
+        slackUserId: by,
+        actionId: action.action_id ?? "",
+        value,
+        channel: body.channel?.id,
+        messageTs: body.message?.ts,
+        edited: body.message?.edited !== undefined,
+        blocks: body.message?.blocks ?? [],
+      });
+      log(`skill draft press ${outcome.kind} by ${by}`);
+      const channel = body.channel?.id;
+      const notice = draftPressNotice(outcome);
+      if (notice && channel) {
+        await client.chat
+          .postEphemeral?.({ channel, user: by, thread_ts: body.message?.thread_ts ?? body.message?.ts, text: notice })
+          .catch(logAndIgnore("skill draft press notice"));
+      }
+    } catch (err) {
+      log(`skill draft press failed: ${err instanceof Error ? err.message : String(err)}`);
     }
   }) as never);
 

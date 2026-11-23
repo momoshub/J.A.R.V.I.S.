@@ -19,6 +19,9 @@ export type LearningStatus = "pending" | "active" | "rejected";
 /** Who a learning is credited to when the agent wrote it, through the API or the run bridge. */
 export const AGENT_SOURCE = "agent";
 
+/** Who a learning is credited to when the periodic review of recent conversations proposed it (`domain/harvest.ts`). Never a Slack id. */
+export const HARVEST_SOURCE = "harvest";
+
 /** One sentence: the whole fact has to fit the approval DM the owner decides on. */
 export const MAX_LEARNING_CHARS = 1000;
 
@@ -162,7 +165,8 @@ export const parseLearnArgs = (rest: string): LearnArgs => {
 /** The line of the approval DM that shows the fact: a press counts only while the pressed message still shows it. */
 export const approvalCore = (content: string): string => `> ${escapeForSlack(oneLine(content))}`;
 
-const whoAsked = (by: string): string => (by === AGENT_SOURCE || !by ? "one of my turns" : `<@${by}>`);
+const whoAsked = (by: string): string =>
+  by === HARVEST_SOURCE ? "my review of recent conversations" : by === AGENT_SOURCE || !by ? "one of my turns" : `<@${by}>`;
 
 /**
  * The DM the owner decides on. The fact is escaped, so it cannot render a link or a mention.

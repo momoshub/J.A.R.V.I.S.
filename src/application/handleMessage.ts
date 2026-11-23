@@ -45,6 +45,8 @@ import type { ReminderRepo } from "../infrastructure/db/reminderRepo.ts";
 import type { JourneyRepo } from "../infrastructure/db/journeyRepo.ts";
 import type { BugReportRepo } from "../infrastructure/db/bugReportRepo.ts";
 import type { SelfIssueRepo } from "../infrastructure/db/selfIssueRepo.ts";
+import type { SkillDraftRepo } from "../infrastructure/db/skillDraftRepo.ts";
+import type { SkillDraftApprovalDeps } from "./learningHarvest.ts";
 import type { LoopRepo } from "../infrastructure/db/loopRepo.ts";
 import type { WatchRepo } from "../infrastructure/db/watchRepo.ts";
 import { cancelWatchesOnWorkerStop } from "./watcher.ts";
@@ -120,6 +122,10 @@ export type HandleMessageDeps = {
   bugReports?: BugReportRepo;
   /** The inner child's issue queue, for the `inner-child` command. */
   selfIssues?: SelfIssueRepo;
+  /** The learning harvest's skill drafts, for the `harvest` command. */
+  skillDrafts?: SkillDraftRepo;
+  /** The owner's Approve / Reject on a skill draft, decided by the Slack listener in code. */
+  skillDraftApproval?: SkillDraftApprovalDeps;
   /** The owner's Approve / Reject on a bug report, decided by the Slack listener in code. */
   bugReportApproval?: BugReportApprovalDeps;
   /** The owner's Approve / Reject on a review with nobody's token to run on, decided in code. */
@@ -304,6 +310,12 @@ export type InboundMessage = {
    */
   batched?: boolean;
   /**
+   * The bot assembled this text itself from content its sender did not write (a GitHub issue body the app was called on, a
+   * fix brief). Whoever it runs as, it is not what a person typed, so the turn log records it as not typed and the learning
+   * harvest never reviews it.
+   */
+  composed?: boolean;
+  /**
    * How many messages this turn stands for: set by `respond` when everything one person typed while a turn was running is
    * answered in a single turn. `text` then carries all of them, and `messageTs` is the newest's.
    */
@@ -360,6 +372,13 @@ export type InboundMessage = {
 
 /** The message was typed by the person it is from: not started by the bot (`trigger`, `unprompted`, `autoContinue`), not a followed thread's chatter. */
 export const typedByPerson = (m: InboundMessage): boolean => !m.trigger && !m.unprompted && !m.autoContinue && !m.following && !m.batched;
+
+/**
+ * A person wrote this message's text: the bot did not start the turn itself (`trigger`, `unprompted`, `autoContinue`) and did not compose the text (`composed`).
+ * Looser than `typedByPerson`: a followed thread's chatter and a queued batch are still people's words. Recorded on the turn log,
+ * because the text alone cannot say (a hand-back the bot wrote to itself reads like any message).
+ */
+export const writtenByPeople = (m: InboundMessage): boolean => !m.trigger && !m.unprompted && !m.autoContinue && !m.composed;
 
 /** What a turn says when the model said nothing. A placeholder, not an answer. */
 export const EMPTY_REPLY_FALLBACK = "I do not have anything useful to add there.";

@@ -46,6 +46,8 @@ export type LearningsRepo = {
   list: () => Learning[];
   /** Learnings waiting for the owner, oldest first. Never injected. */
   pending: () => Learning[];
+  /** Every learning whatever its status, oldest first: for a check against what was ever asked, never for a prompt. */
+  all: () => Learning[];
   /** Any learning whatever its status. */
   get: (id: number) => Learning | undefined;
   /** The status is explicit: nothing is saved active by accident. */
@@ -70,6 +72,7 @@ export const createLearningsRepo = (db: DbClient): LearningsRepo => {
   const pendingStmt = db.query<Row, []>(
     "SELECT * FROM learnings WHERE status = 'pending' ORDER BY created_at ASC, id ASC",
   );
+  const allStmt = db.query<Row, []>("SELECT * FROM learnings ORDER BY created_at ASC, id ASC");
   const getStmt = db.query<Row, { $id: number }>("SELECT * FROM learnings WHERE id = $id");
   const insertStmt = db.query(
     `INSERT INTO learnings (content, created_by, created_at, status, source_channel, source_thread_ts, source_run_id, scope_channels)
@@ -97,6 +100,7 @@ export const createLearningsRepo = (db: DbClient): LearningsRepo => {
   return {
     list: () => listStmt.all().map(toLearning),
     pending: () => pendingStmt.all().map(toLearning),
+    all: () => allStmt.all().map(toLearning),
     get: (id) => {
       const row = getStmt.get({ $id: id });
       return row ? toLearning(row) : undefined;

@@ -45,6 +45,7 @@ import { BUG_REPORT_COMMANDS } from "./commands/bugReport.ts";
 import { ERRANDS_COMMANDS } from "./commands/errands.ts";
 import { REVIEW_COMMANDS, runReview } from "./commands/review.ts";
 import type { ReviewIdentity } from "../domain/reviewIdentity.ts";
+import { HARVEST_COMMANDS } from "./commands/harvest.ts";
 import { INNER_CHILD_COMMANDS } from "./commands/innerChild.ts";
 import { RUNTIME_COMMANDS } from "./commands/runtime.ts";
 import { SLACK_COMMANDS } from "./commands/slack.ts";
@@ -124,6 +125,7 @@ export const COMMANDS: readonly CommandDef[] = [
   ...ERRANDS_COMMANDS,
   ...REVIEW_COMMANDS,
   ...INNER_CHILD_COMMANDS,
+  ...HARVEST_COMMANDS,
   ...RUNTIME_COMMANDS,
   ...SLACK_COMMANDS,
   ...SLACK_METHODS_COMMANDS,

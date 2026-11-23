@@ -22,9 +22,11 @@ export type TurnEntry = {
   readonly error: string;
   readonly startedAt: number;
   readonly endedAt: number;
+  /** A person wrote the request: the bot did not start the turn itself (a trigger, an unprompted nudge, an auto-continue). False for rows from before it was recorded. */
+  readonly typed: boolean;
 };
 
-export type NewTurn = Omit<TurnEntry, "id">;
+export type NewTurn = Omit<TurnEntry, "id" | "typed"> & { readonly typed?: boolean };
 
 type Row = {
   id: number;
@@ -38,6 +40,7 @@ type Row = {
   error: string;
   started_at: number;
   ended_at: number;
+  typed: number;
 };
 
 const asOutcome = (v: string): TurnOutcome =>
@@ -55,6 +58,7 @@ const toEntry = (r: Row): TurnEntry => ({
   error: r.error,
   startedAt: r.started_at,
   endedAt: r.ended_at,
+  typed: r.typed === 1,
 });
 
 export type TurnLogRepo = {
@@ -76,8 +80,8 @@ export type TurnLogRepo = {
 export const createTurnLogRepo = (db: DbClient): TurnLogRepo => {
   const insertStmt = db.query(
     `INSERT INTO turn_log
-       (run_id, channel_id, thread_ts, slack_user_id, kind, request, outcome, error, started_at, ended_at)
-     VALUES ($runId, $channelId, $threadTs, $slackUserId, $kind, $request, $outcome, $error, $startedAt, $endedAt)`,
+       (run_id, channel_id, thread_ts, slack_user_id, kind, request, outcome, error, started_at, ended_at, typed)
+     VALUES ($runId, $channelId, $threadTs, $slackUserId, $kind, $request, $outcome, $error, $startedAt, $endedAt, $typed)`,
   );
   const sinceStmt = db.query<Row, [number, number]>(
     "SELECT * FROM turn_log WHERE ended_at >= ? ORDER BY ended_at DESC LIMIT ?",
@@ -111,6 +115,7 @@ export const createTurnLogRepo = (db: DbClient): TurnLogRepo => {
         $error: turn.error.slice(0, 500),
         $startedAt: turn.startedAt,
         $endedAt: turn.endedAt,
+        $typed: turn.typed ? 1 : 0,
       });
     },
     since: (since, limit = 50) => sinceStmt.all(since, Math.max(1, limit)).map(toEntry),
