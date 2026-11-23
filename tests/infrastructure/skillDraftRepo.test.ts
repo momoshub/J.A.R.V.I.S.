@@ -63,3 +63,21 @@ describe("skill drafts", () => {
     expect(createSkillDraftRepo(old).add(draft("a-skill"), 1).id).toBe(1);
   });
 });
+
+describe("turn log: typed by a person", () => {
+  test("is recorded per turn, false when not said, and rows from before are false", async () => {
+    const { createTurnLogRepo } = await import("../../src/infrastructure/db/turnLogRepo.ts");
+    const db = openDatabase(":memory:");
+    const repo = createTurnLogRepo(db);
+    const base = { runId: "r", channelId: "C1", threadTs: "1", slackUserId: "U1", kind: "chat", request: "hi", outcome: "ok" as const, error: "", startedAt: 1, endedAt: 2 };
+    repo.add({ ...base, typed: true });
+    repo.add(base);
+    expect(repo.since(0).map((t) => t.typed).sort()).toEqual([false, true]);
+    db.exec("DROP TABLE turn_log");
+    db.exec("CREATE TABLE turn_log (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL DEFAULT '', channel_id TEXT NOT NULL, thread_ts TEXT NOT NULL DEFAULT '', slack_user_id TEXT NOT NULL DEFAULT '', kind TEXT NOT NULL DEFAULT 'chat', request TEXT NOT NULL DEFAULT '', outcome TEXT NOT NULL DEFAULT 'ok', error TEXT NOT NULL DEFAULT '', started_at INTEGER NOT NULL, ended_at INTEGER NOT NULL)");
+    db.exec("INSERT INTO turn_log (channel_id, started_at, ended_at) VALUES ('C1', 1, 2)");
+    db.exec("PRAGMA user_version = 46");
+    migrate(db);
+    expect(createTurnLogRepo(db).since(0)[0]?.typed).toBe(false);
+  });
+});

@@ -77,7 +77,7 @@ Two kinds of proposal:
 1. A durable FACT the people settled: a decision, a standing preference, how this team does something, a fact about their setup. Written as one self-contained sentence, true next month and in any conversation. NOT a one-off request, a mood, something being debugged right now, a guess, or something one person floated and nobody settled.
 2. A SKILL: a multi-step procedure that was worked out in these turns and is likely to come up again, or a correction to an existing skill (listed below) that a person made. A skill is a short SKILL.md: frontmatter with "name" and a one-line "description" saying WHEN to use it, then the steps. Under ${MAX_SKILL_CHARS} characters. For a correction, send the whole corrected file under the existing name.
 
-Never include: secrets, tokens, passwords, keys, emails, phone numbers, Slack ids or any personal data about a person; anything about only one private conversation unless it is plainly about that conversation's own channel; anything already in the known lists below.
+Every conversation shown is a public channel. Never include: secrets, tokens, passwords, keys, emails, phone numbers, Slack ids or any personal data about a person; anything already in the known lists below.
 
 Be strict. Most batches hold nothing worth keeping and the right answer is []. A weak proposal costs the owner's attention.
 
@@ -299,10 +299,12 @@ export const draftCore = (shown: string): string => quoted(shown);
  * The DM the owner decides on. The draft is escaped and quoted line by line, so
  * it cannot render a link, a mention or a code fence.
  */
-export const draftText = (d: { id: number; name: string; patch: boolean; shown: string; sourceLink?: string }): string =>
+export const draftText = (d: { id: number; name: string; patch: boolean; shown: string; quote: string; sourceLink?: string }): string =>
   [
     `:bulb: My review of recent conversations proposes ${d.patch ? "a change to the skill" : "a new skill"} \`${d.name}\` (skill draft #${d.id}). It is NOT part of my skills until you approve it:`,
     draftCore(d.shown),
+    // The citation is verified against the person's message; whether the draft follows from it is for the owner to judge.
+    `The words of a person it cites:\n${quoted(clip(d.quote, 200))}`,
     d.patch
       ? "Approve writes this change into the skill. Reject discards it and I will not propose it again."
       : "Approve adds this skill, to be read when a conversation is about it. Reject discards it and I will not propose it again.",

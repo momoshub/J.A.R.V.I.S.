@@ -19,12 +19,15 @@
  *   DM; Approve writes it into the adapter the way a hand edit does, Reject is
  *   remembered by name so it is not raised again
  *
- * The guards are code, not the prompt (see `domain/harvest.ts`): a proposal must
- * quote a person's own words from the turn it cites, so what the bot merely read
- * can never be a source; a secret or personal data drops it; a private source
- * (or one Slack will not describe) can only produce a fact scoped to its own
- * channel and never a skill; a daily cap, a per-batch cap and a pending cap
- * bound the owner's attention.
+ * The guards are code, not the prompt (see `domain/harvest.ts`): only turns a
+ * person typed are read (`turn_log.typed`, set from the inbound flags, never
+ * guessed from the text), and only in PUBLIC channels - a private channel, a DM
+ * or a channel Slack will not describe is never sent to the model, so its words
+ * cannot reach a proposal that loads elsewhere; a proposal must cite a turn
+ * and quote that person's words (the citation is real, the claim built on it is
+ * the owner's to judge, so the notice shows the quote); a secret or personal
+ * data drops it; a daily cap, a per-batch cap and a pending cap bound the
+ * owner's attention.
  */
 import {
   HARVEST_APPROVE_ACTION,
@@ -62,7 +65,7 @@ import { noticeFingerprint } from "../domain/noticeFingerprint.ts";
 import type { LearningsRepo } from "../infrastructure/db/learningsRepo.ts";
 import type { MessageRepo } from "../infrastructure/db/messageRepo.ts";
 import type { SkillDraft, SkillDraftRepo } from "../infrastructure/db/skillDraftRepo.ts";
-import type { TurnLogRepo } from "../infrastructure/db/turnLogRepo.ts";
+import type { TurnEntry, TurnLogRepo } from "../infrastructure/db/turnLogRepo.ts";
 import { type AdapterDeps, editAdapterFile } from "./adapterMemory.ts";
 import { CURSOR_MAX_AGE_MS, TRIAGE_MODEL } from "./innerChild.ts";
 import { logAndIgnore } from "./ignoredError.ts";
@@ -145,7 +148,7 @@ export const createLearningHarvest = (deps: HarvestDeps): LearningHarvest => {
     return during[during.length - 1]?.content ?? "";
   };
 
-  /** A public channel is the only source whose content may reach other channels. Anything else - a private channel, a DM, or one Slack will not describe - counts as private. */
+  /** Only a public channel is ever reviewed. Anything else - a private channel, a DM, or one Slack will not describe - is left out. */
   const publicCache = new Map<string, boolean>();
   const isPublic = async (channelId: string): Promise<boolean> => {
     const hit = publicCache.get(channelId);
@@ -167,8 +170,8 @@ export const createLearningHarvest = (deps: HarvestDeps): LearningHarvest => {
       return false;
     }
     if (known.has(normalise(text))) return false;
-    // A fact leaves its channel only from a public one, and only when the model says it holds everywhere.
-    const scope: LearningScope = (await isPublic(t.channelId)) && p.scope === "global" ? GLOBAL_SCOPE : [t.channelId];
+    // Only public turns were sent, so a global fact is allowed when the model says it holds everywhere.
+    const scope: LearningScope = p.scope === "global" ? GLOBAL_SCOPE : [t.channelId];
     const r = await proposeLearning(deps.learningApproval, text, HARVEST_SOURCE, { channel: t.channelId, threadTs: t.threadTs, runId: "" }, scope);
     if (!r.ok) {
       log(`fact not proposed: ${r.error}`);
@@ -178,13 +181,13 @@ export const createLearningHarvest = (deps: HarvestDeps): LearningHarvest => {
     return true;
   };
 
-  const askOwner = async (d: SkillDraft, shown: string): Promise<boolean> => {
+  const askOwner = async (d: SkillDraft, shown: string, quote: string): Promise<boolean> => {
     if (!deps.slack?.postDmInteractive) return false;
     const link = d.sourceChannel && d.sourceThreadTs ? await deps.slack.permalink?.(d.sourceChannel, d.sourceThreadTs).catch(logAndIgnore("harvest source permalink")) : undefined;
     const posted = await deps.slack
       .postDmInteractive(
         deps.ownerSlackId,
-        draftText({ id: d.id, name: d.name, patch: d.base !== undefined, shown, ...(link ? { sourceLink: link } : {}) }),
+        draftText({ id: d.id, name: d.name, patch: d.base !== undefined, shown, quote, ...(link ? { sourceLink: link } : {}) }),
         [
           { actionId: HARVEST_APPROVE_ACTION, label: "Approve", value: String(d.id), style: "primary" },
           { actionId: HARVEST_REJECT_ACTION, label: "Reject", value: String(d.id), style: "danger" },
@@ -198,7 +201,7 @@ export const createLearningHarvest = (deps: HarvestDeps): LearningHarvest => {
   };
 
   const proposeSkill = async (p: SkillProposal, t: HarvestTurn, now: number): Promise<boolean> => {
-    // A skill loads in every channel, so only a public source may write one.
+    // A skill loads in every channel: only a public source may write one (every turn sent was public; checked again).
     if (!(await isPublic(t.channelId))) {
       log("dropped a skill draft: its source is not a public channel");
       return false;
@@ -219,7 +222,7 @@ export const createLearningHarvest = (deps: HarvestDeps): LearningHarvest => {
       return false;
     }
     const d = deps.drafts.add({ fingerprint, name: p.name, content: p.content, base, sourceChannel: t.channelId, sourceThreadTs: t.threadTs }, now);
-    if (!(await askOwner(d, shown))) {
+    if (!(await askOwner(d, shown, p.quote))) {
       // Never leave a pending row the owner cannot see: it would block the name for ever.
       deps.drafts.discard(d.id);
       log(`skill draft ${p.name}: the owner DM did not go out`);
@@ -232,22 +235,25 @@ export const createLearningHarvest = (deps: HarvestDeps): LearningHarvest => {
   const harvest = async (now: number): Promise<void> => {
     // A channel can change kind between looks: ask again each time.
     publicCache.clear();
-    const cursor = deps.cursor.get();
-    // The first look starts from now, and a long pause is skipped, not caught up on.
-    if (cursor === undefined) {
+    const saved = deps.cursor.get();
+    // The first look starts from now. `harvest on` also resets the cursor to now, which is what keeps a switched-off period from being read.
+    if (saved === undefined) {
       deps.cursor.set(now);
       return;
     }
-    if (now - cursor > CURSOR_MAX_AGE_MS) {
-      log(`cursor ${new Date(cursor).toISOString()} is older than 6h, skipping the backlog`);
-      deps.cursor.set(now);
-      return;
-    }
+    // A cursor that sat unmoved (too few turns to review) is read from at most 6h back, never all the way: quiet hours pile up
+    // for the next look without a slow bot never being reviewed, and a long pause is never caught up on.
+    const cursor = Math.max(saved, now - CURSOR_MAX_AGE_MS);
+    if (cursor > saved) log(`cursor ${new Date(saved).toISOString()} is older than 6h, reading from 6h ago`);
     if (proposedSince(now - DAY_MS) >= perDay) return;
 
-    const entries = deps.turns
-      .since(cursor + 1, HARVEST_BATCH)
-      .filter((t) => t.endedAt > cursor && t.kind === "chat" && t.outcome === "ok" && !!t.threadTs && writtenByPerson(t.request) && !deps.skip?.(t.channelId, t.threadTs));
+    const entries: TurnEntry[] = [];
+    for (const t of deps.turns.since(cursor + 1, HARVEST_BATCH)) {
+      if (t.endedAt <= cursor || !t.typed || t.kind !== "chat" || t.outcome !== "ok" || !t.threadTs) continue;
+      if (!writtenByPerson(t.request) || deps.skip?.(t.channelId, t.threadTs)) continue;
+      // A private source never reaches the model: one call holds public and private turns together, and a proposal built from the private ones could cite a public turn.
+      if (await isPublic(t.channelId)) entries.push(t);
+    }
     // Too few to be worth a call: they stay past the cursor and join the next look.
     if (entries.length < minTurns) return;
     // Moved on before the model runs: a review that keeps failing must not pay for the same batch every run.

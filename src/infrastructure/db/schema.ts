@@ -118,6 +118,7 @@ export const migrate = (db: Database): void => {
   migrateLinkedThreads(db);
   migrateLearningScope(db);
   migrateSkillDrafts(db);
+  migrateTurnTyped(db);
 };
 
 /**
@@ -1418,4 +1419,22 @@ const migrateSkillDrafts = (db: Database): void => {
     user_version: 0,
   };
   if (user_version < 46) db.exec("PRAGMA user_version = 46;");
+};
+
+/**
+ * Migration v47: whether a person wrote a turn's request.
+ *
+ * `typed` is set when `respond` logs the turn, from the flags the inbound
+ * message carries (not started by the bot: no trigger, not unprompted, not an
+ * auto-continue), because the text alone cannot say: a hand-back or a nudge
+ * the bot wrote to itself reads like any message. Rows from before it are 0,
+ * so the learning harvest never reviews them.
+ */
+const migrateTurnTyped = (db: Database): void => {
+  const cols = db.query<{ name: string }, []>("PRAGMA table_info(turn_log)").all().map((c) => c.name);
+  if (!cols.includes("typed")) db.exec("ALTER TABLE turn_log ADD COLUMN typed INTEGER NOT NULL DEFAULT 0");
+  const { user_version } = db.query<{ user_version: number }, []>("PRAGMA user_version").get() ?? {
+    user_version: 0,
+  };
+  if (user_version < 47) db.exec("PRAGMA user_version = 47;");
 };

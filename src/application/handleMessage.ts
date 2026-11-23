@@ -367,6 +367,13 @@ export type InboundMessage = {
 /** The message was typed by the person it is from: not started by the bot (`trigger`, `unprompted`, `autoContinue`), not a followed thread's chatter. */
 export const typedByPerson = (m: InboundMessage): boolean => !m.trigger && !m.unprompted && !m.autoContinue && !m.following && !m.batched;
 
+/**
+ * A person wrote this message's text: the bot did not start the turn itself (`trigger`, `unprompted`, `autoContinue`).
+ * Looser than `typedByPerson`: a followed thread's chatter and a queued batch are still people's words. Recorded on the turn log,
+ * because the text alone cannot say (a hand-back the bot wrote to itself reads like any message).
+ */
+export const writtenByPeople = (m: InboundMessage): boolean => !m.trigger && !m.unprompted && !m.autoContinue;
+
 /** What a turn says when the model said nothing. A placeholder, not an answer. */
 export const EMPTY_REPLY_FALLBACK = "I do not have anything useful to add there.";
 

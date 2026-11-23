@@ -149,7 +149,7 @@ no classes.
   thread as a turn that answers it with `orca orchestration reply`, once per
   question (`orca_questions`; in a workflow thread on the worker's lane via
   `workerLane`, since the front cannot run `orca`); `workflowContinue` resumes long workflows after a restart;
-  `learningHarvest` (off unless `learning_harvest` is on) reviews recent person-written turns every 30 minutes on a small model and PROPOSES facts (through `learningApproval`) and skill drafts (`skill_drafts`, its own Approve / Reject DM, written through `editAdapterFile` on approval): every proposal must quote a person's own words, a private source is channel-scoped or dropped, a daily cap and dedupe bound it, and nothing is saved without the owner's press;
+  `learningHarvest` (off unless `learning_harvest` is on) reviews recent person-written turns every 30 minutes on a small model and PROPOSES facts (through `learningApproval`) and skill drafts (`skill_drafts`, its own Approve / Reject DM, written through `editAdapterFile` on approval): only public-channel turns a person typed (`turn_log.typed`) are reviewed and every proposal must quote that person's own words, a daily cap and dedupe bound it, and nothing is saved without the owner's press;
   `innerChild` watches the bot's own conversations (triage on a small model every 30 minutes) and queues fixes to itself - run only when `inner_child_autofix` is on, never files from or fixes a thread whose bug report the owner decided (`bug_reports`: rejected is closed, approved runs its own fix) and holds the autofix while one is still pending -
   and steers a session whose reply drifted from the voice rules (a private
   nudge to re-check that reply, logged in the drift log channel and
@@ -299,7 +299,7 @@ No I/O, no frameworks. Just data shapes and functions of their inputs.
 - `workerUsage.ts` - an Orca worker's tokens summed from its Claude Code transcript (deduped per message) and priced per model (the one price table)
 - `offlineAlarm.ts` - the dead man's switch notice and its back-online edit
 - `systemStatus.ts`, `orcaStatus.ts`, `systemBlocks.ts` - `sys`: the host verdict and numbers, Orca's runtime/runs/tasks parsed from its CLI JSON and counted, and the Block Kit message (header, fields, trend, Orca table) with the plain report as its fallback
-- `harvest.ts` - the learning harvest's prompt, how its answer is read and every check on a proposal (quote grounded in a person's words, secrets and personal data, skill draft limits, the line diff, the owner's notice text)
+- `harvest.ts` - the learning harvest's prompt, how its answer is read and every check on a proposal (person-typed turns only, quote grounded in a person's words, secrets and personal data, skill draft limits, the line diff, the owner's notice text)
 - `innerChild.ts`, `voiceDrift.ts` - the self-review triage, and the cheap voice-drift check, nudge and log lines
 - `githubApp.ts` - webhook signature, owner allowlist, trigger detection and what the GitHub App says
 - `*Prompt.ts` - prompts for the preset tasks (quick-review, ticket, investigate, read, note, workflow, ...)

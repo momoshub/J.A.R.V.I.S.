@@ -741,7 +741,7 @@ default: `harvest on` (the `learning_harvest` setting) starts it, `harvest off`
 stops it, `harvest` shows whether it is on, how many proposals it raised in the
 last day and how many skill drafts wait. Changing it needs `settings:manage`; the
 status is open to everyone. `harvest on` moves the cursor to now, so what was
-said while it was off is never read, and a cursor older than 6 hours jumps to now.
+said while it was off is never read; a cursor left unmoved (a quiet workspace) is read from at most 6 hours back, never further.
 
 Every 30 minutes, once at least 6 turns people wrote have ended since the cursor,
 one small-model call (`claude-haiku-4-5-20251001`; the `learning_harvest_model`
@@ -761,15 +761,23 @@ setting changes it) reads the batch and may propose:
 
 What keeps it safe is checked in code, not asked of the model:
 
-- **Only what people wrote is a source.** Every proposal must quote words copied
-  from a person's own message in the turn it cites, and the quote is verified
-  against that message. Text the bot merely read (a tool result, a web page, a
-  file, another bot) is never a source, so injecting a "fact" into a page cannot
-  reach the owner's approval. The bot's own prompts (nudges, loops, watch
-  hand-backs) are not reviewed.
-- **Private stays private.** A proposal from a private channel, a DM, or a
-  channel Slack will not describe is channel-scoped (a fact) or dropped (a
-  skill, which loads everywhere), whatever the model said.
+- **Only what people typed is read.** The turn log records, from the inbound
+  message's own flags (never the text), whether a person typed a turn; a nudge,
+  a loop, a watch or background hand-back, an unprompted turn and an
+  auto-continue are never reviewed, and neither are failed turns. Every proposal
+  must cite a turn and quote words from that person's message, verified against
+  it, and the quote is shown in the owner's notice. What is guaranteed is that
+  the citation is real, not that the proposal follows from it: a person who asks
+  the bot to read a page can still have a page-injected suggestion reach the
+  owner's approval, which is exactly why the owner decides, with the quote and
+  the source thread in front of them. Text the bot read is shown to the model
+  only as the bot's answer, labelled as context.
+- **Private stays private.** Only public channels are reviewed. A private
+  channel, a DM, a group DM or a channel Slack will not describe is never sent to
+  the model, so its words cannot end up in a proposal that loads in another
+  channel (one call holds many turns, and a proposal citing a public turn could
+  otherwise carry private content). A fact is channel-scoped unless the model
+  says it holds everywhere; a skill is from a public source by construction.
 - **No secrets or personal data.** A proposal with a token, key, password, email,
   phone number or Slack id is dropped.
 - **Bounded.** At most 4 proposals a day (facts and skill drafts together), 2 per

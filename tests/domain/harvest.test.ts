@@ -167,12 +167,15 @@ describe("skillFingerprint", () => {
 
 describe("what the owner reads", () => {
   test("the draft is quoted and escaped, so it renders no link, mention or fence", () => {
-    const text = draftText({ id: 3, name: "x-y", patch: false, shown: "see <https://evil.example|here> ``` <!channel>" });
+    const text = draftText({ id: 3, name: "x-y", patch: false, shown: "see <https://evil.example|here> ``` <!channel>", quote: "we rotate logs this way" });
     expect(text).toContain("skill draft #3");
     expect(text).toContain("NOT part of my skills until you approve it");
     expect(text).not.toContain("<https://evil.example");
     expect(text).not.toContain("<!channel>");
     expect(text).toContain("&lt;!channel&gt;");
+    // the person's words it cites are shown, so the owner can judge where it came from
+    expect(text).toContain("The words of a person it cites");
+    expect(text).toContain("we rotate logs this way");
   });
   test("a harvested learning says it came from the review, not from a person", () => {
     const text = approvalText(7, "The team ships on Thursdays", HARVEST_SOURCE);

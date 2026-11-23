@@ -23,7 +23,7 @@ import { isRestartCut, RESTART_STOPPER, type RunRegistry } from "./runRegistry.t
 import type { ThreadQueue } from "./threadQueue.ts";
 import type { PostedRef } from "./slackAdmin.ts";
 import type { TurnOutcome } from "../infrastructure/db/turnLogRepo.ts";
-import { handleMessage, type HandleMessageDeps, type HandleResult, type InboundMessage } from "./handleMessage.ts";
+import { handleMessage, writtenByPeople, type HandleMessageDeps, type HandleResult, type InboundMessage } from "./handleMessage.ts";
 import type { BackgroundAgentsPort, LlmStreamSink } from "./ports.ts";
 
 export type RespondDeps = HandleMessageDeps & Pick<FrontDeps, "workerCalls"> & {
@@ -158,6 +158,7 @@ export const respond = async (
           channelId: inbound.channelId,
           threadTs: inbound.threadTs ?? inbound.messageTs ?? "",
           slackUserId: inbound.slackUserId,
+          typed: writtenByPeople(inbound),
           kind: "chat",
           request: cleanInboundText(inbound.text),
           outcome,
