@@ -53,6 +53,7 @@ import type { WorkflowRepo } from "../../infrastructure/db/workflowRepo.ts";
 import type { CommandApprovalRepo } from "../../infrastructure/db/commandApprovalRepo.ts";
 import type { CloudwatchDeps } from "../cloudwatch.ts";
 import { SETTING_KEYS, type SettingsRepo } from "../../infrastructure/db/settingsRepo.ts";
+import type { WriteTarget } from "../../domain/writeTargets.ts";
 import { logAndIgnore } from "../ignoredError.ts";
 
 /** Neutral fallbacks; the real prefix/slash come from config (see index.ts). */
@@ -261,6 +262,11 @@ export type Context = {
   reply?: (text: string) => Promise<void>;
   /** True only for a call that came through the brain's run bridge with a turn ticket. */
   fromBrainRun: boolean;
+  /**
+   * Present only when that turn ticket says the owner's own message started the turn (the Slack ticket's owner bit): `named` is
+   * what that message named. `watch` reads it to let the watch it creates write there; nothing else may.
+   */
+  ownerTurn?: { readonly named: readonly WriteTarget[] };
   /** Names of the trivial commands. Handed in so a group never imports the registry back. */
   trivialCommands: readonly string[];
   /** The stored roles (or the seeded defaults) this command is judged against. */
@@ -422,3 +428,19 @@ export const botNameOf = (deps: CommandDeps): string =>
 
 /** The allowlist as a record, role policies NOT applied - for targets, never actors. */
 export const recordsOf = (deps: CommandDeps): UserRepo => deps.rawUsers ?? deps.users;
+
+/** The id of the channel with this name, from the conversations the bot can list (a name is looked up, never guessed). Throws when the list cannot be read. */
+export const channelIdByName = async (
+  list: NonNullable<SlackAdminPort["listConversationPage"]>,
+  name: string,
+): Promise<string | undefined> => {
+  let cursor: string | undefined;
+  for (let page = 0; page < 30; page++) {
+    const res = await list("channels", cursor);
+    const found = res.conversations.find((c) => c.name.toLowerCase() === name)?.id;
+    if (found) return found;
+    cursor = res.nextCursor;
+    if (!cursor) break;
+  }
+  return undefined;
+};

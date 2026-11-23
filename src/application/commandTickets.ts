@@ -20,6 +20,7 @@
  * enough that only a loop hits it, and a spent ticket says so in those words
  * rather than looking like an expired one.
  */
+import type { WriteTarget } from "../domain/writeTargets.ts";
 import type { Clock } from "./ports.ts";
 
 /**
@@ -42,6 +43,15 @@ export type TicketContext = {
   threadTs?: string;
   /** The message that started the turn, so a command it runs can point back at it. */
   messageTs?: string;
+  /**
+   * The owner's own message started this turn (the same decision that gives its Slack ticket the owner bit, made by the bot from the
+   * inbound event, never by the brain). Only `watch` reads it, to let a watch it creates write where the turn named.
+   */
+  owner?: true;
+  /** With `owner`: the channels and threads the owner's own message named (links, mentions, ids). */
+  named?: readonly WriteTarget[];
+  /** A watch started this turn (`trigger: "watch"`, set by the bot's own watcher): the run bridge refuses owner-only commands in it. */
+  watch?: true;
 };
 
 /**
@@ -95,7 +105,14 @@ export const createCommandTickets = (
     if (spend) entry.used += 1;
     return {
       ok: true,
-      ctx: { actor: entry.actor, channel: entry.channel, threadTs: entry.threadTs, messageTs: entry.messageTs },
+      ctx: {
+        actor: entry.actor,
+        channel: entry.channel,
+        threadTs: entry.threadTs,
+        messageTs: entry.messageTs,
+        ...(entry.owner ? { owner: true as const, named: entry.named ?? [] } : {}),
+        ...(entry.watch ? { watch: true as const } : {}),
+      },
       left: Math.max(0, uses - entry.used),
     };
   };

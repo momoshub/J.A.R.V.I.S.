@@ -32,6 +32,7 @@ import {
 import { decodeGate, type GateSpec } from "../domain/ciGate.ts";
 import type { Watch, WatchRepo } from "../infrastructure/db/watchRepo.ts";
 import type { InternalKind } from "../domain/internalMessages.ts";
+import { grantNote, type WatchGrant } from "../domain/writeTargets.ts";
 import type { Clock } from "./ports.ts";
 import { logAndIgnore } from "./ignoredError.ts";
 
@@ -71,6 +72,8 @@ export type WatcherDeps = {
     unprompted?: boolean;
     /** What started it, for the reply's footer. */
     trigger?: InternalKind;
+    /** The watch was set in the owner's turn with named write targets: the turn may write there, nowhere else outside its thread. */
+    watchGrant?: WatchGrant;
   }) => Promise<unknown>;
   /** Runs the rows that guard a PR's CI; without it such a row is settled failed. */
   gate?: WatchGate;
@@ -154,13 +157,17 @@ export const createWatcher = (deps: WatcherDeps): Watcher => {
         Promise.resolve()
       ).catch(logAndIgnore("watch resume-failed notice"));
     };
+    // Only a watch the owner created in their own turn, and only when it named somewhere to write.
+    const grant: WatchGrant | undefined =
+      w.createdBy && w.writeTargets.length > 0 ? { watchId: w.id, createdBy: w.createdBy, targets: w.writeTargets } : undefined;
     try {
       void deps
         .runTurn({
           channelId: w.channelId,
           threadTs: w.threadTs,
           slackUserId: w.slackUserId,
-          text,
+          text: grant ? `${text}\n\n${grantNote(w.id, grant.targets)}` : text,
+          ...(grant ? { watchGrant: grant } : {}),
           // The session that set the watch holds the job; a restart in between
           // (shipping a feature, say) must not hand it to a cold turn.
           keepSession: true,

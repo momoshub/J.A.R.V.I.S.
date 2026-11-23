@@ -446,3 +446,66 @@ describe("methods the owner added", () => {
     expect(refuseAsRead("conversations.members")).toBeUndefined();
   });
 });
+
+describe("a fired watch's grant outside the turn's channel", () => {
+  const TS = "1787122692.303399";
+  const grant = (targets: { channel: string; threadTs?: string }[]) => ({
+    channel: "C0TEST00001",
+    threadTs: "1700000000.000100",
+    grant: { watchId: 12, createdBy: "U0OWNER001", targets },
+  });
+  const wide = grant([{ channel: "C0TEAM00002" }]);
+  const thread = grant([{ channel: "C0TEAM00001", threadTs: TS }]);
+
+  test("a post, a reaction and an upload completion into a named target go through, marked with the watch id", () => {
+    const post = checkSlackCall("chat.postMessage", { channel: "C0TEAM00002", text: "x" }, wide);
+    expect(post).toMatchObject({ ok: true, crossChannel: true, viaWatch: 12 });
+    // the turn's own thread ts means nothing over there: it lands at the top level
+    expect(post.ok && post.params.thread_ts).toBeUndefined();
+    expect(checkSlackCall("reactions.add", { channel: "C0TEAM00002", timestamp: "1.1", name: "eyes" }, wide)).toMatchObject({ ok: true, viaWatch: 12 });
+    expect(checkSlackCall("files.completeUploadExternal", { channel_id: "C0TEAM00002", files: "[]" }, wide)).toMatchObject({ ok: true, viaWatch: 12 });
+  });
+
+  test("the same watch writing to a channel it did not name is refused", () => {
+    for (const [method, params] of [
+      ["chat.postMessage", { channel: "C0OTHER0001", text: "x" }],
+      ["reactions.add", { channel: "C0OTHER0001", timestamp: "1.1", name: "eyes" }],
+      ["files.completeUploadExternal", { channel_id: "C0OTHER0001", files: "[]" }],
+    ] as const) {
+      const call = checkSlackCall(method, params, wide);
+      expect(call.ok).toBe(false);
+      if (!call.ok) {
+        expect(call.status).toBe(403);
+        expect(call.error).toContain("channel_not_allowed");
+        expect(call.error).toContain("watch #12");
+      }
+    }
+  });
+
+  test("a user id is no target, even when a hand-edited grant lists it", () => {
+    expect(checkSlackCall("chat.postMessage", { channel: "U0USER00001", text: "x" }, grant([{ channel: "U0USER00001" }])).ok).toBe(false);
+  });
+
+  test("it is not the owner: chat.update, added methods and the turn's own thread stay as for any other turn", () => {
+    expect(checkSlackCall("chat.update", { channel: "C0TEAM00002", ts: "1.1", text: "x" }, wide).ok).toBe(false);
+    const extra: ExtraSlackMethods = [{ method: "pins.add", kind: "write", channelParam: "channel" }];
+    expect(checkSlackCall("pins.add", { channel: "C0TEAM00002", timestamp: "1.1" }, wide, undefined, extra).ok).toBe(false);
+    // the turn's own channel works as ever, and defaults to its thread
+    expect(checkSlackCall("chat.postMessage", { channel: "C0TEST00001", text: "x" }, wide)).toMatchObject({ ok: true, params: { thread_ts: "1700000000.000100" } });
+    expect(checkSlackCall("chat.postMessage", { channel: "C0TEAM00002", text: "x" }, wide)).not.toHaveProperty("ownMessageIn");
+  });
+
+  test("a thread target holds the write to that thread", () => {
+    expect(checkSlackCall("chat.postMessage", { channel: "C0TEAM00001", thread_ts: TS, text: "x" }, thread)).toMatchObject({ ok: true, viaWatch: 12, params: { thread_ts: TS } });
+    for (const params of [{ channel: "C0TEAM00001", text: "x" }, { channel: "C0TEAM00001", thread_ts: TOP_LEVEL_THREAD, text: "x" }, { channel: "C0TEAM00001", thread_ts: "1.1", text: "x" }]) {
+      expect(checkSlackCall("chat.postMessage", params, thread).ok).toBe(false);
+    }
+  });
+
+  test("a turn with no grant and no owner bit keeps the channel rule, and the owner bit wins over a grant", () => {
+    expect(checkSlackCall("chat.postMessage", { channel: "C0TEAM00002", text: "x" }, { channel: "C0TEST00001" }).ok).toBe(false);
+    const both = checkSlackCall("chat.postMessage", { channel: "C0OTHER0002", text: "x" }, { ...wide, owner: true });
+    expect(both).toMatchObject({ ok: true, crossChannel: true });
+    expect(both).not.toHaveProperty("viaWatch");
+  });
+});

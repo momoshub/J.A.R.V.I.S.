@@ -8,6 +8,7 @@
 import type { PromptMessage } from "../domain/types.ts";
 import type { ToolPolicy } from "../domain/toolPolicy.ts";
 import type { BackgroundLaunch, BackgroundStopResult } from "../domain/threadBackground.ts";
+import type { WatchGrant } from "../domain/writeTargets.ts";
 
 /** An incremental event produced while the model is generating a reply. */
 export type LlmStreamEvent =
@@ -78,6 +79,11 @@ export type BillingContext = {
    * only an owner-started turn gets the owner's cross-channel Slack writes.
    */
   readonly ownMessage?: true;
+  /**
+   * Set only by a fired watch the owner created in their own turn: where it may write (`domain/writeTargets.ts`). Never the owner
+   * bit; `slackTicketContext` turns it into a scoped grant on the Slack ticket.
+   */
+  readonly watchGrant?: WatchGrant;
 };
 
 /**

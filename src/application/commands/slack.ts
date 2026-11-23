@@ -12,7 +12,7 @@ import { frontKeyOf } from "../../domain/workflowFront.ts";
 import { workerStateOf } from "../workflowFront.ts";
 import { PERM } from "../../domain/permissions.ts";
 import { can } from "../../domain/roles.ts";
-import { type CommandDef, slackIdOf } from "./shared.ts";
+import { channelIdByName, type CommandDef, slackIdOf } from "./shared.ts";
 import { logAndIgnore } from "../ignoredError.ts";
 
 export const SLACK_COMMANDS: readonly CommandDef[] = [
@@ -365,14 +365,8 @@ Leaves a short note FOR another thread: what you posted there, why, the facts it
       if (target.kind === "name") {
         if (!deps.slack.listConversationPage) return `I cannot look channel names up here - use the channel id or a thread link. ${usage}`;
         let found: string | undefined;
-        let cursor: string | undefined;
         try {
-          for (let page = 0; page < 30 && !found; page++) {
-            const res = await deps.slack.listConversationPage("channels", cursor);
-            found = res.conversations.find((c) => c.name.toLowerCase() === target.name)?.id;
-            cursor = res.nextCursor;
-            if (!cursor) break;
-          }
+          found = await channelIdByName(deps.slack.listConversationPage, target.name);
         } catch (e) {
           return `Could not look up #${target.name}: ${e instanceof Error ? e.message : String(e)}`;
         }

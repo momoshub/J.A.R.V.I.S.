@@ -105,7 +105,7 @@ no classes.
   never a user id) and thread, and `chat.update` may also target a message in
   another channel, and only when the bot reads it back (`conversations.history`, else
   `conversations.replies`) and finds its own user id as the author; anything else
-  there is refused, and the call is logged with the channel and ts. A post or update that lands in the turn's own thread is also
+  there is refused, and the call is logged with the channel and ts. A turn a `watch` fired is not an owner's turn, but a watch the owner created in their own turn carries a grant instead (`domain/writeTargets.ts`): `chat.postMessage`, `reactions.add` and `files.completeUploadExternal` may name another channel only when it is one of the targets that turn named (`watch --to`, a link or channel in the request or in the owner's message), a thread target holds the write to that thread, everything else is refused as in any non-owner turn, and a grant write is logged with the watch id. The command door is shut the same way: the command ticket of a turn a watch fired says so (`watch: true`), and the run bridge refuses every owner-only command in it (`firedByWatch` in `dispatchCommand`). A post or update that lands in the turn's own thread is also
   noted per turn (`selfPosts`, keyed by the turn's run ticket carried on the Slack
   ticket) and the answer handed back carries a `jarvis_note` saying the closing reply
   will be dropped, and how to add something (`chat.update` the post, or put a
@@ -126,7 +126,7 @@ no classes.
   mode (`quiet` comes back to the brain, the rest is posted to the thread). A
   handed-off command that later fails says so in the thread, not only in the log.
 - **Timers.** `watcher` polls each due watch's predicate and hands the thread a
-  fresh turn when it is ready (a watch lasts up to 30 days: the 10s tick compares the clock to the stored `deadline_at`, never a `setTimeout`, so a long deadline cannot overflow; one that runs its full 30 days is expired with one last line and not re-armed; `watch worker <dispatchId>` polls an Orca worker
+  fresh turn when it is ready (a watch the owner created in their own turn (`watches.created_by`, `watches.write_targets`) hands the turn its write targets as a scoped grant on the Slack ticket, see the proxy paragraph above; a watch lasts up to 30 days: the 10s tick compares the clock to the stored `deadline_at`, never a `setTimeout`, so a long deadline cannot overflow; one that runs its full 30 days is expired with one last line and not re-armed; `watch worker <dispatchId>` polls an Orca worker
   through `bin/orca-worker-wait.ts` and says whether it finished, died - also
   when it stopped without reporting - or waits for input, or sits idle at its prompt for 15 minutes with no report - a finished or dead worker's hand-back also names the tokens
   and list-price cost its Claude transcript used, stored in

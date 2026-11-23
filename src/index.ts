@@ -1010,7 +1010,16 @@ const main = async () => {
         if (!user) throw new Error("whoever asked is not on the access list");
 
         // `fromBrainRun` is what lets `worker-ticket` mint: it exists only on this path, after a turn ticket redeemed.
-        const opts = { prefix: config.commandPrefix, slash: config.slashCommand, threadTs: ctx.threadTs, messageTs: ctx.messageTs, fromBrainRun: true };
+        const opts = {
+          prefix: config.commandPrefix,
+          slash: config.slashCommand,
+          threadTs: ctx.threadTs,
+          messageTs: ctx.messageTs,
+          fromBrainRun: true,
+          // The turn's own owner decision, from the ticket: it lets `watch` give a watch the targets the owner named.
+          ...(ctx.owner ? { ownerTurn: { named: ctx.named ?? [] } } : {}),
+          ...(ctx.watch ? { firedByWatch: true } : {}),
+        };
         return runForBrain({
           quiet: isQuietCommand(line),
           show: show === true,

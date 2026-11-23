@@ -7,6 +7,7 @@
  */
 import type { DbClient } from "./client.ts";
 import type { WatchState } from "../../domain/watch.ts";
+import { MAX_WRITE_TARGETS, parseTargets, serializeTargets, type WriteTarget } from "../../domain/writeTargets.ts";
 
 export type Watch = {
   readonly id: number;
@@ -23,9 +24,19 @@ export type Watch = {
   readonly errors: number;
   readonly lastError: string;
   readonly createdAt: number;
+  /**
+   * The owner's Slack id when the watch was created in the owner's own turn; empty for every other watch (and every row from
+   * before the column), which then fires exactly as it always did.
+   */
+  readonly createdBy: string;
+  /** Where the fired turn may write besides its own thread, as the owner's turn named them; empty means nowhere. */
+  readonly writeTargets: readonly WriteTarget[];
 };
 
-export type NewWatch = Omit<Watch, "id" | "state" | "attempts" | "errors" | "lastError" | "nextAt">;
+export type NewWatch = Omit<Watch, "id" | "state" | "attempts" | "errors" | "lastError" | "nextAt" | "createdBy" | "writeTargets"> & {
+  readonly createdBy?: string;
+  readonly writeTargets?: readonly WriteTarget[];
+};
 
 type Row = {
   id: number;
@@ -42,6 +53,8 @@ type Row = {
   errors: number;
   last_error: string;
   created_at: number;
+  created_by: string | null;
+  write_targets: string | null;
 };
 
 const STATES: readonly string[] = ["waiting", "fired", "expired", "cancelled", "failed"];
@@ -62,6 +75,8 @@ const toWatch = (r: Row): Watch => ({
   errors: r.errors,
   lastError: r.last_error,
   createdAt: r.created_at,
+  createdBy: r.created_by ?? "",
+  writeTargets: parseTargets(r.write_targets),
 });
 
 export type WatchRepo = {
@@ -88,9 +103,9 @@ export const createWatchRepo = (db: DbClient): WatchRepo => {
   const insertStmt = db.query(
     `INSERT INTO watches
        (channel_id, thread_ts, slack_user_id, note, check_cmd, every_ms, deadline_at, next_at,
-        state, attempts, errors, last_error, created_at, updated_at)
+        state, attempts, errors, last_error, created_at, updated_at, created_by, write_targets)
      VALUES ($channelId, $threadTs, $slackUserId, $note, $check, $everyMs, $deadlineAt, $nextAt,
-        'waiting', 0, 0, '', $at, $at)
+        'waiting', 0, 0, '', $at, $at, $createdBy, $writeTargets)
      RETURNING *`,
   );
   const dueStmt = db.query<Row, [number, number]>(
@@ -140,6 +155,9 @@ export const createWatchRepo = (db: DbClient): WatchRepo => {
           // only just been started, so asking immediately is a wasted probe.
           $nextAt: at + w.everyMs,
           $at: at,
+          // Targets only mean something with a creator: the grant is the owner's turn's, never anyone else's.
+          $createdBy: w.createdBy ?? "",
+          $writeTargets: w.createdBy ? serializeTargets((w.writeTargets ?? []).slice(0, MAX_WRITE_TARGETS)) : "",
         }) as Row,
       ),
     due: (now, limit = 20) => dueStmt.all(now, Math.max(1, limit)).map(toWatch),

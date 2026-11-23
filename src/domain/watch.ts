@@ -204,11 +204,13 @@ export type WatchArgs =
       readonly from?: string;
       /** `worker` only: a worker already known to wait on a person; only its end counts. */
       readonly pastWait?: boolean;
+      /** Each `--to <thread-link|#channel>`, as typed: where the fired turn may write (owner's turn only; the command resolves them). */
+      readonly to?: readonly string[];
     }
   | { readonly ok: false; readonly error: string };
 
 /**
- * `watch [--every 1m] [--until 45m] [-- <shell predicate>] <what to do next>`
+ * `watch [--every 1m] [--until 45m] [--to <thread-link|#channel>]... [-- <shell predicate>] <what to do next>`
  *
  * The predicate is separated by `--` because it is a whole command line, quotes
  * and pipes and all, and anything else would mangle it.
@@ -221,7 +223,7 @@ export const parseWatchArgs = (rest: string): WatchArgs => {
   let head = rest.trim();
   // A leading `--` means the predicate was given and the follow-up was not,
   // which is a watch with nothing to do when it comes good.
-  if (head.startsWith("--") && !/^--(every|interval|until|for|timeout)\b/i.test(head)) {
+  if (head.startsWith("--") && !/^--(every|interval|until|for|timeout|to)\b/i.test(head)) {
     return { ok: false, error: "say what to do once it is ready" };
   }
   const sep = head.indexOf(" -- ");
@@ -238,6 +240,7 @@ export const parseWatchArgs = (rest: string): WatchArgs => {
   let target: string | undefined;
   let from: string | undefined;
   let pastWait = false;
+  const to: string[] = [];
   for (let i = 0; i < words.length; i++) {
     const w = (words[i] ?? "").toLowerCase();
     // A named wait is the FIRST word, and takes the next one as its target.
@@ -256,6 +259,12 @@ export const parseWatchArgs = (rest: string): WatchArgs => {
     }
     if (kind === "reply" && w === "from" && words[i + 1]) {
       from = (words[++i] ?? "").replace(/^<@|>$/g, "").split("|")[0];
+      continue;
+    }
+    if (w === "--to") {
+      const target = words[++i] ?? "";
+      if (!target || target.startsWith("--")) return { ok: false, error: "`--to` needs a thread link or a channel (`#name`, `<#C123>` or its id)" };
+      to.push(target);
       continue;
     }
     if (w === "--every" || w === "--interval") {
@@ -298,6 +307,7 @@ export const parseWatchArgs = (rest: string): WatchArgs => {
     ...(target ? { target } : {}),
     ...(from ? { from } : {}),
     ...(pastWait ? { pastWait } : {}),
+    ...(to.length ? { to } : {}),
   };
 };
 

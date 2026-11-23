@@ -21,6 +21,11 @@
  * and refuses unless the bot wrote it. `channels` is refused everywhere, and every non-owner turn
  * keeps the turn-channel rule. The turn's own thread ts is never filled in for a cross-channel write.
  *
+ * One narrower exception: a turn a WATCH fired (the owner set it in their own turn, which named its targets) carries a grant
+ * (`writeTargets.ts`) instead of the owner bit. It opens `chat.postMessage`, `reactions.add` and `files.completeUploadExternal`
+ * into exactly the targets the watch names (a thread target holds the write to that thread), marked `crossChannel` with the watch
+ * id so the proxy logs it; `chat.update`, added methods and every other channel stay refused as in any non-owner turn.
+ *
  * The built-in lists below are the floor: settings cannot remove from them. The owner may add more
  * (`slack-methods`), each a read or a channel-scoped write, and they reach this file as an argument
  * (`ExtraSlackMethods`), so the policy stays pure. An extra never overrides a built-in's kind.
@@ -28,6 +33,7 @@
  * Pure: no I/O, so the whole policy is testable without Slack.
  */
 import { isChannelId } from "./slackLinks.ts";
+import { grantAllows, type WatchGrant } from "./writeTargets.ts";
 
 /** Methods that only read. `conversations.join` is here because reading a public channel the bot is not in needs it, and Slack refuses it for private ones. */
 const READ_METHODS: ReadonlySet<string> = new Set([
@@ -145,6 +151,8 @@ export type SlackScope = {
   readonly threadTs?: string;
   /** The owner started this turn with their own message or command (never merely billed to them). Nobody else's turn may write outside its channel. */
   readonly owner?: boolean;
+  /** A fired watch's grant: cross-channel writes into its named targets only, never the owner bit. Ignored when `owner` is set. */
+  readonly grant?: WatchGrant;
 };
 
 /**
@@ -168,6 +176,8 @@ export type SlackCallCheck =
       readonly ownMessageIn?: { readonly channel: string; readonly ts: string };
       /** Set on an owner's channel-scoped write (not `chat.update`) outside the turn's channel: the proxy logs it, method and target channel. */
       readonly crossChannel?: true;
+      /** Set with `crossChannel` when a watch's grant (not the owner bit) let it through: the id of that watch, for the log. */
+      readonly viaWatch?: number;
     }
   | { readonly ok: false; readonly status: 400 | 403; readonly error: string };
 
@@ -249,13 +259,20 @@ export const checkSlackCall = (
   }
   let ownMessageIn: { channel: string; ts: string } | undefined;
   let crossChannel = false;
+  let viaWatch: number | undefined;
   if (channelParam && target !== scope.channel) {
     // The owner's turn only, and a channel id named (not a `U...` user id, which would DM anyone; the shape `post` accepts). A chat.update also needs a message named (whose message it is gets checked
     // against Slack by the proxy); every other channel-scoped write (a post, an upload completion, a reaction, an extra) goes through.
-    if (!scope.owner || !target || !isChannelId(target) || (method === "chat.update" && !params.ts)) {
-      return refuse(403, `channel_not_allowed: ${method} may only act in the channel this turn runs in (${scope.channel})`);
+    const asOwner = !!scope.owner && !!target && isChannelId(target) && !(method === "chat.update" && !params.ts);
+    // A fired watch's grant: only the three grant methods, only into a target the watch named, never as the owner.
+    const asWatch = !scope.owner && !!scope.grant && !!target && isChannelId(target) && grantAllows(scope.grant.targets, method, target, params);
+    if (!asOwner && !asWatch) {
+      return refuse(403, `channel_not_allowed: ${method} may only act in the channel this turn runs in (${scope.channel})${scope.grant && !scope.owner ? `, or a target watch #${scope.grant.watchId} was set with` : ""}`);
     }
-    if (method === "chat.update") ownMessageIn = { channel: target, ts: params.ts as string };
+    if (asWatch) {
+      crossChannel = true;
+      viaWatch = scope.grant?.watchId;
+    } else if (method === "chat.update") ownMessageIn = { channel: target as string, ts: params.ts as string };
     else crossChannel = true;
   }
   // A notice's buttons decide things, and a notice can sit in a thread the turn runs in: a turn that could rewrite one
@@ -273,13 +290,13 @@ export const checkSlackCall = (
     if (given === TOP_LEVEL_THREAD) {
       const rest = { ...params };
       delete rest[threadParam];
-      return { ok: true, method, params: rest, ...(crossChannel ? { crossChannel } : {}) };
+      return { ok: true, method, params: rest, ...(crossChannel ? { crossChannel } : {}), ...(viaWatch !== undefined ? { viaWatch } : {}) };
     }
     // Not given (or blank) and the turn runs in a thread: the reply belongs there. An explicit thread_ts is kept as is.
     // Not for a post elsewhere (owner's turn): the turn's thread ts means nothing in another channel, so it lands at the top level.
     if (!given && scope.threadTs && !crossChannel) return { ok: true, method, params: { ...params, [threadParam]: scope.threadTs } };
   }
-  return { ok: true, method, params, ...(ownMessageIn ? { ownMessageIn } : {}), ...(crossChannel ? { crossChannel } : {}) };
+  return { ok: true, method, params, ...(ownMessageIn ? { ownMessageIn } : {}), ...(crossChannel ? { crossChannel } : {}), ...(viaWatch !== undefined ? { viaWatch } : {}) };
 };
 
 /** Calls worth a log line: everything that writes (extra writes too), and a join (visible to the whole channel). */

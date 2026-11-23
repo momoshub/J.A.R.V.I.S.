@@ -643,3 +643,22 @@ describe("worker-stop on purpose", () => {
     expect(watchesWorker("echo 'ctx_ab'", "ctx_ab")).toBe(false);
   });
 });
+
+describe("parseWatchArgs --to", () => {
+  test("each --to is kept as typed, in order, wherever the flag sits", () => {
+    const p = parseWatchArgs("--to <#C0TEAM00001|eng> --every 1m post the shots --to https://team.slack.com/archives/C0TEAM00002/p1787122692303399");
+    expect(p).toMatchObject({ ok: true, note: "post the shots", to: ["<#C0TEAM00001|eng>", "https://team.slack.com/archives/C0TEAM00002/p1787122692303399"] });
+  });
+
+  test("it works with a named wait and a shell check, and a watch without it carries no `to`", () => {
+    expect(parseWatchArgs("worker ctx_abc --to #eng post the result")).toMatchObject({ ok: true, kind: "worker", target: "ctx_abc", note: "post the result", to: ["#eng"] });
+    expect(parseWatchArgs("post it --to #eng -- test -f /tmp/x")).toMatchObject({ ok: true, check: "test -f /tmp/x", to: ["#eng"] });
+    expect(parseWatchArgs("post it")).not.toHaveProperty("to");
+  });
+
+  test("--to with nothing after it is an error, and a leading --to still reaches the note check", () => {
+    expect(parseWatchArgs("post it --to")).toMatchObject({ ok: false });
+    expect(parseWatchArgs("post it --to --every 1m")).toMatchObject({ ok: false });
+    expect(parseWatchArgs("--to #eng")).toMatchObject({ ok: false, error: "say what to do once it is ready" });
+  });
+});
