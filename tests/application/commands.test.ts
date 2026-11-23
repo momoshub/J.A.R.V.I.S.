@@ -3,6 +3,7 @@ import { createSettingsRepo } from "../../src/infrastructure/db/settingsRepo.ts"
 import { createUsageRepo } from "../../src/infrastructure/db/usageRepo.ts";
 import { createTurnLogRepo } from "../../src/infrastructure/db/turnLogRepo.ts";
 import { createWatchRepo } from "../../src/infrastructure/db/watchRepo.ts";
+import { createMuteRepo } from "../../src/infrastructure/db/muteRepo.ts";
 import { createFollowRepo } from "../../src/infrastructure/db/followRepo.ts";
 import { createReminderRepo } from "../../src/infrastructure/db/reminderRepo.ts";
 import { createWorkflowRepo } from "../../src/infrastructure/db/workflowRepo.ts";
@@ -252,7 +253,7 @@ describe("dispatchCommand", () => {
   test("an executer may follow, watch and curate learnings", async () => {
     const deps = build();
     const executer = actor({ slackId: "U0EXE0001", role: "executer" });
-    for (const line of ["learn a fact", "learnings", "relearn 999 hello", "unlearn 999", "follow list", "watch list"]) {
+    for (const line of ["learn a fact", "learnings", "relearn 999 hello", "unlearn 999", "follow list", "mute list", "watch list"]) {
       expect(await dispatchCommand(deps, executer, "C1", line)).not.toContain("needs *admin* access");
     }
   });
@@ -1544,5 +1545,86 @@ describe("snub", () => {
   test("it is admin and up", async () => {
     const out = await dispatchCommand(withSettings(), actor({ slackId: "U3", role: "pal" }), "C1", "snub list");
     expect(out).toContain("needs *admin*");
+  });
+});
+
+describe("mute", () => {
+  test("a thread can be muted from inside it, and unmuted again", async () => {
+    const deps = build();
+    const mutes = createMuteRepo(db);
+    const d = { ...deps, mutes };
+
+    const on = await dispatchCommand(d, actor(), "C7", "mute", { threadTs: "5.5" });
+    expect(on).toContain("muted");
+    expect(on).toContain("keeps running"); // work already bound to the thread is not stopped
+    expect(on).toContain("mute off");
+    expect(mutes.isMuted("C7", "5.5")).toBe(true);
+    expect(await dispatchCommand(d, actor(), "C7", "mute", { threadTs: "5.5" })).toContain("already muted");
+
+    expect(await dispatchCommand(d, actor(), "C7", "mute off", { threadTs: "5.5" })).toContain("unmuted");
+    expect(mutes.isMuted("C7", "5.5")).toBe(false);
+    expect(await dispatchCommand(d, actor(), "C7", "mute off", { threadTs: "5.5" })).toContain("not muted");
+  });
+
+  test("`mute on` mutes, and never lifts a mute", async () => {
+    const deps = build();
+    const mutes = createMuteRepo(db);
+    const d = { ...deps, mutes };
+    expect(await dispatchCommand(d, actor(), "C7", "mute on", { threadTs: "5.5" })).toContain("muted");
+    expect(mutes.isMuted("C7", "5.5")).toBe(true);
+    // typed again in the muted thread to make sure: still muted
+    expect(await dispatchCommand(d, actor(), "C7", "mute on", { threadTs: "5.5" })).toContain("already muted");
+    expect(mutes.isMuted("C7", "5.5")).toBe(true);
+  });
+
+  test("a link mutes that thread, and a reply's permalink names the thread", async () => {
+    const deps = build();
+    const mutes = createMuteRepo(db);
+    const d = { ...deps, mutes };
+    await dispatchCommand(d, actor(), "C1", "mute https://x.slack.com/archives/C9/p1793844324845749", { threadTs: "1.1" });
+    expect(mutes.isMuted("C9", "1793844324.845749")).toBe(true);
+    expect(mutes.isMuted("C1", "1.1")).toBe(false);
+    await dispatchCommand(d, actor(), "C1", "mute off <https://x.slack.com/archives/C9/p1793844324999999?thread_ts=1793844324.845749&cid=C9|link>");
+    expect(mutes.isMuted("C9", "1793844324.845749")).toBe(false);
+  });
+
+  test("outside a thread, with no link, it asks which one", async () => {
+    const deps = build();
+    const d = { ...deps, mutes: createMuteRepo(db) };
+    expect(await dispatchCommand(d, actor(), "C1", "mute")).toContain("Which thread?");
+    expect(await dispatchCommand(d, actor(), "C1", "mute not-a-link")).toContain("not a Slack thread link");
+  });
+
+  test("a mute outranks a follow: both lists say so, and the follow comes back with mute off", async () => {
+    const deps = build();
+    const mutes = createMuteRepo(db);
+    const follows = createFollowRepo(db);
+    const d = { ...deps, mutes, follows };
+    expect(await dispatchCommand(d, actor(), "C7", "mute list")).toContain("not muted in any thread");
+    await dispatchCommand(d, actor(), "C7", "follow", { threadTs: "5.5" });
+    expect(await dispatchCommand(d, actor(), "C7", "follow list")).not.toContain("muted");
+
+    const on = await dispatchCommand(d, actor(), "C7", "mute", { threadTs: "5.5" });
+    expect(on).toContain("follow stays saved");
+    expect(follows.isFollowed("C7", "5.5")).toBe(true);
+    const muteList = await dispatchCommand(d, actor(), "C7", "mute list");
+    expect(muteList).toContain("<#C7> `5.5`");
+    expect(muteList).toContain("muted by <@U0OWNER0001>");
+    expect(muteList).toContain("also followed, suppressed while muted");
+    expect(await dispatchCommand(d, actor(), "C7", "follow list")).toContain("muted, so I stay silent");
+    // following a muted thread says it will not be heard yet
+    expect(await dispatchCommand(d, actor(), "C7", "follow", { threadTs: "5.5" })).toContain("that thread is muted");
+
+    await dispatchCommand(d, actor(), "C7", "mute off", { threadTs: "5.5" });
+    expect(await dispatchCommand(d, actor(), "C7", "follow list")).not.toContain("muted");
+    expect(follows.isFollowed("C7", "5.5")).toBe(true);
+  });
+
+  test("it is executer and up, like follow", async () => {
+    const deps = build();
+    const d = { ...deps, mutes: createMuteRepo(db) };
+    const pal = actor({ slackId: "U0PAL0001", role: "pal" });
+    expect(await dispatchCommand(d, pal, "C1", "mute", { threadTs: "1.1" })).toContain("access");
+    expect(d.mutes.isMuted("C1", "1.1")).toBe(false);
   });
 });

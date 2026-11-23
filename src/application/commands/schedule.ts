@@ -1,4 +1,4 @@
-/** Things that run later or on their own: follow, watch, remind, loop, mindful. */
+/** Things that run later or on their own: follow, mute, watch, remind, loop, mindful. */
 
 import { type MessageRef, parseMessageLink, parsePostTarget } from "../../domain/slackLinks.ts";
 import { builtinCheck, humanDuration, parseWatchArgs } from "../../domain/watch.ts";
@@ -48,7 +48,11 @@ export const SCHEDULE_COMMANDS: readonly CommandDef[] = [
         const all = deps.follows.list(30);
         if (all.length === 0) return "I am not following any thread I did not start.";
         return all
-          .map((f) => `- <#${f.channelId}> \`${f.threadTs}\` - added by <@${f.addedBy}>`)
+          .map(
+            (f) =>
+              `- <#${f.channelId}> \`${f.threadTs}\` - added by <@${f.addedBy}>` +
+              (deps.mutes?.isMuted(f.channelId, f.threadTs) ? " - muted, so I stay silent there until `mute off`" : ""),
+          )
           .join("\n");
       }
 
@@ -71,7 +75,53 @@ export const SCHEDULE_COMMANDS: readonly CommandDef[] = [
       }
       deps.follows.add(target.channel, target.ts, actor.slackId, deps.clock());
       void rest;
+      if (deps.mutes?.isMuted(target.channel, target.ts)) {
+        return `saved the follow, but that thread is muted: I answer nobody there, tagged or not, until \`${prefix} mute off\` 🔇`;
+      }
       return `following that thread now - I will read every message in it and answer when I actually have something, without being tagged. Most of the time that means staying quiet: messages wait for a quiet moment and a cheap check first (\`follow_gate\`, \`follow_debounce_seconds\`, \`follow_debounce_max_seconds\`), then I answer the batch once. \`${prefix} follow off\` to stop 👀`;
+    },
+  },
+  {
+    name: "mute",
+    // The mirror image of `follow`: a standing decision about a shared room,
+    // and the one that silences the bot for everybody in it.
+    minRole: "executer",
+    usage: "[thread] [<thread link>] | off [<thread link>] | list",
+    summary: "turn me off for one thread: I answer nobody there, even when tagged, until `mute off`",
+    run: ({ deps, actor, args, prefix, threadTs, channelId }) => {
+      if (!deps.mutes) return "I cannot keep track of muted threads right now.";
+      const sub = (args[0] ?? "").toLowerCase();
+
+      if (sub === "list") {
+        const all = deps.mutes.list(30);
+        if (all.length === 0) return "I am not muted in any thread.";
+        return all
+          .map(
+            (m) =>
+              `- <#${m.channelId}> \`${m.threadTs}\` - muted by <@${m.mutedBy}>` +
+              (deps.follows?.isFollowed(m.channelId, m.threadTs) ? " - also followed, suppressed while muted" : ""),
+          )
+          .join("\n");
+      }
+
+      // `mute on` is `mute`: it must never lift the mute it reads as asking for.
+      const off = sub === "off" || sub === "stop" || sub === "no";
+      const linkArg = (off || sub === "on" ? args.slice(1) : args).find((a) => !FOLLOW_FILLER.has(a.toLowerCase())) ?? "";
+      const ref = linkArg ? followTarget(linkArg) : undefined;
+      if (linkArg && !ref) return `That is not a Slack thread link. \`${prefix} mute <thread link>\``;
+      const target = ref ?? (threadTs ? { channel: channelId, ts: threadTs } : undefined);
+      if (!target) return `Which thread? Run it in the thread, or \`${prefix} mute <thread link>\``;
+
+      if (off) {
+        return deps.mutes.unmute(target.channel, target.ts)
+          ? "unmuted - I answer in that thread again 🔊"
+          : "I was not muted in that thread.";
+      }
+      const added = deps.mutes.mute(target.channel, target.ts, actor.slackId, deps.clock());
+      const followed = deps.follows?.isFollowed(target.channel, target.ts)
+        ? " Its follow stays saved but is suppressed meanwhile."
+        : "";
+      return `${added ? "muted" : "already muted"} - I answer nobody in that thread now, even when tagged, and start nothing from their messages. Only \`${prefix} ...\` commands still run there, so \`${prefix} mute off\` works from inside it. Work I already have bound to the thread (a watch, a loop, a tell, a workflow step) keeps running.${followed} 🔇`;
     },
   },
   {

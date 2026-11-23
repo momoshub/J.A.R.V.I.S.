@@ -58,7 +58,7 @@ import {
   TOTP_VIEW,
 } from "../../application/totp.ts";
 import { tokenGuide, tokenHint, TOKEN_PREFIX } from "../../domain/claudeToken.ts";
-import { bookOf, commandLineOf, dispatchCommand, listCommandInfo } from "../../application/commands.ts";
+import { bookOf, commandLineOf, dispatchCommand, isKnownCommandLine, listCommandInfo } from "../../application/commands.ts";
 import {
   clip,
   decodeMenuRequest,
@@ -134,6 +134,7 @@ import {
   type KitThread,
 } from "../../domain/kitEvents.ts";
 import type { KitViewRepo } from "../db/kitViewRepo.ts";
+import type { MuteRepo } from "../db/muteRepo.ts";
 import { createSlackStream, STREAM_CHAR_BUDGET, type Streamer } from "./stream.ts";
 import type { InboxContext, InboxReceiver } from "./inboxReceiver.ts";
 import {
@@ -241,6 +242,27 @@ export const slashReply = (
  * either splits one conversation apart or merges two that are unrelated.
  */
 export const threadKeyOf = (m: { ts: string; thread_ts?: string }): string => m.thread_ts ?? m.ts;
+
+/**
+ * Is this person's message in a muted thread, and not a command? Then it is
+ * dropped before anything starts: no turn, no reaction, no placeholder. A
+ * known command is let through so `mute off` works from inside the thread.
+ * Only person-originated intake asks: the bot's own work (a watch handing the
+ * thread back, a loop, a tell, a workflow step) never passes through here.
+ */
+export const mutedAway = (
+  mutes: Pick<MuteRepo, "isMuted"> | undefined,
+  prefix: string,
+  channel: string,
+  threadTs: string,
+  text: string,
+): boolean => {
+  if (mutes?.isMuted(channel, threadTs) !== true) return false;
+  // Only a REAL command: the legacy `!` prefix is wide ("!!! prod is down"),
+  // and an unknown command would be answered with a "do not recognise" reply.
+  const line = commandLineOf(text, prefix);
+  return line === undefined || !isKnownCommandLine(line);
+};
 
 /** Only plain human DMs: reject bot echoes, edits/joins (subtypes) and non-DM channels. */
 export const shouldHandleDm = (m: RawMessage): boolean =>
@@ -431,6 +453,12 @@ export const createHandler =
   };
 
   return async (msg: Incoming): Promise<void> => {
+    // Also here, not only at the intake: a batch the follow gate buffered
+    // before the mute, a button press and a reaction all arrive this way.
+    if (mutedAway(deps.mutes, config.commandPrefix, msg.channelId, msg.threadTs, msg.text)) {
+      log(`mute drop channel=${msg.channelId} thread=${msg.threadTs} user=${msg.userId}`);
+      return;
+    }
     const displayName = await resolveName(msg.client, msg.userId);
     const batched = msg.batch && msg.batch.length > 1 ? msg.batch : undefined;
     // One input for the whole batch, in order, each line under its author.
@@ -1298,6 +1326,9 @@ export const createSlackApp = (config: SlackAppConfig, deps: Deps) => {
     log,
     decide: async ({ channel, threadTs, items }) => {
       if (!gateModel) throw new Error("no gate model wired");
+      // Muted after the batch was buffered: `handle` would drop it anyway, so
+      // do not spend the cheap model's call on it either.
+      if (deps.mutes?.isMuted(channel, threadTs)) return { verdict: "skip", reason: "thread muted" };
       const last = items[items.length - 1]!;
       const me = await deps.slack?.botUserId().catch(ignoreQuietly("bot user id lookup"));
       return gateModel({
@@ -1343,6 +1374,10 @@ export const createSlackApp = (config: SlackAppConfig, deps: Deps) => {
   app.event("app_mention", async ({ event, client, say, context }) => {
     const e = event as { channel: string; user?: string; text: string; ts: string; thread_ts?: string };
     if (!e.user) return;
+    if (mutedAway(deps.mutes, config.commandPrefix, e.channel, threadKeyOf(e), e.text)) {
+      log(`mute drop channel=${e.channel} thread=${threadKeyOf(e)} user=${e.user}: tagged`);
+      return;
+    }
     // A tag that runs a chat turn for an allowed user takes the buffered batch
     // over (the turn reads it in the thread). A stranger's tag (an access
     // request) or a command line answers none of it: the batch fires on its own.
@@ -1996,6 +2031,12 @@ export const createSlackApp = (config: SlackAppConfig, deps: Deps) => {
 
   app.message(async ({ message, client, say, context }) => {
     const m = message as RawMessage & { channel: string; ts: string };
+    // Muted: nothing from a person gets through, tagged, followed or a DM
+    // reply - and nothing is touched on the way, not even a retired card.
+    if (m.user && !m.bot_id && isSpeech(m.subtype) && m.text && mutedAway(deps.mutes, config.commandPrefix, m.channel, threadKeyOf(m), m.text)) {
+      log(`mute drop channel=${m.channel} thread=${threadKeyOf(m)} user=${m.user}`);
+      return;
+    }
     // Any human reply in a thread, handled or not: a typed answer settles a
     // question whoever it was asked of.
     if (m.user && !m.bot_id && isSpeech(m.subtype)) void retireOnReply(client, m);
