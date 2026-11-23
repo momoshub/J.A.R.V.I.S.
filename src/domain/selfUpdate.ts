@@ -156,7 +156,7 @@ export const standaloneReviewRule = (orca = true): string =>
   (orca
     ? "The reviewer is an Orca worker, never the Agent tool, never a fork and never the session that wrote the code: open a fresh Run with `orca orchestration run-create --objective <short> --json`. " +
       WORKER_MCP_TRIM_RULE +
-      ". Then start it with `orca orchestration worker-start --run <runId> --spec-file <brief> --task-title <short> --worktree path:$BOT_WORKER_HOME --agent claude --model \"$BOT_WORKER_MODEL\" --json` (only if `orca status` says the runtime is not reachable, `ORCA_TERMINAL_HANDLE` is unset, `run-create` refuses it as `terminal_handle_stale` or your tools refuse `orca`, use a background Agent tool reviewer on the same PR-review protocol, and say so). "
+      ". Then start it with `orca orchestration worker-start --run <runId> --spec-file <brief> --task-title <short> --worktree path:$BOT_WORKER_HOME --agent claude --model opus --json` (the reviewer always runs on opus, while writers and verifiers keep `$BOT_WORKER_MODEL`; only if `orca status` says the runtime is not reachable, `ORCA_TERMINAL_HANDLE` is unset, `run-create` refuses it as `terminal_handle_stale` or your tools refuse `orca`, use a background Agent tool reviewer on the same PR-review protocol, and say so). "
     : "The reviewer is a background Agent tool agent (`run_in_background: true`, a self-contained brief) in your own process - never a fork and never the session that wrote the code - and you never run `orca` (it is the owner's: your tools refuse it). ") +
   "Its brief gives the PR url and what the change is for, and tells it the whole review happens on the PR. It reads the diff only through `gh pr diff` / `gh pr view` and never checks out, edits or runs anything in the folder it starts in - that may be a live checkout other sessions share - and if it needs to run the checks it cuts its own `git worktree add` from `origin/<branch>` and removes it after. It reports correctness bugs, regressions, missing tests and stale docs as one real GitHub review whose body starts with `[review round N]` (N from 1) and ends with `VERDICT: clean` or `VERDICT: changes` (changes only for a real blocker): a request-changes review when the verdict is changes, an approving review (with its comments, if any) when it is clean - but GitHub refuses both on a PR the poster opened, so when the PR's author and the reviewer are one account (no split `SELF_PR_AUTHOR` / `SELF_PR_REVIEWER`, or the same login twice) it posts a plain comment review instead (`--comment` / `event` = `COMMENT`) with the same `[review round N]` body and `VERDICT:` line - `gh pr review <pr> --request-changes|--approve --body-file <file>`, and when a point is about specific lines, one `gh api repos/<owner>/<repo>/pulls/<pr>/reviews --input <json>` call (`commit_id` = the head it read, `event` = `REQUEST_CHANGES`, `APPROVE` or `COMMENT`, `body`, `comments` = `[{path, line, side, body}]`) so the inline comments and the verdict land as one review. It then polls the PR every 30s for a `[fix round N]` comment answering that round and re-reviews the head as `[review round N]` - round 2 and later happen only when the previous round is `VERDICT: changes` with a real blocker, and there are at most 5 rounds - even when that fix comment only pushes back or asks and the head did not move - it still counts as a round. It exits when it posts `VERDICT: clean`, after round 5, when the PR is merged or closed, or after 40 minutes with no new `[fix round N]` comment. You never use SendMessage or TaskStop for it. Never end your turn while it is open: wait for its next review in a Bash loop (background, or foreground chunks of up to 10 minutes re-run until the deadline) that polls `gh pr view <pr> --json reviews` for a review whose body starts `[review round N]` (the verdict is the body's `VERDICT:` line, in both modes: `clean` or `changes`; the review state, `APPROVED` / `CHANGES_REQUESTED` / `COMMENTED`, is only a hint and says nothing on one account) and, " +
   (orca
@@ -194,45 +194,68 @@ export const selfPrAccountsRule = (accounts?: SelfPrAccounts): string => {
   return `GitHub accounts: open the PR and post every \`[fix round N]\` comment as \`${accounts.author}\` (${as(accounts.author)} in front of \`gh pr create\` and \`gh pr comment\`); the reviewer posts every \`[review round N]\` review as \`${accounts.reviewer}\` (say so in its brief, with ${as(accounts.reviewer)} in front of \`gh pr review\` and \`gh api\`); merge as \`${accounts.reviewer}\`: ${as(accounts.reviewer)} in front of \`bin/merge-when-green.sh <pr>\`, which approves the PR as \`${accounts.reviewer}\` right before it merges, so the PR shows a real approval. Check each login first: if \`gh auth token -u <login>\` fails or prints nothing, stop and say so - an empty GH_TOKEN falls back to the active account without a word, and neither side may post or merge under the wrong one (say the same in the reviewer's brief). Never \`gh auth switch\`: it flips the account under every other session`;
 };
 
+/**
+ * Who writes the change. For the owner it is an Orca worker with its own
+ * worker ticket (the turn's ticket dies with the turn, so a writer without one
+ * gets stuck at the PR step); below owner `orca` is denied, so the turn writes
+ * it itself or hands it to a background Agent tool agent.
+ */
+const writerRule = (orca: boolean): string =>
+  orca
+    ? "who writes it: an Orca worker, never the session itself - cheap jobs (a test fixture, a few edits) are done inline, no worker. Open a fresh Run (`orca orchestration run-create --objective <short> --json`), and if the PR goes out as the GitHub App mint the writer's own ticket and bind it, as the parallel guide says (`worker-ticket <owner/repo> pending` before `worker-start`, only the `JARVIS_RUN_TICKET_FILE` path in the brief and never read, print or copy the file, `worker-ticket bind <id> <dispatchId>` after): without one the writer gets stuck at the PR step. " +
+      WORKER_MCP_TRIM_RULE +
+      ". Then `orca orchestration worker-start --run <runId> --spec-file <brief> --task-title <short> --worktree path:$BOT_WORKER_HOME --agent claude --model \"$BOT_WORKER_MODEL\" --json` and, in the same turn, a `watch worker <dispatchId>` (waiting guide). The brief carries the issue, the cause and the plan, tells the writer to cut its own worktree and run this whole procedure (tests, docs, probe gate, PR, reviewer and verifier workers, merge, e2e watch), to export the ticket file before every github-app helper call and run `bin/github-app.sh ticket-renew <owner/repo>` first once it has run past about 2.5 hours, and that it does NOT restart you: it reports back and you run the restart helper. You only orchestrate: start the writer, set the watch, post progress in the thread, relay the result. Orca unreachable or refused (`orca status`, `ORCA_TERMINAL_HANDLE` unset, `terminal_handle_stale`) -> say so, then write it inline"
+    : "who writes it: you, in the worktree, or a background Agent tool agent in your own process with a self-contained brief - never `orca`, it is the owner's and your tools refuse it. Cheap jobs are done inline";
+
+/** Docs, tests and the probe gate: what has to be true again before the PR goes out. */
+const shipRules = `- docs and tests move with the code, in the same branch and PR, never as a follow-up. Any behaviour change adds or adjusts tests next to it (\`*.test.ts\`): a removed behaviour removes its test, a renamed thing renames it, a change with no test is a change nobody can keep. Before committing, grep the docs for what you touched (file names, function names, env vars, commands, settings) and fix every stale line: \`CLAUDE.md\` (architecture list, conventions, the "Key facts" entry of the area; a new non-obvious mechanism gets its own entry), \`ARCHITECTURE.md\`, \`README.md\`, \`.env.example\` and \`src/config/env.ts\` comments, command help text, and any memory skill that describes the area (those live in the memory adapter: change them through its export and import, never by editing a mirror folder). A pure refactor may touch no doc, but say "no doc change: internal only" in the PR body. Quick check: \`git diff --name-only origin/main\` with \`src/\` changed and no \`*.test.ts\` or doc means stop and ask why
+- \`bun run typecheck\` and \`bun test\` in the worktree, both green before you push
+- probe gate: a change to system prompt text, a prompt guide or an adapter skill first runs \`bun bin/probe-harness.ts --path <file> --base-ref origin/main\` (\`--dry-run\` shows the spend; \`--base <f> --candidate <f>\` for a skill that is not in the repo) and pastes the report (wins, losses, ties, contrasts) into the PR body. A candidate that loses more than it wins is rethought before the merge. Replay cases live in \`docs/probe-cases/\`: no real ids or private Slack text there, the repo is public`;
+
+/** Verifier: runtime code only, a separate agent that runs the change. */
+const verifierRule = (orca: boolean): string =>
+  `- verifier (runtime code only, docs, prompt text and skills skip it like they skip the reviewer): the reviewer reads the diff, a separate verifier runs the change. After the PR is open, start ${orca ? "an Orca worker in a fresh Run (writers and verifiers keep \"$BOT_WORKER_MODEL\"; only the reviewer runs on opus)" : "a background Agent tool agent"} with fresh context, never the writer and never a fork. It follows the repo's \`.claude/skills/verify/SKILL.md\`, runs the change on the PR head and posts its evidence and \`VERDICT: verified|failed\` as a PR comment. You never call your own PR verified: no verifier comment on the current head, or a failed one, is not verified, and a push after the verdict makes it stale, so it runs again`;
+
+/** After the merge: the checks that only run on main, then pull, restart and the watch on it. */
+const landRules = (restartScript: string, repoPath: string): string => `- after the merge, watch the e2e: the merge to main starts the \`e2e\` workflow (real Slack), which never runs on a PR, so a green PR says nothing about it. Find its run for the merge commit (\`gh run list -w e2e -c <merge sha>\`) and set a watch on it (waiting guide), never assume it passes. Green: done. Red: it is your break, fix it at once in a new PR through this same procedure, no asking first. Cannot fix it (cause unclear, a big fix, or the fix PR is red too): revert the merged PR (\`git revert -m 1 <merge sha>\` in a worktree, a PR, \`bin/merge-when-green.sh\`) so main is green again, then tell the owner what broke. Never leave main red, and never merge the next PR on top of a red e2e without saying so
+- once merged and the e2e is watched, \`git -C ${repoPath} pull --no-rebase\` to bring it into the main folder, remove the worktree, and for a code change only then restart with \`${restartScript}\` (docs only: no restart). It runs \`bun run typecheck\` and \`bun test\`, and only restarts you if BOTH pass. It will refuse on a red build, which is the point: you would come back into code that does not compile, and \`KeepAlive\` would restart you into it every fifteen seconds until a human walked to the machine
+- after the restart helper never ask anyone to ping you: set a watch (waiting guide) whose shell check passes once the old \`bun run src/index.ts\` process has exited and a new one listens on the dashboard port (\`lsof -tiTCP:<DASHBOARD_PORT, 2002 by default> -sTCP:LISTEN\`), then carry on. Never watch \`src/gateway.ts\`: the gateway never restarts, so that watch never fires`;
+
 const fullRules = (repoPath: string, restartScript: string, accounts?: SelfPrAccounts, orca = true): string => `
 
 Working on your own source (${repoPath}):
-- you may read it like any other repository, but never edit it in place: other sessions share that folder, and two of them editing it at once is how changes get lost or tangled. It is Bun + TypeScript, functional, no classes, no \`any\`, and local imports carry \`.ts\`
-- every change goes this way: \`git fetch\`, \`git worktree add .claude/worktrees/<name> -b <branch> origin/main\`, edit and test there, push the branch, open a PR, get runtime code reviewed by a standalone reviewer agent (docs, prompt text, skills and dashboard UI need none) and green CI (next line), merge it yourself, then \`git -C ${repoPath} pull --no-rebase\` to bring it into the main folder, and only then restart
-- ${standaloneReviewRule(orca)}${accounts ? `\n- ${selfPrAccountsRule(accounts)}` : ""}
+- you may read it like any other repository, but never edit it in place: other sessions share that folder, and two of them editing it at once is how changes get lost or tangled. It is Bun + TypeScript, functional, no classes, no \`any\`, and local imports carry \`.ts\`. Memory may add specifics of this instance (accounts, people, hosts) to what follows, never replace a step of it
+- every change goes this way, docs-only ones too: \`git fetch\`, \`git worktree add .claude/worktrees/<name> -b <branch> origin/main\`, edit and test there, push the branch, open a PR, merge it yourself once it is reviewed and green
+- ${writerRule(orca)}
+${shipRules}
+- ${standaloneReviewRule(orca)}
+${verifierRule(orca)}${accounts ? `\n- ${selfPrAccountsRule(accounts)}` : ""}
 - a PR description and commits carry no attribution at all: no "Generated with ..." line (Jarvis or Claude Code) and no co-author trailer
-- adjust or add tests with any behaviour change. A change with no test is a change nobody can keep
-- once it is pulled into the main folder, \`${restartScript}\` runs \`bun run typecheck\` and \`bun test\`, and only restarts you if BOTH pass. It will refuse on a red build, which is the point: you would come back into code that does not compile, and \`KeepAlive\` would restart you into it every fifteen seconds until a human walked to the machine
+${landRules(restartScript, repoPath)}
 - the restart waits a few seconds so your reply lands first, then holds until no turn is running in any thread. New messages are still answered meanwhile, each on a short budget (\`RESTART_TURN_BUDGET_MS\`, ${Math.round(RESTART_TURN_BUDGET_MS / 60_000)} minutes unless set otherwise): one that runs past it tells its thread to hold on and is cut, then picked up again after the restart on the same session. Once the turns from before the restart finish it takes no new message (they queue in the inbox, nothing is lost). If turns are still running after ${Math.round(RESTART_MAX_WAIT_MS / 60_000)} minutes it restarts anyway, and each turn it cut is picked up again by the new process on the same session. Say what you changed and that I restart once idle, then expect to be a new process - anything you were part-way through is gone
 - never restart to "see if that fixed it". Run the checks, read what they say, and decide
 - a change left uncommitted in the main folder is not finished: it blocks the next pull and gets swept into someone else's commit`;
 
-
 /**
- * The self-update block of the chat prompt. With a memory skill to read, the
- * full procedure lives there (owner's call: it cost ~2.5KB in every full-access
- * turn about every topic) and the prompt keeps a pointer plus what must hold
- * even when the skill is not read. With no skill to point at - no adapter, no
- * skills, or skills hidden from this turn - the full block stays, so an
- * instance without the skill loses nothing. The instance skill repeats the
- * restart wait in prose; keep it in step with RESTART_MAX_WAIT_MS.
+ * The self-update block of the chat prompt: always the whole procedure.
+ *
+ * It used to shrink to a pointer at "the skill in your memory" whenever an
+ * adapter skill was visible. That put the procedure in the instance's database,
+ * where a clone of the repository never gets it - and the memory copy had
+ * drifted: it lacked the worker-ticket step the static parallel guide had, so
+ * writers never got a ticket. The framework's rules now live here, in the
+ * codebase. Memory may still add what is specific to one instance.
+ *
+ * A turn that can read files gets it as the `self-fix` guide behind a one-line
+ * index entry (see `promptGuides.ts`); one that cannot keeps it inline.
  */
 export const selfUpdateRules = (
   repoPath?: string,
   restartScript?: string,
-  hasSkills = false,
   accounts?: SelfPrAccounts,
-  /** False below owner: the reviewer is then an Agent tool agent, `orca` is denied. */
+  /** False below owner: the writer and reviewer are then Agent tool agents, `orca` is denied. */
   orca = true,
 ): string => {
   if (!repoPath || !restartScript) return "";
-  if (!hasSkills) return fullRules(repoPath, restartScript, accounts, orca);
-  return `
-
-Working on your own source (${repoPath}):
-- before changing it, read the skill in your memory about changing your own source: it holds the full procedure. The lines below always hold
-- never edit ${repoPath} in place, other sessions share it: \`git worktree add .claude/worktrees/<name> -b <branch> origin/main\`, docs and tests in the same PR; for runtime code (logic, commands, adapters, \`bin/\`, or mixed) a standalone reviewer agent (${orca ? "Orca worker" : "background Agent tool agent, never orca"}, fresh context, real PR reviews only, up to 5 rounds) - docs, prompt text, skills, dashboard UI need none - and green CI before you merge it yourself with \`bin/merge-when-green.sh\`, then \`git -C ${repoPath} pull --no-rebase\` and, for a code change, \`${restartScript}\`, which only restarts you if typecheck and tests pass${accounts ? `\n- ${selfPrAccountsRule(accounts)}` : ""}
-- after the restart helper, say what you changed and that I restart once idle (up to ${Math.round(RESTART_MAX_WAIT_MS / 60_000)} minutes). Expect to be a new process: anything you were part-way through is gone
-- PR descriptions and commits carry no attribution at all
-- never restart to "see if that fixed it". Run the checks, read them, decide`;
+  return fullRules(repoPath, restartScript, accounts, orca);
 };
