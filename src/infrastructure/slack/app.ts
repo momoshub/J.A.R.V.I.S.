@@ -98,7 +98,7 @@ import { collapsedBlocks, collapseSteps } from "../../domain/collapseSteps.ts";
 import { usageFooter } from "../../domain/usageFooter.ts";
 import { footerLine, restamp, signedText, SIGNATURES, withFooter } from "../../domain/messageFooter.ts";
 import { isSilenceNote } from "../../domain/silence.ts";
-import { closingReply, stripKeepMarker } from "../../domain/selfPost.ts";
+import { closingReply, hasKeepMarker, replaceableSelfPost, stripKeepMarker } from "../../domain/selfPost.ts";
 import type { SelfPosts } from "../../application/selfPosts.ts";
 import {
   decodeKitMeta,
@@ -637,6 +637,22 @@ export const createHandler =
         }
         return true;
       };
+      // KEEP_REPLY after exactly one plain text post of the turn: one ask is one message, so the closing reply
+      // takes the place of that post (footer included) and the stream messages go. Several posts, a post with
+      // blocks, an upload, or an update Slack refuses: the reply is sent as its own message, as before.
+      const replaceable = result.kind === "reply" && result.turn && hasKeepMarker(result.text) ? replaceableSelfPost(posted, deps.selfPosts?.uploaded(result.turn) ?? false) : undefined;
+      if (replaceable) {
+        const replaced = await updateTidy(replaceable.ts, replyText, true)
+          .then(() => true)
+          .catch((e: unknown) => {
+            log(`closing reply could not replace the turn's own post, sending it as a message: ${e instanceof Error ? e.message : String(e)}`);
+            return false;
+          });
+        if (replaced) {
+          log(`closing reply replaced the turn's own post channel=${msg.channelId} thread=${msg.threadTs}`);
+          return dropQuiet(msg, parts, log);
+        }
+      }
       // A stream that showed no words - only cards, or only a note about not
       // replying - must not stay behind as a blank or a "No response
       // requested" message. With nothing worth saying it is taken back, and

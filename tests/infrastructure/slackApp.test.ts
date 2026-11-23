@@ -957,13 +957,87 @@ describe("createHandler streaming truth table", () => {
       const closing = `${CORRECTION}\nKEEP_REPLY`;
       const r = turnBuild(selfPosts, postingLlm(selfPosts, "Staging is green.", closing, [card, { type: "text", delta: closing }]));
       await r.handle(r.msg("is staging green", "000.9"));
-      expect(r.deletes).toHaveLength(0);
+      // one ask, one message: the closing reply replaces the turn's own post, the stream message goes
+      expect(r.deletes).toEqual(["222.2"]);
+      expect(r.said).toHaveLength(0);
       expect(r.updates).toHaveLength(1);
+      expect(r.updates[0]).toMatchObject({ ts: "333.3" });
       expect(String(r.updates[0]?.text)).toContain("NOT green");
+      expect(JSON.stringify(r.updates[0])).toContain("Jarvis");
       expect(JSON.stringify(r.updates[0])).not.toContain("KEEP_REPLY");
+      expect(r.logs.some((l) => l.includes("closing reply replaced the turn's own post"))).toBe(true);
     });
 
-    test("a rolled-over reply with the marker is sent on one message, the marker nowhere", async () => {
+    test("with the marker after SEVERAL posts of the turn the reply is a message of its own, as before", async () => {
+      const selfPosts = createSelfPosts();
+      const closing = `${CORRECTION}\nKEEP_REPLY`;
+      const llm: LlmPort = {
+        complete: async () => closing,
+        stream: async (p, sink) => {
+          if (p.runTicket) {
+            selfPost(selfPosts, p.runTicket, "first part", "000.9", "333.3");
+            selfPost(selfPosts, p.runTicket, "second part", "000.9", "333.4");
+          }
+          sink({ type: "text", delta: closing });
+          return closing;
+        },
+      };
+      const r = turnBuild(selfPosts, llm);
+      await r.handle(r.msg("is staging green", "000.9"));
+      expect(r.updates.map((u) => u.ts)).toEqual(["222.2"]);
+      expect(r.deletes).toHaveLength(0);
+    });
+
+    test("a self-post with blocks, or after an upload, is never overwritten by the kept reply", async () => {
+      const closing = `${CORRECTION}\nKEEP_REPLY`;
+      const richSelfPosts = createSelfPosts();
+      const richLlm: LlmPort = {
+        complete: async () => closing,
+        stream: async (p, sink) => {
+          if (p.runTicket)
+            richSelfPosts.record(p.runTicket, "000.9", {
+              method: "chat.postMessage",
+              params: { channel: "C1", thread_ts: "000.9", text: "board", blocks: JSON.stringify([{ type: "section", text: { type: "mrkdwn", text: "board" } }]) },
+              answer: JSON.stringify({ ok: true, ts: "333.3" }),
+            });
+          sink({ type: "text", delta: closing });
+          return closing;
+        },
+      };
+      const rich = turnBuild(richSelfPosts, richLlm);
+      await rich.handle(rich.msg("is staging green", "000.9"));
+      expect(rich.updates.map((u) => u.ts)).toEqual(["222.2"]);
+      expect(rich.deletes).toHaveLength(0);
+
+      const upSelfPosts = createSelfPosts();
+      const upLlm: LlmPort = {
+        complete: async () => closing,
+        stream: async (p, sink) => {
+          if (p.runTicket) {
+            selfPost(upSelfPosts, p.runTicket, "here is the file");
+            upSelfPosts.noteUpload(p.runTicket);
+          }
+          sink({ type: "text", delta: closing });
+          return closing;
+        },
+      };
+      const up = turnBuild(upSelfPosts, upLlm);
+      await up.handle(up.msg("is staging green", "000.9"));
+      expect(up.updates.map((u) => u.ts)).toEqual(["222.2"]);
+      expect(up.deletes).toHaveLength(0);
+    });
+
+    test("when the update of the own post fails the kept reply is sent as before", async () => {
+      const selfPosts = createSelfPosts();
+      const r = build({ llm: postingLlm(selfPosts, "Staging is green.", `${CORRECTION}\nKEEP_REPLY`), streamUpdates: false, selfPosts, updateThrows: true });
+      await r.handle(r.msg("is staging green", "000.9"));
+      expect(r.said).toHaveLength(1);
+      expect(JSON.stringify(r.said)).toContain("NOT green");
+      expect(JSON.stringify(r.said)).not.toContain("KEEP_REPLY");
+      expect(r.logs.some((l) => l.includes("could not replace the turn's own post"))).toBe(true);
+    });
+
+    test("a rolled-over reply with the marker lands on the turn's own post, the marker nowhere", async () => {
       const selfPosts = createSelfPosts();
       const big = (id: string): LlmStreamEvent => ({ ...card, id, title: `run: ${id}`, status: "in_progress", details: `log at: ${"d".repeat(250)} - line 1` });
       const cards = Array.from({ length: 40 }, (_, i) => big(`t${i}`));
@@ -972,6 +1046,7 @@ describe("createHandler streaming truth table", () => {
       await r.handle(r.msg("is staging green", "000.9"));
       expect(r.said).toHaveLength(0);
       expect(r.updates.length).toBeGreaterThan(0);
+      expect(r.updates.every((u) => u.ts === "333.3")).toBe(true);
       expect(JSON.stringify(r.updates)).toContain("NOT green");
       expect(JSON.stringify(r.updates)).not.toContain("KEEP_REPLY");
     });
@@ -1000,13 +1075,15 @@ describe("createHandler streaming truth table", () => {
       expect(quiet.said).toHaveLength(0);
     });
 
-    test("with the marker and no streaming the reply is posted without it", async () => {
+    test("with the marker and no streaming the reply replaces the own post, without the marker", async () => {
       const selfPosts = createSelfPosts();
       const r = turnBuild(selfPosts, postingLlm(selfPosts, "Staging is green.", `KEEP_REPLY\n${CORRECTION}`), false);
       await r.handle(r.msg("is staging green", "000.9"));
-      expect(r.said).toHaveLength(1);
-      expect(JSON.stringify(r.said)).toContain("NOT green");
-      expect(JSON.stringify(r.said)).not.toContain("KEEP_REPLY");
+      expect(r.said).toHaveLength(0);
+      expect(r.updates).toHaveLength(1);
+      expect(r.updates[0]).toMatchObject({ ts: "333.3" });
+      expect(JSON.stringify(r.updates)).toContain("NOT green");
+      expect(JSON.stringify(r.updates)).not.toContain("KEEP_REPLY");
     });
 
     test("without streaming, a closing reply after a self-post is not posted either", async () => {

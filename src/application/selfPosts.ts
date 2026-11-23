@@ -24,35 +24,47 @@ export type SelfPosts = {
   record: (turn: string, threadTs: string | undefined, call: SelfPostCall) => boolean;
   /** What that turn has posted so far. */
   posts: (turn: string) => readonly SelfPost[];
+  /** The turn finished a file upload (into any thread): its closing reply never replaces a post of its own. */
+  noteUpload: (turn: string) => void;
+  /** Did the turn upload a file? */
+  uploaded: (turn: string) => boolean;
   /** The turn ended. */
   clear: (turn: string) => void;
 };
 
-type Entry = { readonly posts: readonly SelfPost[]; readonly at: number };
+type Entry = { readonly posts: readonly SelfPost[]; readonly uploaded: boolean; readonly at: number };
 
 export const createSelfPosts = (clock: Clock = () => Date.now()): SelfPosts => {
   const byTurn = new Map<string, Entry>();
+  const liveOf = (key: string): Entry | undefined => {
+    const live = byTurn.get(key);
+    return live && clock() - live.at < SELF_POSTS_TTL_MS ? live : undefined;
+  };
+  const put = (key: string, entry: Omit<Entry, "at">): void => {
+    // delete first so a re-set turn moves to the newest end of the Map
+    byTurn.delete(key);
+    byTurn.set(key, { ...entry, at: clock() });
+    for (const oldest of byTurn.keys()) {
+      if (byTurn.size <= SELF_POSTS_MAX_TURNS) break;
+      byTurn.delete(oldest);
+    }
+  };
   return {
     record: (key, threadTs, call) => {
       if (!threadTs) return false;
-      const now = clock();
-      const live = byTurn.get(key);
-      const before = live && now - live.at < SELF_POSTS_TTL_MS ? live.posts : [];
+      const live = liveOf(key);
+      const before = live?.posts ?? [];
       const after = applySelfPostCall(before, call, threadTs);
       if (after === before) return false;
-      // delete first so a re-set turn moves to the newest end of the Map
-      byTurn.delete(key);
-      byTurn.set(key, { posts: after, at: now });
-      for (const oldest of byTurn.keys()) {
-        if (byTurn.size <= SELF_POSTS_MAX_TURNS) break;
-        byTurn.delete(oldest);
-      }
+      put(key, { posts: after, uploaded: live?.uploaded ?? false });
       return true;
     },
-    posts: (turn) => {
-      const live = byTurn.get(turn);
-      return live && clock() - live.at < SELF_POSTS_TTL_MS ? live.posts : [];
+    posts: (turn) => liveOf(turn)?.posts ?? [],
+    noteUpload: (turn) => {
+      if (!turn) return;
+      put(turn, { posts: liveOf(turn)?.posts ?? [], uploaded: true });
     },
+    uploaded: (turn) => liveOf(turn)?.uploaded ?? false,
     clear: (turn) => void byTurn.delete(turn),
   };
 };
