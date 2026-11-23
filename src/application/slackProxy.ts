@@ -234,7 +234,7 @@ export const createSlackProxy = (deps: SlackProxyDeps): SlackProxy => {
       const checked = checkSlackCall(
         method,
         params,
-        { channel: resolved.ctx.channel, threadTs: resolved.ctx.threadTs, owner: resolved.ctx.owner },
+        { channel: resolved.ctx.channel, threadTs: resolved.ctx.threadTs, owner: resolved.ctx.owner, grant: resolved.ctx.grant },
         deps.isNotice,
         extra,
       );
@@ -260,7 +260,8 @@ export const createSlackProxy = (deps: SlackProxyDeps): SlackProxy => {
         // method and channel only, never the content
         const param = channelParamOf(checked.method, extra);
         const where = (param && sendParams[param]) || sendParams.channel || sendParams.channel_id || "-";
-        log(`slack proxy ${checked.method} channel=${where}${checked.crossChannel ? " (owner's turn, outside the turn's channel)" : ""}`);
+        const why = checked.viaWatch !== undefined ? ` (watch #${checked.viaWatch}'s grant, outside the turn's channel)` : checked.crossChannel ? " (owner's turn, outside the turn's channel)" : "";
+        log(`slack proxy ${checked.method} channel=${where}${why}`);
       }
       try {
         const res = await doFetch(`${SLACK_API}${checked.method}`, {

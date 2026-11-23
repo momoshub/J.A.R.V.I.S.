@@ -6,6 +6,7 @@
  * started it (`trigger`, named by the sender; never guessed from the text).
  */
 import type { InternalKind } from "../domain/internalMessages.ts";
+import type { WatchGrant } from "../domain/writeTargets.ts";
 import { isSilenceNote } from "../domain/silence.ts";
 import { syntheticTs } from "../domain/slackLinks.ts";
 import type { HandleResult, InboundMessage } from "./handleMessage.ts";
@@ -25,6 +26,8 @@ export type TurnRequest = {
   hold?: boolean;
   /** What the bot's own sender is, for the reply's footer. */
   trigger?: InternalKind;
+  /** A fired watch the owner created in their own turn: where its turn may write (`domain/writeTargets.ts`). */
+  watchGrant?: WatchGrant;
 };
 
 export const createTurnRunner =
@@ -35,7 +38,7 @@ export const createTurnRunner =
     /** The model a loop's fire runs on. */
     loopModel: () => string | undefined;
   }) =>
-  async ({ channelId, threadTs, slackUserId, text, keepSession, autoContinue, unprompted, workerLane, loop, hold, trigger }: TurnRequest) => {
+  async ({ channelId, threadTs, slackUserId, text, keepSession, autoContinue, unprompted, workerLane, loop, hold, trigger, watchGrant }: TurnRequest) => {
     const result = await d.respond({
       channelId,
       slackUserId,
@@ -49,6 +52,7 @@ export const createTurnRunner =
       unprompted,
       workerLane,
       trigger,
+      ...(watchGrant ? { watchGrant } : {}),
       // A loop's fire runs on Sonnet; replies a person types in its DM thread are ordinary turns.
       model: loop ? d.loopModel() : undefined,
     });

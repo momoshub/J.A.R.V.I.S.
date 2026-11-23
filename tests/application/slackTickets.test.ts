@@ -86,3 +86,28 @@ describe("which run gets the owner bit", () => {
     expect(slackTicketContext(undefined, undefined, OWNER)).toBeUndefined();
   });
 });
+
+describe("a fired watch's grant on the ticket", () => {
+  const grant = { watchId: 7, createdBy: "U0OWNER001", targets: [{ channel: "C0TEAM00001" }] };
+  const bill = (extra: Record<string, unknown> = {}) => ({ actor: "U0OWNER001", kind: "chat", channel: "C1", threadTs: "1.1", ...extra });
+
+  test("a watch the owner created hands its turn the grant, and no owner bit", () => {
+    const ctx = slackTicketContext(bill({ watchGrant: grant }), "run-1", "U0OWNER001");
+    expect(ctx).toEqual({ channel: "C1", threadTs: "1.1", turn: "run-1", grant });
+    const tickets = createSlackTickets(() => 0);
+    const r = tickets.redeem(tickets.issue(ctx!));
+    expect(r.ok && r.ctx).toEqual({ channel: "C1", threadTs: "1.1", turn: "run-1", grant });
+    expect(r.ok && r.ctx.owner).toBeUndefined();
+  });
+
+  test("a grant is dropped when its creator is not the owner now, when the turn runs as someone else, or when it names nothing", () => {
+    expect(slackTicketContext(bill({ watchGrant: { ...grant, createdBy: "U0PAL000001" } }), undefined, "U0OWNER001")).toEqual({ channel: "C1", threadTs: "1.1" });
+    expect(slackTicketContext(bill({ actor: "U0PAL000001", watchGrant: grant }), undefined, "U0OWNER001")).toEqual({ channel: "C1", threadTs: "1.1" });
+    expect(slackTicketContext(bill({ watchGrant: { ...grant, targets: [] } }), undefined, "U0OWNER001")).toEqual({ channel: "C1", threadTs: "1.1" });
+    expect(slackTicketContext(bill({ watchGrant: grant }), undefined, "")).toEqual({ channel: "C1", threadTs: "1.1" });
+  });
+
+  test("a turn the owner typed gets the owner bit and never the grant", () => {
+    expect(slackTicketContext(bill({ ownMessage: true, watchGrant: grant }), undefined, "U0OWNER001")).toEqual({ channel: "C1", threadTs: "1.1", owner: true });
+  });
+});

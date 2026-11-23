@@ -1,6 +1,6 @@
 /** Things that run later or on their own: follow, watch, remind, loop, mindful. */
 
-import { type MessageRef, parseMessageLink } from "../../domain/slackLinks.ts";
+import { type MessageRef, parseMessageLink, parsePostTarget } from "../../domain/slackLinks.ts";
 import { builtinCheck, humanDuration, parseWatchArgs } from "../../domain/watch.ts";
 import { formatWhen, humanLead, parseRemindArgs } from "../../domain/reminder.ts";
 import {
@@ -12,7 +12,8 @@ import {
 import { MAX_LOOPS_PER_USER, cleanName, loopRef, nextRun, parseLoopArgs, scheduleText } from "../../domain/loop.ts";
 import { proposeScriptLoop } from "../loopApproval.ts";
 import { loopOriginText } from "../loops.ts";
-import { type CommandDef, parseWindow } from "./shared.ts";
+import { channelIdByName, type CommandDef, parseWindow } from "./shared.ts";
+import { describeTarget, MAX_WRITE_TARGETS, normalizeTargets, targetsNamedIn, type WriteTarget } from "../../domain/writeTargets.ts";
 import { PERM } from "../../domain/permissions.ts";
 import { isOwnerRole, roleNamesWith } from "../../domain/roles.ts";
 
@@ -84,9 +85,9 @@ export const SCHEDULE_COMMANDS: readonly CommandDef[] = [
     // The confirmation is for the brain, not the thread: it already says what
     // it is waiting for in its own words, and a second notice is just noise.
     quiet: true,
-    usage: "pr|checks|reply|url|worker <target> [--every 1m] [--until 45m|2h|30d] [--past-wait] <what to do> | <what to do> -- <shell check> | list | cancel [<id>]",
-    summary: "wait for a PR, CI, a reply, a url or an Orca worker (up to 30 days with --until), then carry on in this thread by itself",
-    run: async ({ can, roles, deps, actor, args, rest, prefix, threadTs, channelId }) => {
+    usage: "pr|checks|reply|url|worker <target> [--every 1m] [--until 45m|2h|30d] [--past-wait] [--to <thread-link|#channel>]... <what to do> | <what to do> -- <shell check> | list | cancel [<id>]",
+    summary: "wait for a PR, CI, a reply, a url or an Orca worker (up to 30 days with --until), then carry on in this thread by itself; set in the owner's own turn, --to (or a link/channel in the request) lets it post, react and upload there when it fires",
+    run: async ({ can, roles, deps, actor, args, rest, prefix, threadTs, channelId, ownerTurn }) => {
       if (!deps.watches) return "I have nowhere to keep a watch right now.";
       const sub = (args[0] ?? "").toLowerCase();
 
@@ -100,7 +101,7 @@ export const SCHEDULE_COMMANDS: readonly CommandDef[] = [
         return waiting
           .map(
             (w) =>
-              `- #${w.id} <#${w.channelId}> ${w.check ? `\`${w.check.slice(0, 60)}\`` : "timer"} - every ${humanDuration(w.everyMs)}, ${humanDuration(Math.max(0, w.deadlineAt - now))} left, ${w.attempts} checks`,
+              `- #${w.id} <#${w.channelId}> ${w.check ? `\`${w.check.slice(0, 60)}\`` : "timer"} - every ${humanDuration(w.everyMs)}, ${humanDuration(Math.max(0, w.deadlineAt - now))} left, ${w.attempts} checks${w.writeTargets.length ? `, may write to ${w.writeTargets.length} other place${w.writeTargets.length === 1 ? "" : "s"}` : ""}`,
           )
           .join("\n");
       }
@@ -159,6 +160,40 @@ export const SCHEDULE_COMMANDS: readonly CommandDef[] = [
         // A plain timer, which is allowed - but say so, because "watch" with
         // no check reads like it is watching something.
       }
+      // Where the fired turn may write besides this thread. Only a turn the owner's own message started can give a watch that
+      // (the run bridge says so from the turn ticket, never the brain): the owner already had that reach in this turn, so the
+      // watch gets what was NAMED - `--to`, the owner's message, the request text - never "anywhere". Anyone else's watch, and a
+      // watch from a turn nobody owner-started, keeps today's thread-only turn.
+      let createdBy = "";
+      let writeTargets: WriteTarget[] = [];
+      if (ownerTurn) {
+        createdBy = actor.slackId;
+        const explicit: WriteTarget[] = [];
+        for (const raw of parsed.to ?? []) {
+          const t = parsePostTarget(raw);
+          if (!t) return `\`--to ${raw}\` is not a place I can write: use a Slack thread link, or a channel (\`#name\`, \`<#C123>\` or its id).`;
+          if (t.kind === "name") {
+            if (!deps.slack?.listConversationPage) return `I cannot look channel names up here - give \`--to\` the channel id or a thread link.`;
+            let id: string | undefined;
+            try {
+              id = await channelIdByName(deps.slack.listConversationPage, t.name);
+            } catch (e) {
+              return `Could not look up #${t.name}: ${e instanceof Error ? e.message : String(e)}`;
+            }
+            if (!id) return `No channel named #${t.name} that I can see. Use its id or a thread link.`;
+            explicit.push({ channel: id });
+          } else explicit.push(t.kind === "thread" ? { channel: t.channel, threadTs: t.threadTs } : { channel: t.channel });
+        }
+        // This channel already takes the turn's writes; only other places need a grant.
+        writeTargets = normalizeTargets([...explicit, ...ownerTurn.named, ...targetsNamedIn([parsed.note, parsed.target ?? ""].join(" "))]).filter(
+          (t) => t.channel !== channelId,
+        );
+        if (writeTargets.length > MAX_WRITE_TARGETS) {
+          return `A watch may name at most ${MAX_WRITE_TARGETS} places to write (this one names ${writeTargets.length}): keep \`--to\` and the links in the request to the ones it needs.`;
+        }
+      } else if (parsed.to?.length) {
+        return "`--to` only works in the owner's own turn: a watch set anywhere else carries on in this thread only.";
+      }
       const w = deps.watches.add(
         {
           channelId,
@@ -169,9 +204,14 @@ export const SCHEDULE_COMMANDS: readonly CommandDef[] = [
           everyMs: parsed.everyMs,
           deadlineAt: now + parsed.deadlineMs,
           createdAt: now,
+          createdBy,
+          writeTargets,
         },
         now,
       );
+      const grantLine = writeTargets.length
+        ? `\nWhen it fires it may post, react and upload in: ${writeTargets.map(describeTarget).join("; ")} - and nowhere else outside this thread.`
+        : "";
       const what =
         parsed.kind === "pr"
           ? `${parsed.target} to be merged`
@@ -185,11 +225,11 @@ export const SCHEDULE_COMMANDS: readonly CommandDef[] = [
                   ? `Orca worker \`${parsed.target}\` to finish, die${parsed.pastWait ? " or sit idle" : ", stop for input or sit idle"}`
                   : "";
       if (what) {
-        return `⏳ waiting for ${what}, checking every ${humanDuration(parsed.everyMs)} and giving up after ${humanDuration(parsed.deadlineMs)}. I will carry on here by myself - you can still talk to me meanwhile. (\`${prefix} watch cancel\`, #${w.id})`;
+        return `⏳ waiting for ${what}, checking every ${humanDuration(parsed.everyMs)} and giving up after ${humanDuration(parsed.deadlineMs)}. I will carry on here by myself - you can still talk to me meanwhile. (\`${prefix} watch cancel\`, #${w.id})${grantLine}`;
       }
       return check
-        ? `⏳ watching: \`${check.slice(0, 80)}\`\nevery ${humanDuration(parsed.everyMs)}, giving up after ${humanDuration(parsed.deadlineMs)}. I will carry on here by myself when it passes. (\`${prefix} watch cancel\`, #${w.id})`
-        : `⏳ I will pick this up again in ${humanDuration(parsed.deadlineMs)}. (\`${prefix} watch cancel\`, #${w.id})`;
+        ? `⏳ watching: \`${check.slice(0, 80)}\`\nevery ${humanDuration(parsed.everyMs)}, giving up after ${humanDuration(parsed.deadlineMs)}. I will carry on here by myself when it passes. (\`${prefix} watch cancel\`, #${w.id})${grantLine}`
+        : `⏳ I will pick this up again in ${humanDuration(parsed.deadlineMs)}. (\`${prefix} watch cancel\`, #${w.id})${grantLine}`;
     },
   },
   {

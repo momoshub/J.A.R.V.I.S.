@@ -888,6 +888,36 @@ describe("a turn started by a watch can actually DO things", () => {
     expect(redeemed.ok && redeemed.ctx.messageTs).toBe("9.9");
   });
 
+  test("the ticket says the owner started the turn only for their own typed message, and carries what it named", async () => {
+    const { deps } = build2();
+    const issued: Parameters<typeof tickets.issue>[0][] = [];
+    const tickets = createCommandTickets(() => 1, () => "TICKET");
+    const spy = { ...deps, commandTickets: { ...tickets, issue: (ctx: Parameters<typeof tickets.issue>[0]) => (issued.push(ctx), tickets.issue(ctx)) } };
+    const link = "https://team.slack.com/archives/C0TEAM00001/p1787122692303399";
+    await respond(spy, { ...fired, slackUserId: OWNER, trigger: undefined, text: `post the shots in ${link} when ready`, threadTs: "9.1", messageTs: "9.1" });
+    expect(issued[0]).toMatchObject({ actor: OWNER, owner: true, named: [{ channel: "C0TEAM00001", threadTs: "1787122692.303399" }] });
+    // the watch hand-back the owner's watch fires, a bot-started turn, is not their own message
+    await respond(spy, { ...fired, slackUserId: OWNER, unprompted: true, trigger: "watch", text: `ready: post the shots in ${link}`, threadTs: "9.2", messageTs: "9.2" });
+    expect(issued[1]).not.toHaveProperty("owner");
+    // someone else typing is never the owner's message
+    await respond(spy, { ...fired, slackUserId: "U7", text: `post it in ${link}`, threadTs: "9.3", messageTs: "9.3" });
+    expect(issued[2]).not.toHaveProperty("owner");
+    expect(issued[2]).not.toHaveProperty("named");
+  });
+
+  test("a fired watch's grant reaches the run's billing context, and a typed message carries none", async () => {
+    const { deps } = build2();
+    const bills: unknown[] = [];
+    const llm = { complete: async (p: { bill?: unknown }) => (bills.push(p.bill), "ok") };
+    const grant = { watchId: 3, createdBy: OWNER, targets: [{ channel: "C0TEAM00001" }] };
+    await respond({ ...deps, llm } as typeof deps, { ...fired, slackUserId: OWNER, unprompted: true, trigger: "watch", watchGrant: grant, threadTs: "9.4", messageTs: "9.4" });
+    await respond({ ...deps, llm } as typeof deps, { ...fired, slackUserId: OWNER, trigger: undefined, threadTs: "9.5", messageTs: "9.5" });
+    expect(bills[0]).toMatchObject({ actor: OWNER, watchGrant: grant });
+    expect(bills[0]).not.toHaveProperty("ownMessage");
+    expect(bills[1]).toMatchObject({ ownMessage: true });
+    expect(bills[1]).not.toHaveProperty("watchGrant");
+  });
+
   test("and it is told how, so it does not hand the job back", async () => {
     const { deps, seen } = build2();
     await respond(deps, fired);

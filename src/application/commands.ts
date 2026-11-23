@@ -45,6 +45,7 @@ import { BUG_REPORT_COMMANDS } from "./commands/bugReport.ts";
 import { ERRANDS_COMMANDS } from "./commands/errands.ts";
 import { REVIEW_COMMANDS, runReview } from "./commands/review.ts";
 import type { ReviewIdentity } from "../domain/reviewIdentity.ts";
+import type { WriteTarget } from "../domain/writeTargets.ts";
 import { HARVEST_COMMANDS } from "./commands/harvest.ts";
 import { INNER_CHILD_COMMANDS } from "./commands/innerChild.ts";
 import { RUNTIME_COMMANDS } from "./commands/runtime.ts";
@@ -237,6 +238,8 @@ export type DispatchOptions = {
    * can never be the caller.
    */
   fromBrainRun?: boolean;
+  /** Set only by the run bridge, from a turn ticket the owner's own message started: what that message named (see `CommandCtx.ownerTurn`). */
+  ownerTurn?: { readonly named: readonly WriteTarget[] };
 };
 
 /** Run a command line (e.g. "add @U1 admin") on behalf of `actor`. */
@@ -354,6 +357,7 @@ export const dispatchCommand = async (
       slash,
       reply: opts.reply,
       fromBrainRun: opts.fromBrainRun === true,
+      ...(opts.fromBrainRun === true && opts.ownerTurn ? { ownerTurn: opts.ownerTurn } : {}),
       trivialCommands: TRIVIAL_COMMANDS,
       roles: book,
       catalogue: deps.roleCatalogue?.() ?? permissionCatalogue({ commands: listCommandInfo(), mcpServers: ["notion", "datadog"] }),

@@ -28,6 +28,16 @@ describe("commandTickets", () => {
     expect(result.ok && result.ctx.messageTs).toBe("9.95");
   });
 
+  test("the owner flag and what the owner's message named ride along only when set", () => {
+    const tickets = createCommandTickets(() => 0);
+    const owner = tickets.redeem(tickets.issue({ actor: "U1", channel: "C1", owner: true, named: [{ channel: "C0TEAM00001" }] }));
+    expect(owner.ok && owner.ctx.owner).toBe(true);
+    expect(owner.ok && owner.ctx.named).toEqual([{ channel: "C0TEAM00001" }]);
+    const plain = tickets.redeem(tickets.issue({ actor: "U1", channel: "C1" }));
+    expect(plain.ok && plain.ctx).not.toHaveProperty("owner");
+    expect(plain.ok && plain.ctx).not.toHaveProperty("named");
+  });
+
   test("an unknown or made-up token gets nothing", () => {
     const tickets = createCommandTickets(at({ now: 0 }));
     expect(tickets.redeem("guessed")).toEqual({ ok: false, reason: "unknown", limit: TICKET_USES });

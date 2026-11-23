@@ -76,6 +76,7 @@ import type { ReviewApp } from "./commands/shared.ts";
 import type { CiGate } from "./ciGate.ts";
 import type { DraftReply } from "./draftReply.ts";
 import type { SelfPrAccounts } from "../domain/selfUpdate.ts";
+import { targetsNamedIn, type WatchGrant } from "../domain/writeTargets.ts";
 import { isRestartCut } from "./runRegistry.ts";
 import { logAndIgnore } from "./ignoredError.ts";
 
@@ -343,6 +344,8 @@ export type InboundMessage = {
    * thread back. It still queues behind a running turn.
    */
   unprompted?: boolean;
+  /** A watch the owner set in their own turn fired this turn: it may write into the targets that turn named (see `domain/writeTargets.ts`). Set only by the watcher. */
+  watchGrant?: WatchGrant;
   /**
    * In a workflow thread, run on the worker's lane - the workflow session,
    * the thread's own key, full tools - rather than the front's. For an Orca
@@ -497,6 +500,10 @@ export const handleMessage = async (
     channel: inbound.channelId,
     threadTs: inbound.threadTs,
     messageTs: inbound.messageTs,
+    // The owner's own message: what `watch` may later let a watch write to. Same decision as the Slack ticket's owner bit.
+    ...(!!deps.ownerSlackId && typedByPerson(inbound) && decision.user.slackId === deps.ownerSlackId
+      ? { owner: true as const, named: targetsNamedIn(inbound.text) }
+      : {}),
   });
   const window = deps.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
   // The thread itself is the context, read from Slack: the whole of this thread
@@ -667,6 +674,8 @@ export const handleMessage = async (
       // Typed by the person themselves: not a bot-started turn (watch, loop, tell, nudge, a queued step), not a followed
       // thread's buffered chatter, and not the bot's own continuation of a workflow.
       ...(typedByPerson(inbound) ? { ownMessage: true as const } : {}),
+      // A watch the owner created fires with a grant to the places it named, not with the owner bit.
+      ...(inbound.watchGrant ? { watchGrant: inbound.watchGrant } : {}),
     },
     onUsage: (u: LlmUsage) => {
       usage = u;
