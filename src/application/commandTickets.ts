@@ -20,7 +20,7 @@
  * enough that only a loop hits it, and a spent ticket says so in those words
  * rather than looking like an expired one.
  */
-import type { WriteTarget } from "../domain/writeTargets.ts";
+import type { WatchGrant, WriteTarget } from "../domain/writeTargets.ts";
 import type { Clock } from "./ports.ts";
 
 /**
@@ -52,6 +52,11 @@ export type TicketContext = {
   named?: readonly WriteTarget[];
   /** A watch started this turn (`trigger: "watch"`, set by the bot's own watcher): the run bridge refuses owner-only commands in it. */
   watch?: true;
+  /**
+   * With `watch`: the grant the fired watch carries (set by the bot's own watcher from the watch row, never by the brain). Only `watch`
+   * reads it, so a watch the fired turn re-arms inherits no more than the parent had (`commands/schedule.ts`).
+   */
+  watchGrant?: WatchGrant;
 };
 
 /**
@@ -111,7 +116,7 @@ export const createCommandTickets = (
         threadTs: entry.threadTs,
         messageTs: entry.messageTs,
         ...(entry.owner ? { owner: true as const, named: entry.named ?? [] } : {}),
-        ...(entry.watch ? { watch: true as const } : {}),
+        ...(entry.watch ? { watch: true as const, ...(entry.watchGrant ? { watchGrant: entry.watchGrant } : {}) } : {}),
       },
       left: Math.max(0, uses - entry.used),
     };

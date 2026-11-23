@@ -1021,7 +1021,7 @@ const main = async () => {
           fromBrainRun: true,
           // The turn's own owner decision, from the ticket: it lets `watch` give a watch the targets the owner named.
           ...(ctx.owner ? { ownerTurn: { named: ctx.named ?? [] } } : {}),
-          ...(ctx.watch ? { firedByWatch: true } : {}),
+          ...(ctx.watch ? { firedByWatch: true, ...(ctx.watchGrant ? { watchGrant: ctx.watchGrant } : {}) } : {}),
         };
         return runForBrain({
           quiet: isQuietCommand(line),

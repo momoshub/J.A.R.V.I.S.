@@ -1,7 +1,7 @@
 /** Things that run later or on their own: follow, mute, watch, remind, loop, mindful. */
 
 import { type MessageRef, parseMessageLink, parsePostTarget } from "../../domain/slackLinks.ts";
-import { builtinCheck, humanDuration, parseWatchArgs } from "../../domain/watch.ts";
+import { builtinCheck, humanDuration, MAX_DEADLINE_MS, parseWatchArgs } from "../../domain/watch.ts";
 import { formatWhen, humanLead, parseRemindArgs } from "../../domain/reminder.ts";
 import {
   mindfulReport,
@@ -13,10 +13,12 @@ import { MAX_LOOPS_PER_USER, cleanName, loopRef, nextRun, parseLoopArgs, schedul
 import { proposeScriptLoop } from "../loopApproval.ts";
 import { loopOriginText } from "../loops.ts";
 import { channelIdByName, type CommandDef, parseWindow } from "./shared.ts";
-import { describeTarget, MAX_WRITE_TARGETS, normalizeTargets, targetsNamedIn, type WriteTarget } from "../../domain/writeTargets.ts";
+import { coveredBy, describeTarget, MAX_WRITE_TARGETS, normalizeTargets, targetsNamedIn, type WriteTarget } from "../../domain/writeTargets.ts";
 import { PERM } from "../../domain/permissions.ts";
 import { isOwnerRole, roleNamesWith } from "../../domain/roles.ts";
 
+/** How many watches one fired watch may hand its grant to while they wait: enough for a few things followed at once, not a multiplier. */
+const MAX_REARM_CHILDREN = 5;
 const FOLLOW_FILLER = new Set(["thread", "this", "the", "that"]);
 
 /**
@@ -136,8 +138,8 @@ export const SCHEDULE_COMMANDS: readonly CommandDef[] = [
     // it is waiting for in its own words, and a second notice is just noise.
     quiet: true,
     usage: "pr|checks|reply|url|worker <target> [--every 1m] [--until 45m|2h|30d] [--past-wait] [--to <thread-link|#channel>]... <what to do> | <what to do> -- <shell check> | list | cancel [<id>]",
-    summary: "wait for a PR, CI, a reply, a url or an Orca worker (up to 30 days with --until), then carry on in this thread by itself; set in the owner's own turn, --to (or a link/channel in the request) lets it post, react and upload there when it fires",
-    run: async ({ can, roles, deps, actor, args, rest, prefix, threadTs, channelId, ownerTurn }) => {
+    summary: "wait for a PR, CI, a reply, a url or an Orca worker (up to 30 days with --until), then carry on in this thread by itself; set in the owner's own turn, --to (or a link/channel in the request) lets it post, react and upload there when it fires; a watch that fired with such a grant and sets the next one passes on the same places or fewer (--to can only narrow)",
+    run: async ({ can, roles, deps, actor, args, rest, prefix, threadTs, channelId, ownerTurn, watchGrant }) => {
       if (!deps.watches) return "I have nowhere to keep a watch right now.";
       const sub = (args[0] ?? "").toLowerCase();
 
@@ -151,7 +153,7 @@ export const SCHEDULE_COMMANDS: readonly CommandDef[] = [
         return waiting
           .map(
             (w) =>
-              `- #${w.id} <#${w.channelId}> ${w.check ? `\`${w.check.slice(0, 60)}\`` : "timer"} - every ${humanDuration(w.everyMs)}, ${humanDuration(Math.max(0, w.deadlineAt - now))} left, ${w.attempts} checks${w.writeTargets.length ? `, may write to ${w.writeTargets.length} other place${w.writeTargets.length === 1 ? "" : "s"}` : ""}`,
+              `- #${w.id} <#${w.channelId}> ${w.check ? `\`${w.check.slice(0, 60)}\`` : "timer"} - every ${humanDuration(w.everyMs)}, ${humanDuration(Math.max(0, w.deadlineAt - now))} left, ${w.attempts} checks${w.writeTargets.length ? `, may write to ${w.writeTargets.length} other place${w.writeTargets.length === 1 ? "" : "s"}${w.parentWatchId ? `, re-armed from #${w.parentWatchId}` : ""}` : ""}`,
           )
           .join("\n");
       }
@@ -210,14 +212,22 @@ export const SCHEDULE_COMMANDS: readonly CommandDef[] = [
         // A plain timer, which is allowed - but say so, because "watch" with
         // no check reads like it is watching something.
       }
-      // Where the fired turn may write besides this thread. Only a turn the owner's own message started can give a watch that
-      // (the run bridge says so from the turn ticket, never the brain): the owner already had that reach in this turn, so the
-      // watch gets what was NAMED - `--to`, the owner's message, the request text - never "anywhere". Anyone else's watch, and a
-      // watch from a turn nobody owner-started, keeps today's thread-only turn.
+      // Where the fired turn may write besides this thread. Two ways to hold a grant, both decided by the run bridge from the turn
+      // ticket, never by what the brain writes:
+      // - the owner's own turn: the watch gets what was NAMED - `--to`, the owner's message, the request text - never "anywhere".
+      // - a turn a watch fired that itself carried a grant (this is a re-arm): the new watch inherits the creator and a SUBSET of
+      //   that grant. Nothing is added: no `--to` outside it, no link in this turn's text, never the owner bit.
+      // Anyone else's watch, and a watch from a turn nobody owner-started, keeps today's thread-only turn.
       let createdBy = "";
       let writeTargets: WriteTarget[] = [];
-      if (ownerTurn) {
-        createdBy = actor.slackId;
+      let parentWatchId = 0;
+      let chainEnd = Infinity;
+      // Same test the Slack ticket applies when the grant is used: made by the owner, and this turn still runs as that owner.
+      const inherit =
+        !ownerTurn && watchGrant && !!deps.ownerSlackId && watchGrant.createdBy === deps.ownerSlackId && actor.slackId === deps.ownerSlackId && watchGrant.targets.length > 0
+          ? watchGrant
+          : undefined;
+      if (ownerTurn || inherit) {
         const explicit: WriteTarget[] = [];
         for (const raw of parsed.to ?? []) {
           const t = parsePostTarget(raw);
@@ -234,15 +244,40 @@ export const SCHEDULE_COMMANDS: readonly CommandDef[] = [
             explicit.push({ channel: id });
           } else explicit.push(t.kind === "thread" ? { channel: t.channel, threadTs: t.threadTs } : { channel: t.channel });
         }
-        // This channel already takes the turn's writes; only other places need a grant.
-        writeTargets = normalizeTargets([...explicit, ...ownerTurn.named, ...targetsNamedIn([parsed.note, parsed.target ?? ""].join(" "))]).filter(
-          (t) => t.channel !== channelId,
-        );
+        if (ownerTurn) {
+          createdBy = actor.slackId;
+          // This channel already takes the turn's writes; only other places need a grant.
+          writeTargets = normalizeTargets([...explicit, ...ownerTurn.named, ...targetsNamedIn([parsed.note, parsed.target ?? ""].join(" "))]).filter(
+            (t) => t.channel !== channelId,
+          );
+        } else if (inherit) {
+          // A re-armed watch is never wider than the one that fired: a `--to` the parent grant does not already cover is refused.
+          const outside = explicit.filter((t) => !coveredBy(inherit.targets, t));
+          if (outside.length) {
+            return `\`--to\` can only narrow here: this turn was fired by watch #${inherit.watchId}, which may write only to ${inherit.targets.map(describeTarget).join("; ")}. Not covered: ${outside.map(describeTarget).join("; ")}. Ask the owner to set a new watch for those.`;
+          }
+          // A chain is not a way round the cap: the whole re-arm chain, counted from the first watch in it, lasts what one watch may,
+          // and one fired watch sets only so many children (a fired turn reads untrusted content and must not multiply the grant).
+          let root = deps.watches.get(inherit.watchId);
+          for (let hops = 0; root?.parentWatchId && hops < 100; hops++) root = deps.watches.get(root.parentWatchId) ?? root;
+          chainEnd = (root?.createdAt ?? now) + MAX_DEADLINE_MS;
+          if (chainEnd <= now + 60_000) {
+            return `This re-arm chain started from watch #${root?.id ?? inherit.watchId} and has used its ${humanDuration(MAX_DEADLINE_MS)}: a watch that keeps following cannot outlive that. Ask the owner to set a new watch if it should go on.`;
+          }
+          if (deps.watches.waiting(500).filter((x) => x.parentWatchId === inherit.watchId).length >= MAX_REARM_CHILDREN) {
+            return `Watch #${inherit.watchId} has already set ${MAX_REARM_CHILDREN} watches that inherit its grant: cancel one, or ask the owner to set a new watch.`;
+          }
+          createdBy = inherit.createdBy;
+          parentWatchId = inherit.watchId;
+          // Without `--to` the child keeps the whole parent grant; with it, only the named part of it.
+          writeTargets = (explicit.length ? normalizeTargets(explicit) : normalizeTargets(inherit.targets)).filter((t) => t.channel !== channelId);
+          if (writeTargets.length === 0) createdBy = "";
+        }
         if (writeTargets.length > MAX_WRITE_TARGETS) {
           return `A watch may name at most ${MAX_WRITE_TARGETS} places to write (this one names ${writeTargets.length}): keep \`--to\` and the links in the request to the ones it needs.`;
         }
       } else if (parsed.to?.length) {
-        return "`--to` only works in the owner's own turn: a watch set anywhere else carries on in this thread only.";
+        return "`--to` only works in the owner's own turn, or in a turn fired by a watch that already holds a grant (and then only inside it): a watch set anywhere else carries on in this thread only.";
       }
       const w = deps.watches.add(
         {
@@ -252,15 +287,16 @@ export const SCHEDULE_COMMANDS: readonly CommandDef[] = [
           note: parsed.note,
           check,
           everyMs: parsed.everyMs,
-          deadlineAt: now + parsed.deadlineMs,
+          deadlineAt: Math.min(now + parsed.deadlineMs, chainEnd),
           createdAt: now,
           createdBy,
           writeTargets,
+          parentWatchId,
         },
         now,
       );
       const grantLine = writeTargets.length
-        ? `\nWhen it fires it may post, react and upload in: ${writeTargets.map(describeTarget).join("; ")} - and nowhere else outside this thread.`
+        ? `\nWhen it fires it may post, react and upload in: ${writeTargets.map(describeTarget).join("; ")} - and nowhere else outside this thread${parentWatchId ? ` (inherited from watch #${parentWatchId}, never wider)` : ""}.`
         : "";
       const what =
         parsed.kind === "pr"

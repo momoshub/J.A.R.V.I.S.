@@ -72,6 +72,10 @@ export const targetsNamedIn = (text: string): WriteTarget[] => {
   return normalizeTargets(found);
 };
 
+/** Does `parent` already give everything `t` would? A whole channel covers its threads; a thread covers only itself. */
+export const coveredBy = (parent: readonly WriteTarget[], t: WriteTarget): boolean =>
+  parent.some((p) => p.channel === t.channel && (!p.threadTs || p.threadTs === t.threadTs));
+
 /** The stored value, as JSON; nothing is an empty string. */
 export const serializeTargets = (targets: readonly WriteTarget[]): string =>
   targets.length === 0 ? "" : JSON.stringify(targets.map((t) => (t.threadTs ? { channel: t.channel, threadTs: t.threadTs } : { channel: t.channel })));
