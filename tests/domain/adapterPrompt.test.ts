@@ -1,10 +1,9 @@
 import { guideIndexForFingerprint } from "../../src/domain/promptGuides.ts";
 import { describe, expect, test } from "bun:test";
 import { type Adapter, adapterRules, parseManifest } from "../../src/domain/adapter.ts";
-import { buildSystemPrompt } from "../../src/domain/personality.ts";
+import { buildSystemPrompt, buildSystemPromptParts } from "../../src/domain/personality.ts";
 import { createHash } from "node:crypto";
 import { promptFingerprint } from "../../src/domain/promptFingerprint.ts";
-import { selfUpdateRules } from "../../src/domain/selfUpdate.ts";
 
 const adapter = (over: Partial<Adapter> = {}): Adapter => ({
   manifest: parseManifest({
@@ -99,49 +98,54 @@ describe("the fingerprint and the adapter", () => {
   });
 });
 
-describe("the fingerprint and the short self-update block", () => {
-  test("the short block a turn with a visible skill gets is part of the hash", () => {
-    // the sentinels carry no adapter, so the build renders the full block; the
-    // short one must be hashed on its own or a change to it never reopens a thread
+describe("the fingerprint and the guide index", () => {
+  test("the always-on guide index of both variants is part of the hash", () => {
+    // the sentinels carry no guide dir, so the build inlines every guide in
+    // full; the index a guided turn gets instead is hashed on its own, or a
+    // change to a guard line would never reopen a live thread
     const build = () => "prompt";
     const hash = (...parts: string[]) => {
       const h = createHash("sha256");
       for (const p of parts) h.update(p);
       return h.digest("hex").slice(0, 16);
     };
-    // with the account split rendered, so a change to that line reopens threads too
-    const short = selfUpdateRules("/fp/repo", "/fp/restart", true, { author: "fp-author", reviewer: "fp-reviewer" });
-    expect(short).toContain("read the skill in your memory");
-    expect(short).toContain("GitHub accounts:");
-    // below owner the Orca lines are replaced, so that variant is hashed as well
-    const shortAgent = selfUpdateRules("/fp/repo", "/fp/restart", true, { author: "fp-author", reviewer: "fp-reviewer" }, false);
-    expect(shortAgent).not.toBe(short);
-    expect(promptFingerprint(build, "persona")).toBe(
-      hash("prompt", "", short, guideIndexForFingerprint(["grafana", "datadog"]), "prompt", shortAgent, guideIndexForFingerprint(["grafana", "datadog"], false)),
-    );
+    const index = guideIndexForFingerprint(["grafana", "datadog"]);
+    const agentIndex = guideIndexForFingerprint(["grafana", "datadog"], false);
+    expect(index).toContain("*self-fix*");
+    expect(agentIndex).not.toBe(index);
+    expect(promptFingerprint(build, "persona")).toBe(hash("prompt", "", index, "prompt", agentIndex));
     expect(promptFingerprint(build, "persona")).not.toBe(hash("prompt", ""));
   });
 });
 
-describe("self-fixing follows whether a skill can be read", () => {
-  const self = { repoPath: "/repo", restartScript: "/bin/restart.sh" };
-  const POINTER = "read the skill in your memory about changing your own source";
+describe("self-fixing never depends on memory", () => {
+  const self = { repoPath: "/repo", restartScript: "/bin/restart.sh", orca: true };
   const FULL = "holds until no turn is running in any thread";
 
-  test("with visible skills the prompt points at the skill", () => {
-    const prompt = buildSystemPrompt({ ...self, adapter: adapter() });
-    expect(prompt).toContain(POINTER);
-    expect(prompt).not.toContain(FULL);
-  });
-
-  test("with no adapter, no skills or skills hidden, the full block stays", () => {
+  test("the full procedure is inline when this turn cannot read guides, whatever memory holds", () => {
     for (const prompt of [
       buildSystemPrompt({ ...self }),
+      buildSystemPrompt({ ...self, adapter: adapter() }),
       buildSystemPrompt({ ...self, adapter: adapter({ skills: [] }) }),
       buildSystemPrompt({ ...self, adapter: adapter(), adapterScope: { canReadFiles: false } }),
     ]) {
       expect(prompt).toContain(FULL);
-      expect(prompt).not.toContain(POINTER);
+      expect(prompt).toContain("who writes it: an Orca worker");
+      expect(prompt).not.toContain("read the skill in your memory");
     }
+  });
+
+  test("a guided turn keeps one index line and the procedure in the self-fix guide", () => {
+    const { prompt, guides } = buildSystemPromptParts({ ...self, orca: true, guideDir: "/g", adapter: adapter() });
+    const guide = guides.find((g) => g.slug === "self-fix");
+    expect(guide?.body).toContain(FULL);
+    expect(guide?.body).toContain("worker-ticket");
+    expect(prompt).not.toContain(FULL);
+    expect(prompt).toContain("*self-fix* - changing your own source: never edit the main folder in place");
+    expect(prompt).not.toContain("read the skill in your memory");
+  });
+
+  test("no repo or helper, no self-fix guide", () => {
+    expect(buildSystemPromptParts({ guideDir: "/g" }).guides.find((g) => g.slug === "self-fix")).toBeUndefined();
   });
 });

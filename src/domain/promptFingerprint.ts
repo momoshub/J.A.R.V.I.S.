@@ -24,7 +24,6 @@
  * reset every open thread the moment anybody said "remember this".
  */
 import { createHash } from "node:crypto";
-import { selfUpdateRules } from "./selfUpdate.ts";
 import { guideIndexForFingerprint } from "./promptGuides.ts";
 
 /** Fixed stand-ins, so every optional block renders and is therefore covered. */
@@ -75,19 +74,15 @@ export const promptFingerprint = (
   createHash("sha256")
     .update(build({ ...SENTINELS, logSources: [...SENTINELS.logSources], learnings: [], base }))
     .update(adapterRules ?? "")
-    // the sentinels carry no adapter, so the build above renders the full
-    // self-update block; the short one a turn with a visible skill gets is
-    // hashed here, or a change to it would never reopen a live thread
-    .update(selfUpdateRules(SENTINELS.repoPath, SENTINELS.restartScript, true, SENTINELS.selfPrAccounts))
-    // likewise the build above inlines every guide's full text, which covers
-    // the guides themselves; the always-on index a guided turn gets instead is
-    // hashed here, so a changed guard line reopens live threads too
+    // the build above inlines every guide's full text (the self-fix procedure
+    // included), which covers the guides themselves; the always-on index a
+    // guided turn gets instead is hashed here, so a changed guard line reopens
+    // live threads too
     .update(guideIndexForFingerprint(SENTINELS.logSources))
     // below owner the Orca lines are replaced by Agent tool ones (`orca: false`):
     // same hashing for each of them, or changing the text an admin or executer
     // reads would never reopen their live threads
     .update(build({ ...SENTINELS, orca: false, logSources: [...SENTINELS.logSources], learnings: [], base }))
-    .update(selfUpdateRules(SENTINELS.repoPath, SENTINELS.restartScript, true, SENTINELS.selfPrAccounts, false))
     .update(guideIndexForFingerprint(SENTINELS.logSources, false))
     .digest("hex")
     .slice(0, 16);

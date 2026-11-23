@@ -11,46 +11,73 @@ import {
 } from "../../src/domain/selfUpdate.ts";
 
 const rules = selfUpdateRules("/repo", "/bin/jarvis-restart.sh");
+const agentRules = selfUpdateRules("/repo", "/bin/jarvis-restart.sh", undefined, false);
 
-const short = selfUpdateRules("/repo", "/bin/jarvis-restart.sh", true);
-
-describe("selfUpdateRules with a memory skill", () => {
-  test("points at the memory skill for the full procedure", () => {
-    expect(short).toContain("read the skill in your memory about changing your own source");
-    // the procedure itself lives in the skill, not in every turn
-    expect(short.length).toBeLessThan(1200);
+describe("selfUpdateRules is the whole procedure, from the codebase", () => {
+  test("never defers to a memory skill", () => {
+    // a clone of the repository has no memory: the rules ride in the code
+    expect(rules).not.toContain("read the skill in your memory");
+    expect(rules).toContain("Memory may add specifics of this instance");
+    expect(rules).toContain("never replace a step of it");
   });
 
-  test("the restart helper is the gate, and testing a guess by restarting is out", () => {
-    expect(short).toContain("/bin/jarvis-restart.sh");
-    expect(short).toContain("only restarts you if typecheck and tests pass");
-    expect(short).toContain('never restart to "see if that fixed it"');
+  test("the writer is an Orca worker with its own ticket, the session only orchestrates", () => {
+    expect(rules).toContain("who writes it: an Orca worker, never the session itself");
+    expect(rules).toContain("cheap jobs (a test fixture, a few edits) are done inline");
+    expect(rules).toContain("`worker-ticket <owner/repo> pending` before `worker-start`");
+    expect(rules).toContain("worker-ticket bind <id> <dispatchId>");
+    expect(rules).toContain("never read, print or copy the file");
+    expect(rules).toContain("without one the writer gets stuck at the PR step");
+    expect(rules).toContain("`bin/github-app.sh ticket-renew <owner/repo>`");
+    expect(rules).toContain("--model \"$BOT_WORKER_MODEL\"");
+    expect(rules).toContain("`watch worker <dispatchId>`");
+    expect(rules).toContain("it does NOT restart you");
+    expect(rules).toContain("You only orchestrate");
+    expect(rules).toContain("Orca unreachable or refused");
   });
 
-  test("lands every change through a worktree, a reviewed PR and a pull", () => {
-    expect(short).toContain("never edit /repo in place");
-    expect(short).toContain("git worktree add");
-    expect(short).toContain("merge it yourself");
-    expect(short).toContain("pull --no-rebase");
-    expect(short).toContain("no attribution");
-    expect(short).not.toContain("Generated with Jarvis");
+  test("below owner the writer is never an Orca worker", () => {
+    expect(agentRules).toContain("never `orca`");
+    expect(agentRules).not.toContain("worker-ticket");
+    expect(agentRules).not.toContain("worker-start --run <runId> --spec-file <brief> --task-title <short> --worktree path:$BOT_WORKER_HOME --agent claude --model \"$BOT_WORKER_MODEL\"");
   });
 
-  test("tells the turn what the restart does, and only for a code change", () => {
-    expect(short).toContain(`up to ${RESTART_MAX_WAIT_MS / 60_000} minutes`);
-    expect(short).toContain("anything you were part-way through is gone");
-    expect(short).toContain("for a code change, `/bin/jarvis-restart.sh`");
-    expect(short.indexOf("pull --no-rebase")).toBeLessThan(short.indexOf("/bin/jarvis-restart.sh"));
-    expect(short).not.toContain("Co-Authored");
+  test("docs and tests move with the code, and prompt text goes through the probe gate", () => {
+    expect(rules).toContain("docs and tests move with the code, in the same branch and PR, never as a follow-up");
+    expect(rules).toContain("`CLAUDE.md`");
+    expect(rules).toContain("`ARCHITECTURE.md`");
+    expect(rules).toContain("`.env.example`");
+    expect(rules).toContain("no doc change: internal only");
+    expect(rules).toContain("bun bin/probe-harness.ts --path <file> --base-ref origin/main");
+    expect(rules).toContain("docs/probe-cases/");
+    expect(rules).toContain("the repo is public");
   });
 
-  test("a standalone reviewer comes before the merge of runtime code", () => {
-    expect(short).toContain("standalone reviewer agent (Orca worker, fresh context, real PR reviews only, up to 5 rounds)");
-    expect(short).toContain("green CI before you merge it yourself with `bin/merge-when-green.sh`");
-    expect(short.indexOf("standalone reviewer agent")).toBeLessThan(short.indexOf("merge it yourself"));
-    // the full rule still exists for the prompts that carry it whole
+  test("a verifier runs runtime-code PRs and the writer never calls its own PR verified", () => {
+    expect(rules).toContain("verifier (runtime code only");
+    expect(rules).toContain(".claude/skills/verify/SKILL.md");
+    expect(rules).toContain("`VERDICT: verified|failed`");
+    expect(rules).toContain("You never call your own PR verified");
+    expect(rules).toContain("a push after the verdict makes it stale");
+    expect(rules).toContain("only the reviewer runs on opus");
+  });
+
+  test("after the merge: watch the e2e, fix or revert, pull, restart and watch the restart", () => {
+    expect(rules).toContain("gh run list -w e2e -c <merge sha>");
+    expect(rules).toContain("git revert -m 1 <merge sha>");
+    expect(rules).toContain("Never leave main red");
+    expect(rules).toContain("never ask anyone to ping you");
+    expect(rules).toContain("Never watch `src/gateway.ts`");
+    expect(rules.indexOf("watch the e2e")).toBeLessThan(rules.indexOf("pull --no-rebase"));
+    expect(rules.indexOf("pull --no-rebase")).toBeLessThan(rules.indexOf("/bin/jarvis-restart.sh"));
+  });
+
+  test("a standalone reviewer comes before the merge of runtime code, on opus", () => {
+    expect(rules).toContain(STANDALONE_REVIEW_RULE);
     expect(STANDALONE_REVIEW_RULE).toContain("orca orchestration worker-start");
-    expect(STANDALONE_REVIEW_RULE).toContain('--agent claude --model "$BOT_WORKER_MODEL" --json');
+    // the reviewer runs on opus; writers and verifiers keep the worker model
+    expect(STANDALONE_REVIEW_RULE).toContain("--agent claude --model opus --json");
+    expect(STANDALONE_REVIEW_RULE).not.toContain('--model "$BOT_WORKER_MODEL"');
     // the reviewer worker is trimmed before it starts, like every other worker
     expect(STANDALONE_REVIEW_RULE).toContain('"$BOT_WORKER_MCP_TRIM"` with no argument');
     expect(STANDALONE_REVIEW_RULE).toContain("--worktree path:$BOT_WORKER_HOME --agent claude");
@@ -60,13 +87,12 @@ describe("selfUpdateRules with a memory skill", () => {
   });
 
   test("review by risk: docs and prompt text need no reviewer, runtime code does", () => {
-    for (const text of [short, rules, STANDALONE_REVIEW_RULE]) {
+    for (const text of [rules, STANDALONE_REVIEW_RULE]) {
       expect(text).toContain("docs, prompt text");
       expect(text).toContain("dashboard UI");
       expect(text).toMatch(/need none|gets no reviewer/);
       expect(text).toContain("runtime code");
     }
-    expect(short).toContain("for runtime code (logic, commands, adapters, `bin/`, or mixed)");
     expect(STANDALONE_REVIEW_RULE).toContain("adapter skills, prompt guides or dashboard UI gets no reviewer");
     expect(STANDALONE_REVIEW_RULE).toContain("a mixed PR counts as runtime code");
     // the old blanket rule is gone, and so is the two-round cap
@@ -80,12 +106,16 @@ describe("selfUpdateRules with a memory skill", () => {
   });
 
   test("carries no stash/checkout rule about the database", () => {
-    expect(short).not.toContain("data/*.db");
-    expect(short).not.toContain("git stash");
+    expect(rules).not.toContain("data/*.db");
+    expect(rules).not.toContain("git stash");
+  });
+
+  test("keeps the instance specifics out of the public text", () => {
+    expect(rules).not.toMatch(/momoshub|[a-z]+-at-[a-z]+|@[a-z]+\.com/i);
   });
 });
 
-describe("selfUpdateRules with no skill to read (the full block)", () => {
+describe("selfUpdateRules, the restart and the checks", () => {
   test("the checks are stated as a gate, with the reason they are not optional", () => {
     // restarting into code that does not compile is a crash-loop KeepAlive
     // cannot break out of, and Slack is no use for fixing it
@@ -183,14 +213,7 @@ describe("selfUpdateRules with no skill to read (the full block)", () => {
     expect(STANDALONE_REVIEW_RULE).toContain("after round 5,");
     expect(STANDALONE_REVIEW_RULE).toContain("do not merge - leave the PR open");
     // the step sits in the flow before the merge, and the rule before the restart
-    const flow = rules.split("\n").find((l) => l.includes("every change goes this way")) ?? "";
-    expect(flow.indexOf("standalone reviewer agent")).toBeLessThan(flow.indexOf("merge it yourself"));
-    expect(rules.indexOf(STANDALONE_REVIEW_RULE)).toBeLessThan(rules.indexOf("once it is pulled into the main folder"));
-  });
-
-  test("is the full block whenever no skill is visible", () => {
-    expect(selfUpdateRules("/repo", "/bin/jarvis-restart.sh", false)).toBe(rules);
-    expect(rules).not.toContain("read the skill in your memory");
+    expect(rules.indexOf(STANDALONE_REVIEW_RULE)).toBeLessThan(rules.indexOf("after the merge, watch the e2e"));
   });
 
   test("with no repo or no helper, there is no block at all", () => {
@@ -344,7 +367,6 @@ describe("self PR accounts", () => {
 
   test("no split, no line: one account does it all", () => {
     expect(selfPrAccountsRule()).toBe("");
-    expect(short).not.toContain("GitHub accounts:");
     expect(rules).not.toContain("GitHub accounts:");
   });
 
@@ -363,9 +385,9 @@ describe("self PR accounts", () => {
     expect(line).toContain("say the same in the reviewer's brief");
   });
 
-  test("both the short and the full block carry it", () => {
-    expect(selfUpdateRules("/repo", "/bin/r.sh", true, accounts)).toContain(selfPrAccountsRule(accounts));
-    expect(selfUpdateRules("/repo", "/bin/r.sh", false, accounts)).toContain(selfPrAccountsRule(accounts));
+  test("both the owner and the agent-tool variant carry it", () => {
+    expect(selfUpdateRules("/repo", "/bin/r.sh", accounts)).toContain(selfPrAccountsRule(accounts));
+    expect(selfUpdateRules("/repo", "/bin/r.sh", accounts, false)).toContain(selfPrAccountsRule(accounts));
   });
 
   test("the review rule no longer assumes one shared account", () => {
