@@ -61,7 +61,7 @@ import {
 import { CHANNELS_DIR, NOTES_FILE, PEOPLE_DIR } from "../domain/adapter.ts";
 import { GLOBAL_SCOPE, oneLine, proposalProblem, type LearningScope } from "../domain/learning.ts";
 import { SIGNATURES } from "../domain/messageFooter.ts";
-import { noticeFingerprint } from "../domain/noticeFingerprint.ts";
+import { sameNotice } from "../domain/noticeFingerprint.ts";
 import type { LearningsRepo } from "../infrastructure/db/learningsRepo.ts";
 import type { MessageRepo } from "../infrastructure/db/messageRepo.ts";
 import type { SkillDraft, SkillDraftRepo } from "../infrastructure/db/skillDraftRepo.ts";
@@ -384,7 +384,7 @@ export const decideSkillDraftPress = async (
     press.messageTs === d.noticeTs &&
     !press.edited &&
     press.blocks !== undefined &&
-    noticeFingerprint(press.blocks) === d.noticeFingerprint;
+    sameNotice(press.blocks, d.noticeFingerprint);
   if (!untouched) {
     deps.log?.(`skill draft #${d.id} press refused: not the untouched approval DM`);
     return { kind: "refused", why: "forged", id: d.id };

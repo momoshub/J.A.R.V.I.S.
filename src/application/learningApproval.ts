@@ -31,7 +31,7 @@ import {
   type LearningSource,
 } from "../domain/learning.ts";
 import { SIGNATURES } from "../domain/messageFooter.ts";
-import { noticeFingerprint } from "../domain/noticeFingerprint.ts";
+import { sameNotice } from "../domain/noticeFingerprint.ts";
 import type { Learning } from "../domain/types.ts";
 import type { LearningsRepo } from "../infrastructure/db/learningsRepo.ts";
 import type { Clock } from "./ports.ts";
@@ -306,7 +306,7 @@ export const decideLearningPress = async (
   // An empty stored fingerprint is a notice posted before this check existed; only a still-pending one may rely on the
   // old checks (a decided notice only has buttons because it was rewritten, which stores one).
   const sameMessage = l.noticeFingerprint
-    ? press.blocks !== undefined && noticeFingerprint(press.blocks) === l.noticeFingerprint
+    ? press.blocks !== undefined && sameNotice(press.blocks, l.noticeFingerprint)
     : l.status === "pending" && !press.edited;
   if (!fromTheDm || !sameMessage || (press.edited && l.status === "pending") || !showsTheFact) {
     deps.log?.(`learning #${l.id} press refused: not the untouched approval DM`);
