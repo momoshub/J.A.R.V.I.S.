@@ -5,6 +5,7 @@ import {
   cancelWatchesOnWorkerStop,
   cancelWorkerWatches,
   createWatcher,
+  describeCheck,
   type CheckResult,
 } from "../../src/application/watcher.ts";
 import { MAX_CONSECUTIVE_ERRORS, MAX_DEADLINE_MS } from "../../src/domain/watch.ts";
@@ -466,5 +467,24 @@ describe("watcher: CI gate rows", () => {
     await w.tick();
     expect(said[0]).toContain("died without reporting");
     expect(turns).toHaveLength(1);
+  });
+});
+
+describe("describeCheck: one debuggable line per check", () => {
+  const w = { id: 7, check: "/x/bin/slack-wait.sh 'C1' '9.9' '1.0' 'U2'" };
+
+  test("names the program and the exit code, never the arguments", () => {
+    const line = describeCheck(w, { code: 1, output: "" }, 420);
+    expect(line).toBe("watch 7 check slack-wait.sh exit=1 in 420ms");
+    expect(line).not.toContain("C1");
+  });
+
+  test("an answer's text (exit 0) is not logged", () => {
+    expect(describeCheck(w, { code: 0, output: "private words" }, 5)).not.toContain("private");
+  });
+
+  test("a failure to read shows its reason", () => {
+    expect(describeCheck(w, { code: 2, output: "Slack said: ratelimited\n" }, 5)).toContain("printed: Slack said: ratelimited");
+    expect(describeCheck(w, { code: 143, output: "", error: "check timed out after 30s" }, 30_000)).toContain("error: check timed out");
   });
 });

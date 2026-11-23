@@ -3,6 +3,8 @@
 #
 #   slack-read.sh history  <channel> [limit] [latest-ts]
 #   slack-read.sh replies  <channel> <thread-ts> [limit]
+#   slack-read.sh replies-since <channel> <thread-ts> <after-ts> [cursor]
+#   slack-read.sh root     <channel> <ts>
 #   slack-read.sh info     <channel>
 #   slack-read.sh user     <user-id>
 #   slack-read.sh find     <#channel-name>
@@ -26,6 +28,16 @@
 # commands into the channel. The blocks themselves are dropped too: they are the
 # bulk of the payload (a 12-message thread came back at 47KB) and they say
 # nothing the text does not.
+#
+# `replies-since` is the cheap read a thread watch polls with: ONE raw page of
+# at most 200 replies strictly newer than <after-ts> (Slack's `oldest`), so a
+# long thread never costs more than the new messages, and the caller follows
+# `response_metadata.next_cursor` for more. No cleaning and no naming: a watch
+# only asks whether anyone spoke, and naming a 280-message thread is one
+# users.info call per author, which is how a check ran out of its 30 seconds.
+#
+# `root` answers what thread a ts belongs to: conversations.replies on a ts that is a REPLY returns only that
+# one message (its `thread_ts` names the real root), so a watch armed on a reply link must re-read the root.
 #
 # Every user id is NAMED before it is printed. The raw payload carries only
 # `user: U0ALEX00001` and `<@U0ALEX00001>` in the text, and a model handed that
@@ -177,6 +189,8 @@ except Exception:
 case "${1:-}" in
   history) read_with_join conversations.history "channel=${2:?channel}" "limit=${3:-20}" ${4:+"latest=$4"} ${4:+"inclusive=true"} | clean | name_users ;;
   replies) read_with_join conversations.replies "channel=${2:?channel}" "ts=${3:?thread ts}" "limit=${4:-50}" | clean | name_users ;;
+  replies-since) read_with_join conversations.replies "channel=${2:?channel}" "ts=${3:?thread ts}" "oldest=${4:?after ts}" "limit=200" ${5:+"cursor=$5"} ;;
+  root)    read_with_join conversations.replies "channel=${2:?channel}" "ts=${3:?ts}" "limit=1" ;;
   info)    api conversations.info "channel=${2:?channel}" ;;
   user)    api users.info "user=${2:?user id}" ;;
   find)    api conversations.list "types=public_channel" "limit=1000" "exclude_archived=true" ;;

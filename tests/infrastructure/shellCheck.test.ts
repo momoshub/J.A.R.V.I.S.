@@ -30,3 +30,11 @@ describe("shell check", () => {
     expect(events).toEqual(["done"]);
   });
 });
+
+describe("shell check timeout", () => {
+  test("a predicate killed by the clock is an error, not a quiet non-zero", async () => {
+    const check = createShellCheck();
+    const res = await check("sleep 5", 200);
+    expect(res.error).toContain("timed out");
+  });
+});
