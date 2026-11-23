@@ -11,8 +11,14 @@
  * Pure: no I/O. The record of what a turn posted lives in `application/selfPosts.ts`.
  */
 
-/** One message the turn put into its own thread. */
-export type SelfPost = { readonly ts: string };
+/**
+ * One message the turn put into its own thread. `rich` is set once it carried blocks or attachments (a board, buttons):
+ * such a message is never overwritten by the closing reply, and the flag stays even if a later update is plain text.
+ */
+export type SelfPost = { readonly ts: string; readonly rich?: true };
+
+const hasContent = (raw: string | undefined): boolean => raw !== undefined && raw.trim() !== "" && raw.trim() !== "[]";
+const isRich = (params: Readonly<Record<string, string>>): boolean => hasContent(params.blocks) || hasContent(params.attachments);
 
 /** The call a turn made, as the proxy saw it: the checked params and Slack's answer. */
 export type SelfPostCall = {
@@ -108,6 +114,16 @@ export const closingReply = (reply: string, posts: readonly SelfPost[]): { reado
   return text ? { kind: "send", text } : { kind: "drop" };
 };
 
+/**
+ * The one message of its own the closing reply may replace: the turn put exactly one plain text message into its
+ * thread and uploaded no file. Several posts, blocks/attachments and uploads are things the turn did on purpose and
+ * stay as they are (the reply is then posted as today).
+ */
+export const replaceableSelfPost = (posts: readonly SelfPost[], uploaded: boolean): SelfPost | undefined => {
+  const [only] = posts;
+  return posts.length === 1 && only && !only.rich && !uploaded ? only : undefined;
+};
+
 /** Could `line` still grow into a marker line (`KEEP_REPLY` with optional blanks around it)? */
 const mayBecomeMarker = (line: string): boolean => {
   const body = line.trimStart();
@@ -177,12 +193,13 @@ export const applySelfPostCall = (posts: readonly SelfPost[], call: SelfPostCall
   if (!answer.ok) return posts;
   if (call.method === "chat.postMessage") {
     if (call.params.thread_ts !== threadTs || !answer.ts) return posts;
-    return posts.some((p) => p.ts === answer.ts) ? posts : [...posts, { ts: answer.ts }];
+    return posts.some((p) => p.ts === answer.ts) ? posts : [...posts, { ts: answer.ts, ...(isRich(call.params) ? { rich: true as const } : {}) }];
   }
   if (call.method === "chat.update") {
     const ts = call.params.ts;
-    // an update of a message this turn posted keeps the turn marked as having posted
-    return ts && posts.some((p) => p.ts === ts) ? [...posts] : posts;
+    // an update of a message this turn posted keeps the turn marked as having posted, and blocks make it rich for good
+    if (!ts || !posts.some((p) => p.ts === ts)) return posts;
+    return posts.map((p) => (p.ts === ts && isRich(call.params) ? { ts: p.ts, rich: true as const } : p));
   }
   return posts;
 };

@@ -59,7 +59,7 @@ export type SlackProxyDeps = {
  * thread. The Slack handler drops the closing reply of such a turn, and a tool
  * result right after the post is read at the moment it matters.
  */
-export const SELF_POST_NOTE = `this message is now in the thread the turn runs in. Your closing reply will be dropped, not posted. To add something, chat.update the message you posted, or put a line ${KEEP_REPLY} in the closing reply and it is sent (without that line)`;
+export const SELF_POST_NOTE = `this message is now in the thread the turn runs in. One ask is one message: your closing reply will be dropped, not posted. To add or correct something, chat.update the message you posted and fold it in. If this is your only text post, a line ${KEEP_REPLY} in the closing reply replaces it with that reply (the line itself is not shown); never post a second message next to it`;
 
 /** Slack's own fields untouched, `jarvis_note` added. A body that is not a JSON object is left as it is. */
 const withSelfPostNote = (body: string): string => {
@@ -284,6 +284,7 @@ export const createSlackProxy = (deps: SlackProxyDeps): SlackProxy => {
         }
         if (res.ok && !checked.ownMessageIn) briefWrite(resolved.ctx, ticket, checked, sendParams, text);
         // noted per turn, only what Slack accepted, and only into the turn's own thread (an owner's post in another channel is not)
+        if (res.ok && checked.method === "files.completeUploadExternal" && resolved.ctx.turn) deps.selfPosts?.noteUpload(resolved.ctx.turn);
         if (res.ok && checked.method.startsWith("chat.") && resolved.ctx.turn && !checked.ownMessageIn && !checked.crossChannel) {
           const landed = deps.selfPosts?.record(resolved.ctx.turn, resolved.ctx.threadTs, { method: checked.method, params: sendParams, answer: text });
           if (landed) return { status: res.status, body: withSelfPostNote(text) };

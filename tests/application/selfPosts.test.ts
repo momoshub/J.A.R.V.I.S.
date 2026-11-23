@@ -41,4 +41,16 @@ describe("selfPosts", () => {
     expect(log.posts("turn-0")).toEqual([]);
     expect(log.posts(`turn-${SELF_POSTS_MAX_TURNS}`)).toHaveLength(1);
   });
+  test("notes an upload per turn, kept next to the posts and gone when the turn ends", () => {
+    const log = createSelfPosts();
+    expect(log.uploaded("turn-a")).toBe(false);
+    log.record("turn-a", "1.1", post("5.5", "answer"));
+    log.noteUpload("turn-a");
+    log.record("turn-a", "1.1", post("6.6", "more"));
+    expect(log.uploaded("turn-a")).toBe(true);
+    expect(log.posts("turn-a").map((p) => p.ts)).toEqual(["5.5", "6.6"]);
+    expect(log.uploaded("turn-b")).toBe(false);
+    log.clear("turn-a");
+    expect(log.uploaded("turn-a")).toBe(false);
+  });
 });

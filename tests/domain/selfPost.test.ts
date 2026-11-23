@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { applySelfPostCall, closingReply, createKeepMarkerFilter, hasKeepMarker, KEEP_REPLY, stripKeepMarker, stripKeepMarkerFromCall, type SelfPost } from "../../src/domain/selfPost.ts";
+import { applySelfPostCall, closingReply, createKeepMarkerFilter, hasKeepMarker, KEEP_REPLY, replaceableSelfPost, stripKeepMarker, stripKeepMarkerFromCall, type SelfPost } from "../../src/domain/selfPost.ts";
 
 const posted: SelfPost[] = [{ ts: "9.1" }];
 
@@ -178,5 +178,29 @@ describe("createKeepMarkerFilter", () => {
   test("text with the token inside a sentence passes whole", () => {
     expect(run(["I will not write KEEP_REPLY here"])).toBe("I will not write KEEP_REPLY here");
     expect(run(["a", "b ", "c\n", "d"])).toBe("ab c\nd");
+  });
+});
+
+describe("rich self-posts and the post a closing reply may replace", () => {
+  const ok = (ts: string) => JSON.stringify({ ok: true, ts });
+  const inThread = { channel: "C1", thread_ts: "1.1", text: "x" };
+  test("a post with blocks or attachments is rich, a text post is not", () => {
+    const blocks = JSON.stringify([{ type: "section", text: { type: "mrkdwn", text: "board" } }]);
+    expect(applySelfPostCall([], { method: "chat.postMessage", params: { ...inThread, blocks }, answer: ok("5.5") }, "1.1")).toEqual([{ ts: "5.5", rich: true }]);
+    expect(applySelfPostCall([], { method: "chat.postMessage", params: { ...inThread, attachments: "[{\"text\":\"a\"}]" }, answer: ok("5.5") }, "1.1")).toEqual([{ ts: "5.5", rich: true }]);
+    expect(applySelfPostCall([], { method: "chat.postMessage", params: { ...inThread, blocks: "[]" }, answer: ok("5.5") }, "1.1")).toEqual([{ ts: "5.5" }]);
+  });
+  test("an update that adds blocks makes the post rich for good", () => {
+    const blocks = JSON.stringify([{ type: "divider" }]);
+    const rich = applySelfPostCall([{ ts: "5.5" }], { method: "chat.update", params: { channel: "C1", ts: "5.5", text: "y", blocks }, answer: ok("5.5") }, "1.1");
+    expect(rich).toEqual([{ ts: "5.5", rich: true }]);
+    expect(applySelfPostCall(rich, { method: "chat.update", params: { channel: "C1", ts: "5.5", text: "z" }, answer: ok("5.5") }, "1.1")).toEqual([{ ts: "5.5", rich: true }]);
+  });
+  test("exactly one plain post and no upload is replaceable; nothing else is", () => {
+    expect(replaceableSelfPost([{ ts: "1.2" }], false)).toEqual({ ts: "1.2" });
+    expect(replaceableSelfPost([], false)).toBeUndefined();
+    expect(replaceableSelfPost([{ ts: "1.2" }, { ts: "1.3" }], false)).toBeUndefined();
+    expect(replaceableSelfPost([{ ts: "1.2", rich: true }], false)).toBeUndefined();
+    expect(replaceableSelfPost([{ ts: "1.2" }], true)).toBeUndefined();
   });
 });

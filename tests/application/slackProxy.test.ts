@@ -337,6 +337,16 @@ describe("Slack proxy notes what a turn posts into its own thread", () => {
     expect(failing.selfPosts.posts("run-1")).toEqual([]);
   });
 
+  test("blocks make a post rich, and a finished upload is noted for the turn", async () => {
+    const { proxy, tickets, selfPosts } = withLog(() => Response.json({ ok: true, ts: "5.5" }));
+    const ticket = tickets.issue({ channel: "C1", threadTs: "1.1", turn: "run-1" });
+    await proxy.call({ ticket, method: "chat.postMessage", params: { channel: "C1", text: "board", blocks: JSON.stringify([{ type: "divider" }]) } });
+    expect(selfPosts.posts("run-1")).toEqual([{ ts: "5.5", rich: true }]);
+    expect(selfPosts.uploaded("run-1")).toBe(false);
+    await proxy.call({ ticket, method: "files.completeUploadExternal", params: { files: JSON.stringify([{ id: "F1", title: "t" }]), channel_id: "C1", thread_ts: "1.1" } });
+    expect(selfPosts.uploaded("run-1")).toBe(true);
+  });
+
   test("a reaction or a read is not a post", async () => {
     const { proxy, tickets, selfPosts } = withLog(() => Response.json({ ok: true, ts: "5.5" }));
     const ticket = tickets.issue({ channel: "C1", threadTs: "1.1", turn: "run-1" });
