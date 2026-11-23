@@ -169,7 +169,9 @@ export type LlmCompleteParams = {
    * authorisation - under one the CLI loads zero `mcp__` tools, verified - so a
    * task that genuinely needs a connector cannot run on one. Tickets need
    * Notion, and there is no Notion credential of our own to give them, so they
-   * run on the host session instead. Everything else keeps the explicit token.
+   * run on the host session instead. Everything else keeps the explicit token, apart from a turn the
+   * owner's own message started: that one holds an owner ticket instead (`application/ownerTickets.ts`)
+   * and gets the host login and the connectors without this flag.
    */
   readonly useHostLogin?: boolean;
   /**

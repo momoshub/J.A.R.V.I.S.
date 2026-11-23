@@ -262,6 +262,17 @@ describe("dispatchCommand", () => {
     expect(await dispatchCommand(deps, actor(), "C1", "ask what is 2+2")).toBe("drafted answer");
   });
 
+  test("ask and btw count as the person's own message only when typed, never from a brain run", async () => {
+    const own: (boolean | undefined)[] = [];
+    const deps = build();
+    deps.llm = { complete: async (p) => (own.push(p.bill?.ownMessage), "ok") };
+    for (const line of ["ask what is 2+2", "btw what is 2+2"]) {
+      await dispatchCommand(deps, actor(), "C1", line);
+      await dispatchCommand(deps, actor(), "C1", line, { fromBrainRun: true });
+    }
+    expect(own).toEqual([true, undefined, true, undefined]);
+  });
+
   test("model reports the brain, and any per-role override", async () => {
     const deps = build();
     deps.settings = createSettingsRepo(db);

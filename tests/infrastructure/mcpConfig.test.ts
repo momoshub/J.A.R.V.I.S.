@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   UNAUTHENTICATED_MCP_SERVERS,
+  UNAUTHENTICATED_STUB,
   createClaudeJsonReader,
   mcpConfigFor, unknownMcpServers, unlistedLocalMcpServers } from "../../src/infrastructure/llm/mcpConfig.ts";
 
@@ -16,9 +17,19 @@ describe("mcpConfigFor", () => {
     projects: { "/repo": { mcpServers: { playwright: {}, figma: {} } }, "/other": { mcpServers: { nope: {} } } },
   };
 
-  test("denies figma and datadog, keeps everything else including a server added later", () => {
-    expect(UNAUTHENTICATED_MCP_SERVERS).toEqual(["figma", "datadog"]);
-    expect(servers(mcpConfigFor(host, undefined))).toEqual(["notion", "acme-pg-prod", "clickhouse-sql-us-prod-ro", "later"]);
+  test("denies figma, keeps everything else (datadog since its OAuth) including a server added later", () => {
+    expect(UNAUTHENTICATED_MCP_SERVERS).toEqual(["figma"]);
+    expect(servers(mcpConfigFor(host, undefined))).toEqual(["datadog", "notion", "acme-pg-prod", "clickhouse-sql-us-prod-ro", "later"]);
+  });
+
+  test("stubDenied keeps a denied server the host lists as a stub that cannot start, and invents none", () => {
+    const cfg = JSON.parse(mcpConfigFor(host, undefined, ["figma", "ghost"], { stubDenied: true, lazy: { runtime: "bun", script: "p.ts", cacheDir: "c" } })!).mcpServers;
+    expect(cfg.figma).toEqual(UNAUTHENTICATED_STUB);
+    expect("ghost" in cfg).toBe(false);
+    expect(Object.keys(cfg)).toContain("datadog");
+    // a role's whole-server denial still wins over the stub
+    const denied = JSON.parse(mcpConfigFor(host, undefined, ["figma"], { stubDenied: true, disallowedTools: ["mcp__figma"] })!).mcpServers;
+    expect("figma" in denied).toBe(false);
   });
 
   test("adds the project servers for the spawn's cwd only, and the denylist covers them too", () => {

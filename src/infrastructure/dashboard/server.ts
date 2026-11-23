@@ -31,6 +31,7 @@ import { createConversationDirectory } from "../../application/conversationDirec
 import { pageReplies } from "../../domain/messagePaging.ts";
 import { createNameResolver } from "../../application/nameResolver.ts";
 import type { SlackProxy } from "../../application/slackProxy.ts";
+import type { OwnerTickets } from "../../application/ownerTickets.ts";
 import { ignoreQuietly } from "../../application/ignoredError.ts";
 
 export type DashboardConfig = {
@@ -123,6 +124,8 @@ export type DashboardDeps = {
    * holds the bot token; it only ever holds the ticket.
    */
   slackProxy?: SlackProxy;
+  /** Is this owner ticket live? A child of an owner turn (the `mcp` CLI) asks before it uses what only the owner may. */
+  ownerTickets?: Pick<OwnerTickets, "redeem">;
   /** Modals the brain stores for a `jv:modal:<id>` button to open on click. */
   kitViews?: KitViewRepo;
   /**
@@ -464,6 +467,11 @@ export const createDashboard = (config: DashboardConfig, deps: DashboardDeps) =>
           if (!deps.slackProxy) return jsonError("The Slack proxy is not configured", 503);
           const answer = await deps.slackProxy.call({ ticket: body.ticket, method: body.method, params: body.params });
           return new Response(answer.body, { status: answer.status, headers: { "content-type": "application/json" } });
+        }
+        case "/api/owner-ticket": {
+          if (!deps.ownerTickets) return jsonError("Owner tickets are not configured", 503);
+          const answer = deps.ownerTickets.redeem(typeof body.ticket === "string" ? body.ticket : "");
+          return answer.ok ? Response.json({ ok: true }) : jsonError(`that owner ticket is not valid (${answer.reason})`, 403);
         }
         case "/api/slack/file": {
           if (!deps.slackProxy) return jsonError("The Slack proxy is not configured", 503);

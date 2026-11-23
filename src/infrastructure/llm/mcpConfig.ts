@@ -7,11 +7,23 @@ import { join } from "node:path";
  * are not authenticated. The CLI injects a "needs authentication" notice
  * mid-turn for each, and the model wrote that notice into a Slack reply
  * instead of its answer (datadog and figma, 2026-11-09). Static on purpose -
- * auth status is not probed per spawn. Take `datadog` off this list once a
- * human has completed its OAuth (`claude mcp list` stops saying "Needs
- * authentication"), and add any server that starts showing the same notice.
+ * auth status is not probed per spawn. Add any server that starts showing the
+ * same notice, and take one off once a human has completed its OAuth (`claude
+ * mcp list` stops saying "Needs authentication"): `datadog` came off on
+ * 2026-11-23.
  */
-export const UNAUTHENTICATED_MCP_SERVERS: readonly string[] = ["figma", "datadog"];
+export const UNAUTHENTICATED_MCP_SERVERS: readonly string[] = ["figma"];
+
+/**
+ * What an unauthenticated server is replaced with in an owner-access config. That config is NOT strict (strict mode drops the
+ * claude.ai connectors, measured 2.1.285), so the CLI still reads the user-scope server of the same name from `~/.claude.json`
+ * and announces "needs authentication"; a server of that name in `--mcp-config` wins over it, and a stub that exits at once
+ * shows up as `failed` with no notice (measured). Absolute path: a launchd PATH is short.
+ */
+export const UNAUTHENTICATED_STUB = { type: "stdio", command: "/usr/bin/false", args: [] as string[] } as const;
+
+/** The claude.ai Slack connector acts as the human who authorised it; the bot speaks through its own helper only. */
+export const SLACK_CONNECTOR_SERVER = "mcp__claude_ai_Slack";
 
 /** Set on a spawn so the CLI does not load the account's claude.ai connectors. */
 export const NO_CLAUDEAI_CONNECTORS_ENV = { ENABLE_CLAUDEAI_MCP_SERVERS: "false" } as const;
@@ -35,6 +47,11 @@ export type McpConfigOptions = {
   readonly lazy?: LazyProxy;
   /** The turn's `--disallowedTools`: a whole-server entry (`mcp__name`) keeps that server out of the config. */
   readonly disallowedTools?: readonly string[];
+  /**
+   * Keep the denied (unauthenticated) servers in the config as `UNAUTHENTICATED_STUB` instead of dropping them, for a spawn
+   * that is not strict (see `UNAUTHENTICATED_STUB`). Only a server the host actually lists is stubbed.
+   */
+  readonly stubDenied?: boolean;
 };
 
 const asRecord = (v: unknown): Record<string, unknown> | undefined =>
@@ -91,12 +108,13 @@ export const mcpConfigFor = (
   deny: readonly string[] = UNAUTHENTICATED_MCP_SERVERS,
   opts: McpConfigOptions = {},
 ): string | undefined => {
-  const merged = mergedServers(claudeJson, cwd, deny);
+  const merged = mergedServers(claudeJson, cwd, opts.stubDenied ? [] : deny);
   if (!merged) return undefined;
+  if (opts.stubDenied) for (const name of deny) if (name in merged) merged[name] = UNAUTHENTICATED_STUB;
   // A server the role may not call has no business being started: drop it, not just its tools.
   for (const tool of opts.disallowedTools ?? []) if (tool.startsWith("mcp__") && !tool.includes("__", 5)) delete merged[tool.slice(5)];
   const { lazy } = opts;
-  if (lazy) for (const [name, def] of Object.entries(merged)) merged[name] = lazyStdio(name, def, lazy);
+  if (lazy) for (const [name, def] of Object.entries(merged)) if (def !== UNAUTHENTICATED_STUB) merged[name] = lazyStdio(name, def, lazy);
   return JSON.stringify({ mcpServers: merged });
 };
 

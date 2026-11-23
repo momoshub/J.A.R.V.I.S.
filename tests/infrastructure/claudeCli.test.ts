@@ -258,7 +258,7 @@ describe("createClaudeCliLlm", () => {
     expect(flag).toBe("false");
     expect(strict).toBe("yes");
     const servers = JSON.parse(Buffer.from(cfg!, "base64").toString()).mcpServers;
-    expect(Object.keys(servers)).toEqual(["notion", "acme-pg-prod"]);
+    expect(Object.keys(servers)).toEqual(["datadog", "notion", "acme-pg-prod"]);
     // the stdio server runs behind the lazy proxy, the http one is untouched
     expect(servers["acme-pg-prod"].args).toEqual([
       "--no-env-file", expect.stringContaining("mcp-lazy-proxy.ts"), "--name", "acme-pg-prod", "--cache-dir", expect.stringContaining("mcp-schema-cache"), "--", "x",
@@ -267,7 +267,7 @@ describe("createClaudeCliLlm", () => {
 
     // a role that may not use a database server does not get it started at all
     const sandboxed = (await llm.complete({ system: "s", messages: [{ role: "user", content: "hi" }], policy: { skipPermissions: false, disallowedTools: ["mcp__acme-pg-prod"] } })).split(" ");
-    expect(Object.keys(JSON.parse(Buffer.from(sandboxed[2]!, "base64").toString()).mcpServers)).toEqual(["notion"]);
+    expect(Object.keys(JSON.parse(Buffer.from(sandboxed[2]!, "base64").toString()).mcpServers)).toEqual(["datadog", "notion"]);
 
     // a caller's own token is a bot turn too
     const own = await llm.complete({ system: "s", messages: [{ role: "user", content: "hi" }], oauthToken: "sk-ant-oat01-theirs" });
@@ -287,6 +287,61 @@ describe("createClaudeCliLlm", () => {
     expect(out.startsWith("[]")).toBe(true);
     expect(out).not.toContain("--strict-mcp-config");
     expect(out).not.toContain("--mcp-config");
+  });
+
+  test("an owner-ticketed spawn runs on the host login with the connectors: not strict, figma stubbed, Slack connector denied", async () => {
+    // --strict-mcp-config drops the claude.ai connectors (measured), so an owner turn must not pass it
+    const dir = mkdtempSync(join(tmpdir(), "jarvis-claudejson-"));
+    const claudeJsonPath = join(dir, "claude.json");
+    writeFileSync(claudeJsonPath, JSON.stringify({ mcpServers: { figma: { type: "http" }, datadog: { type: "http" }, "acme-pg-prod": { command: "x" } } }));
+    const bin = fakeBin(
+      `#!/usr/bin/env bash\ncat > /dev/null\necho "{\\"type\\":\\"result\\",\\"subtype\\":\\"success\\",\\"is_error\\":false,\\"result\\":\\"$(printf '%s' "[$ENABLE_CLAUDEAI_MCP_SERVERS][$CLAUDE_CODE_OAUTH_TOKEN][$JARVIS_OWNER_TICKET][$JARVIS_OWNER_API_URL][$BOT_MCP_DENY] $*" | base64 | tr -d '[:space:]')\\"}"`,
+    );
+    const prev = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    process.env.CLAUDE_CODE_OAUTH_TOKEN = "sk-ant-oat01-bots";
+    try {
+      const ended: string[] = [];
+      const llm = createClaudeCliLlm({
+        binPath: bin,
+        claudeJsonPath,
+        ownerApiUrl: "http://127.0.0.1:1/api/owner-ticket",
+        ownerTicket: (bill) => (bill?.actor === "UOWNER" ? { token: "jvow_t", end: () => void ended.push("jvow_t") } : undefined),
+      });
+      const full = { skipPermissions: true, disallowedTools: ["Bash(aws logs:*)"] };
+      const ask = async (params: Record<string, unknown>): Promise<string> =>
+        Buffer.from(await llm.complete({ system: "s", messages: [{ role: "user", content: "hi" }], ...params }), "base64").toString();
+      const out = await ask({ policy: full, bill: { actor: "UOWNER", kind: "chat" } });
+      expect(out.startsWith("[][][jvow_t][http://127.0.0.1:1/api/owner-ticket][")).toBe(true);
+      expect(out).not.toContain("--strict-mcp-config");
+      expect(out).toContain("--disallowedTools mcp__claude_ai_Slack");
+      // the mcp CLI is held to the same denial
+      expect(out).toContain('mcp__claude_ai_Slack"]');
+      const cfg = JSON.parse(out.split("--mcp-config ")[1]!.split(" ")[0]!).mcpServers;
+      expect(cfg.figma).toEqual({ type: "stdio", command: "/usr/bin/false", args: [] });
+      expect(cfg.datadog).toEqual({ type: "http" });
+      expect(cfg["acme-pg-prod"].args).toContain("--");
+      // the ticket ends with the process
+      expect(ended).toEqual(["jvow_t"]);
+
+      // anyone else, a restricted turn, a caller's token and a preset host-login run get no owner access
+      for (const params of [
+        { policy: full, bill: { actor: "UOTHER", kind: "chat" } },
+        { policy: { skipPermissions: false }, bill: { actor: "UOWNER", kind: "chat" } },
+        { policy: full, bill: { actor: "UOWNER", kind: "chat" }, oauthToken: "sk-ant-oat01-theirs" },
+      ]) {
+        const o = await ask(params);
+        expect(o.startsWith("[false]")).toBe(true);
+        expect(o).toContain("--strict-mcp-config");
+        expect(o).not.toContain("claude_ai_Slack");
+        expect(o).toContain("[]["); // no owner ticket
+      }
+      const preset = await ask({ policy: full, bill: { actor: "UOWNER", kind: "chat" }, useHostLogin: true });
+      expect(preset.startsWith("[][][][][")).toBe(true); // host login, but no owner ticket of its own
+      expect(preset).not.toContain("--mcp-config");
+    } finally {
+      if (prev === undefined) delete process.env.CLAUDE_CODE_OAUTH_TOKEN;
+      else process.env.CLAUDE_CODE_OAUTH_TOKEN = prev;
+    }
   });
 
   test("a host-login spawn drops a connector switch-off inherited from the parent env", async () => {
