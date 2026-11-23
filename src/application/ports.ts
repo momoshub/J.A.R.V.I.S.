@@ -171,7 +171,7 @@ export type LlmCompleteParams = {
    * Notion, and there is no Notion credential of our own to give them, so they
    * run on the host session instead. Everything else keeps the explicit token, apart from a turn the
    * owner's own message started: that one holds an owner ticket instead (`application/ownerTickets.ts`)
-   * and gets the host login and the connectors without this flag.
+   * and gets the host login and the connectors without this flag (falling back to the bot's token without connectors when that login is refused).
    */
   readonly useHostLogin?: boolean;
   /**

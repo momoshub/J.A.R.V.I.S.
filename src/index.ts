@@ -186,7 +186,7 @@ const buildLlm = (
   turnEnv?: () => Promise<Record<string, string | undefined>>,
   agents?: () => Record<string, Record<string, unknown>>,
   slackTicket?: ClaudeCliConfig["slackTicket"],
-  owner?: Pick<ClaudeCliConfig, "ownerTicket" | "ownerApiUrl">,
+  owner?: Pick<ClaudeCliConfig, "ownerTicket" | "ownerApiUrl" | "ownerFallbackLog">,
 ): LlmPort =>
   config.llmProvider === "claude-cli"
     ? createClaudeCliLlm({
@@ -582,6 +582,7 @@ const main = async () => {
         return { token, end: () => ownerTickets.revoke(token) };
       },
       ownerApiUrl: `http://127.0.0.1:${config.dashboardPort}/api/owner-ticket`,
+      ownerFallbackLog: (line) => activity.line(line),
     },
   );
   console.log(`[llm] ${profile().name}'s brain: ${modelLabel(config)}`);
