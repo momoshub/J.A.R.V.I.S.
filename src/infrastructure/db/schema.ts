@@ -119,6 +119,7 @@ export const migrate = (db: Database): void => {
   migrateLearningScope(db);
   migrateSkillDrafts(db);
   migrateTurnTyped(db);
+  migrateWatchWriteTargets(db);
   migrateMutedThreads(db);
 };
 
@@ -1441,7 +1442,25 @@ const migrateTurnTyped = (db: Database): void => {
 };
 
 /**
- * Migration v48: threads the bot was told to stay out of.
+ * Migration v48: a watch remembers who set it and where its fired turn may write.
+ *
+ * A fired watch's turn has no owner rights, so a watch the owner set to post somewhere else could never do it. `created_by` is
+ * the owner's id when the watch was created in the owner's own turn (empty otherwise), `write_targets` the channels and threads
+ * that turn named, as JSON (`domain/writeTargets.ts`). Both default to empty, so every row from before the migration fires as it
+ * always did.
+ */
+const migrateWatchWriteTargets = (db: Database): void => {
+  const cols = db.query<{ name: string }, []>("PRAGMA table_info(watches)").all().map((c) => c.name);
+  if (!cols.includes("created_by")) db.exec("ALTER TABLE watches ADD COLUMN created_by TEXT NOT NULL DEFAULT ''");
+  if (!cols.includes("write_targets")) db.exec("ALTER TABLE watches ADD COLUMN write_targets TEXT NOT NULL DEFAULT ''");
+  const { user_version } = db.query<{ user_version: number }, []>("PRAGMA user_version").get() ?? {
+    user_version: 0,
+  };
+  if (user_version < 48) db.exec("PRAGMA user_version = 48;");
+};
+
+/**
+ * Migration v49: threads the bot was told to stay out of.
  *
  * One row per muted thread, added and removed deliberately (`mute`, `mute
  * off`), no expiry. It lives apart from `followed_threads`: a mute suppresses
@@ -1460,5 +1479,5 @@ const migrateMutedThreads = (db: Database): void => {
   const { user_version } = db.query<{ user_version: number }, []>("PRAGMA user_version").get() ?? {
     user_version: 0,
   };
-  if (user_version < 48) db.exec("PRAGMA user_version = 48;");
+  if (user_version < 49) db.exec("PRAGMA user_version = 49;");
 };

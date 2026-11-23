@@ -6,7 +6,8 @@
  * GitHub, and a command ticket cannot call Slack. All it can do is ask the
  * Slack proxy for the methods on its allowlist, writing only into the channel
  * it was minted for (an owner's turn may also write into any other channel by
- * its id, and edit the bot's own messages there).
+ * its id, and edit the bot's own messages there). A turn a watch fired carries a grant instead: three writes, into the targets
+ * the owner's turn named when it set the watch, and nothing else (`domain/writeTargets.ts`).
  *
  * A ticket belongs to ONE spawned process: the CLI adapter mints it when the
  * turn starts, puts it in that process's environment and revokes it when the
@@ -15,6 +16,7 @@
  *
  * Tickets live in memory; a restart ends every turn anyway.
  */
+import type { WatchGrant } from "../domain/writeTargets.ts";
 import type { BillingContext, Clock } from "./ports.ts";
 
 /** Longer than any turn the bot allows, so a long investigation keeps its Slack access. */
@@ -42,16 +44,28 @@ export type SlackTicketContext = {
    * them over other people's text (the dashboard draft, a triage) never gets it. Never a role or a person, only this one bit.
    */
   owner?: boolean;
+  /**
+   * A watch the owner set in their own turn fired this turn: cross-channel `chat.postMessage`, `reactions.add` and
+   * `files.completeUploadExternal` into its named targets, logged with the watch id. Not the owner bit and never both.
+   */
+  grant?: WatchGrant;
 };
 
-/** The ticket a run gets: its channel and thread, its turn, and the owner bit only when the owner's own message started it. */
+/**
+ * The ticket a run gets: its channel and thread, its turn, and the owner bit only when the owner's own message started it. A
+ * watch's grant rides along only when the bot's own record says the watch was the current owner's (set by the owner's turn, fired
+ * as the owner) and it names at least one target.
+ */
 export const slackTicketContext = (bill: BillingContext | undefined, turn: string | undefined, ownerSlackId: string): SlackTicketContext | undefined => {
   if (!bill?.channel) return undefined;
+  const ownerBit = bill.ownMessage && bill.actor === ownerSlackId;
+  const grant = bill.watchGrant;
   return {
     channel: bill.channel,
     ...(bill.threadTs ? { threadTs: bill.threadTs } : {}),
     ...(turn ? { turn } : {}),
-    ...(bill.ownMessage && bill.actor === ownerSlackId ? { owner: true } : {}),
+    ...(ownerBit ? { owner: true } : {}),
+    ...(!ownerBit && grant && ownerSlackId && grant.createdBy === ownerSlackId && bill.actor === ownerSlackId && grant.targets.length > 0 ? { grant } : {}),
   };
 };
 
@@ -106,6 +120,7 @@ export const createSlackTickets = (
           ...(entry.threadTs ? { threadTs: entry.threadTs } : {}),
           ...(entry.turn ? { turn: entry.turn } : {}),
           ...(entry.owner ? { owner: true } : {}),
+          ...(entry.grant ? { grant: entry.grant } : {}),
         },
         left: calls - entry.used,
       };

@@ -45,6 +45,7 @@ import { BUG_REPORT_COMMANDS } from "./commands/bugReport.ts";
 import { ERRANDS_COMMANDS } from "./commands/errands.ts";
 import { REVIEW_COMMANDS, runReview } from "./commands/review.ts";
 import type { ReviewIdentity } from "../domain/reviewIdentity.ts";
+import type { WriteTarget } from "../domain/writeTargets.ts";
 import { HARVEST_COMMANDS } from "./commands/harvest.ts";
 import { INNER_CHILD_COMMANDS } from "./commands/innerChild.ts";
 import { RUNTIME_COMMANDS } from "./commands/runtime.ts";
@@ -241,6 +242,10 @@ export type DispatchOptions = {
    * can never be the caller.
    */
   fromBrainRun?: boolean;
+  /** Set only by the run bridge, from a turn ticket the owner's own message started: what that message named (see `CommandCtx.ownerTurn`). */
+  ownerTurn?: { readonly named: readonly WriteTarget[] };
+  /** Set only by the run bridge, from a turn ticket a watch's firing started: owner-only commands are refused (see below). */
+  firedByWatch?: boolean;
 };
 
 /** Run a command line (e.g. "add @U1 admin") on behalf of `actor`. */
@@ -301,6 +306,14 @@ export const dispatchCommand = async (
     log(command.name, false, msg);
     return msg;
   }
+  // A turn a watch fired runs as whoever set it, the owner included, but it read untrusted content (worker output, logs, other
+  // threads): an owner-only command from it (`post`, `role`, `promote`, ...) would be the owner's reach handed to whatever it read.
+  // What a watch may do elsewhere is the grant it was created with, through the Slack proxy (`domain/writeTargets.ts`).
+  if (opts.fromBrainRun && opts.firedByWatch && command.minRole === "owner") {
+    const msg = `\`${command.name}\` is owner-only, and this turn was started by a watch, not by the owner's own message: it runs only when the owner asks for it themselves. Anywhere a watch may write, it writes through the Slack helper into the targets it was set with.`;
+    log(command.name, false, msg);
+    return msg;
+  }
   const book = bookOf(deps);
   // The grant is the gate: the roles are data, and a command's `minRole` is only where the grant started.
   // The brain runs an internal command as whoever its turn serves, so no grant is asked of that caller.
@@ -358,6 +371,7 @@ export const dispatchCommand = async (
       slash,
       reply: opts.reply,
       fromBrainRun: opts.fromBrainRun === true,
+      ...(opts.fromBrainRun === true && opts.ownerTurn ? { ownerTurn: opts.ownerTurn } : {}),
       trivialCommands: TRIVIAL_COMMANDS,
       roles: book,
       catalogue: deps.roleCatalogue?.() ?? permissionCatalogue({ commands: listCommandInfo(), mcpServers: ["notion", "datadog"] }),
