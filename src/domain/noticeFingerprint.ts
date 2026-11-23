@@ -25,12 +25,17 @@ const isRecord = (v: unknown): v is Loose => typeof v === "object" && v !== null
 
 const UNESCAPE: Record<string, string> = { "&gt;": ">", "&amp;": "&" };
 
-const canon = (text: unknown): string =>
+type Canon = (text: unknown) => string;
+
+const canon: Canon = (text) =>
   typeof text === "string" ? text.replace(/&(?:gt|amp);/g, (m) => UNESCAPE[m]!).replace(/\s+/g, "") : "";
 
-const textOf = (v: unknown): string => (isRecord(v) ? canon(v.text) : "");
+// The canon before `&amp;` was read (bug #14). Digests stored by it keep a fact's escaped `&amp;`, so a notice posted
+// before the change is still checked against it; it never softens `<` either, so it accepts nothing the old check did not.
+const legacyCanon: Canon = (text) => (typeof text === "string" ? text.replaceAll("&gt;", ">").replace(/\s+/g, "") : "");
 
-const describe = (block: unknown): unknown => {
+const describeWith = (canon: Canon) => (block: unknown): unknown => {
+  const textOf = (v: unknown): string => (isRecord(v) ? canon(v.text) : "");
   if (!isRecord(block)) return ["?"];
   const type = typeof block.type === "string" ? block.type : "?";
   if (type === "section") return [type, textOf(block.text)];
@@ -51,4 +56,12 @@ const describe = (block: unknown): unknown => {
 
 /** Digest of the blocks' shown text and buttons, in order. Empty input still digests, to a value no real notice has. */
 export const noticeFingerprint = (blocks: readonly unknown[]): string =>
-  createHash("sha256").update(JSON.stringify(blocks.map(describe))).digest("hex");
+  createHash("sha256").update(JSON.stringify(blocks.map(describeWith(canon)))).digest("hex");
+
+/** The digest a notice stored before `&amp;` was read carries (bug #14). Exported for its tests. */
+export const legacyNoticeFingerprint = (blocks: readonly unknown[]): string =>
+  createHash("sha256").update(JSON.stringify(blocks.map(describeWith(legacyCanon)))).digest("hex");
+
+/** Whether pressed blocks are the stored notice, under the current digest or the one stored before `&amp;` was read. */
+export const sameNotice = (blocks: readonly unknown[], stored: string): boolean =>
+  !!stored && (noticeFingerprint(blocks) === stored || legacyNoticeFingerprint(blocks) === stored);

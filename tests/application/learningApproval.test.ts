@@ -10,6 +10,7 @@ import {
   saveActive,
 } from "../../src/application/learningApproval.ts";
 import { AGENT_SOURCE, LEARNING_APPROVE_ACTION, LEARNING_REJECT_ACTION, MAX_LEARNING_CHARS, approvalCore, approvalText, settledText } from "../../src/domain/learning.ts";
+import { legacyNoticeFingerprint } from "../../src/domain/noticeFingerprint.ts";
 import { buildSystemPrompt } from "../../src/domain/personality.ts";
 import { openDatabase } from "../../src/infrastructure/db/client.ts";
 import { createLearningsRepo } from "../../src/infrastructure/db/learningsRepo.ts";
@@ -831,6 +832,48 @@ describe("where the notice goes", () => {
     expect(slackCalls.posts[0]?.threadTs).toBeUndefined();
     expect(slackCalls.posts[0]?.text).toContain("https://example.slack.com/archives/C0CHAN/p1794660718333719");
     expect(d.learnings!.pending()[0]).toMatchObject({ sourceChannel: "C0CHAN", noticeChannel: OWNER });
+  });
+
+  test("bug #14: a notice whose permalink carries ?thread_ts=..&cid=.. is honoured as Slack echoes it (&amp;)", async () => {
+    const d = withSlack(MEMBER.slackId);
+    d.learningApproval = {
+      ...d.learningApproval!,
+      slack: { ...d.learningApproval!.slack!, permalink: async (c, ts) => `https://example.slack.com/archives/${c}/p${ts.replace(".", "")}?thread_ts=${ts}&cid=${c}` },
+    };
+    await proposeLearning(d.learningApproval!, FACT, AGENT_SOURCE, source("C0CHAN"));
+    const row = d.learnings!.pending()[0]!;
+    const echo = (v: unknown): unknown =>
+      Array.isArray(v) ? v.map(echo) : v && typeof v === "object" ? Object.fromEntries(Object.entries(v).map(([k, x]) => [k, k === "text" && typeof x === "string" ? x.replaceAll("&", "&amp;").replaceAll("&amp;gt;", "&gt;").replaceAll("&amp;amp;", "&amp;") : echo(x)])) : v;
+    const echoed = echo(shownBy(row)) as unknown[];
+    expect(JSON.stringify(echoed)).toContain("&amp;cid=");
+    const out = await decideLearningPress(d.learningApproval!, {
+      slackUserId: OWNER,
+      actionId: LEARNING_APPROVE_ACTION,
+      value: String(row.id),
+      channel: row.noticeChannel,
+      messageTs: row.noticeTs,
+      shown: [JSON.stringify(echoed)],
+      blocks: echoed,
+    });
+    expect(out).toEqual({ kind: "approved", id: row.id });
+  });
+
+  test("bug #14: a notice stored under the old digest, with & in the fact, still takes its press", async () => {
+    const d = withSlack(undefined);
+    const fact = "deploys need QA & PM sign-off first";
+    await proposeLearning(d.learningApproval!, fact, AGENT_SOURCE);
+    const row = d.learnings!.pending()[0]!;
+    d.learnings!.setNotice(row.id, row.noticeChannel, row.noticeTs, legacyNoticeFingerprint(shownBy(row)));
+    const out = await decideLearningPress(d.learningApproval!, {
+      slackUserId: OWNER,
+      actionId: LEARNING_APPROVE_ACTION,
+      value: String(row.id),
+      channel: row.noticeChannel,
+      messageTs: row.noticeTs,
+      shown: [approvalText(row.id, fact, AGENT_SOURCE)],
+      blocks: shownBy(row),
+    });
+    expect(out).toEqual({ kind: "approved", id: row.id });
   });
 
   test("a member's own DM with the bot is not the owner's: fall back to the owner DM", async () => {

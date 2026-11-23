@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { noticeFingerprint } from "../../src/domain/noticeFingerprint.ts";
+import { legacyNoticeFingerprint, noticeFingerprint, sameNotice } from "../../src/domain/noticeFingerprint.ts";
 
 const LINK = "<https://example.slack.com/archives/D1/p1700000000000100?thread_ts=1700000000.000100&cid=D1|the thread>";
 
@@ -29,5 +29,17 @@ describe("noticeFingerprint", () => {
   test("a changed link or button still differs", () => {
     const sent = notice(`Proposed in ${LINK}`);
     expect(noticeFingerprint(notice(`Proposed in ${LINK.replace("cid=D1", "cid=D2")}`))).not.toBe(noticeFingerprint(sent));
+  });
+
+  test("a notice stored before the change, with & in its text, still matches its echo", () => {
+    const sent = notice("> Deploys need QA &amp; PM sign-off first");
+    const stored = legacyNoticeFingerprint(sent);
+    expect(noticeFingerprint(sent)).not.toBe(stored);
+    expect(sameNotice(sent, stored)).toBe(true);
+    expect(sameNotice(notice("> Deploys need QA &amp; PM sign-off later"), stored)).toBe(false);
+  });
+
+  test("an empty stored fingerprint never matches", () => {
+    expect(sameNotice(notice("x"), "")).toBe(false);
   });
 });
