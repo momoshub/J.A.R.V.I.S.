@@ -1883,6 +1883,9 @@ describe("a muted thread", () => {
     expect(mutedAway(mutes, "//bot", "C1", "111.1", "//bot status")).toBe(false);
     expect(mutedAway(mutes, "//bot", "C1", "111.1", "<@UBOT> //bot mute off")).toBe(false);
     expect(mutedAway(mutes, "//bot", "C1", "111.1", "!status")).toBe(false);
+    // not a real command: the legacy `!` is wide, and an unknown one would get a "do not recognise" reply
+    expect(mutedAway(mutes, "//bot", "C1", "111.1", "!!! prod is down")).toBe(true);
+    expect(mutedAway(mutes, "//bot", "C1", "111.1", "//bot hey what do you think")).toBe(true);
     expect(mutedAway(mutes, "//bot", "C1", "999.9", "hi")).toBe(false);
     expect(mutedAway(mutes, "//bot", "C2", "111.1", "hi")).toBe(false);
     expect(mutedAway(undefined, "//bot", "C1", "111.1", "hi")).toBe(false);

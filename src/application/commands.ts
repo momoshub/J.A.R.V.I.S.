@@ -200,6 +200,10 @@ export const isQuietCommand = (line: string): boolean => {
   return typeof quiet === "function" ? quiet(args) : quiet === true;
 };
 
+/** Does this command line start with a registered command (or alias)? A bare prefix is `help`. */
+export const isKnownCommandLine = (line: string): boolean =>
+  byName.has((line.trim().split(/\s+/)[0] || "help").toLowerCase());
+
 export const notifiesOwner = (line: string): boolean => {
   const name = (line.trim().split(/\s+/)[0] || "help").toLowerCase();
   return byName.get(name)?.trivial !== true;

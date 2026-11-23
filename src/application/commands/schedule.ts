@@ -103,8 +103,9 @@ export const SCHEDULE_COMMANDS: readonly CommandDef[] = [
           .join("\n");
       }
 
-      const off = sub === "off" || sub === "stop" || sub === "no" || sub === "on";
-      const linkArg = (off ? args.slice(1) : args).find((a) => !FOLLOW_FILLER.has(a.toLowerCase())) ?? "";
+      // `mute on` is `mute`: it must never lift the mute it reads as asking for.
+      const off = sub === "off" || sub === "stop" || sub === "no";
+      const linkArg = (off || sub === "on" ? args.slice(1) : args).find((a) => !FOLLOW_FILLER.has(a.toLowerCase())) ?? "";
       const ref = linkArg ? followTarget(linkArg) : undefined;
       if (linkArg && !ref) return `That is not a Slack thread link. \`${prefix} mute <thread link>\``;
       const target = ref ?? (threadTs ? { channel: channelId, ts: threadTs } : undefined);

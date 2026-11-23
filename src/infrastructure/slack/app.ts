@@ -58,7 +58,7 @@ import {
   TOTP_VIEW,
 } from "../../application/totp.ts";
 import { tokenGuide, tokenHint, TOKEN_PREFIX } from "../../domain/claudeToken.ts";
-import { bookOf, commandLineOf, dispatchCommand, listCommandInfo } from "../../application/commands.ts";
+import { bookOf, commandLineOf, dispatchCommand, isKnownCommandLine, listCommandInfo } from "../../application/commands.ts";
 import {
   clip,
   decodeMenuRequest,
@@ -246,7 +246,7 @@ export const threadKeyOf = (m: { ts: string; thread_ts?: string }): string => m.
 /**
  * Is this person's message in a muted thread, and not a command? Then it is
  * dropped before anything starts: no turn, no reaction, no placeholder. A
- * command line is let through so `mute off` works from inside the thread.
+ * known command is let through so `mute off` works from inside the thread.
  * Only person-originated intake asks: the bot's own work (a watch handing the
  * thread back, a loop, a tell, a workflow step) never passes through here.
  */
@@ -256,7 +256,13 @@ export const mutedAway = (
   channel: string,
   threadTs: string,
   text: string,
-): boolean => mutes?.isMuted(channel, threadTs) === true && commandLineOf(text, prefix) === undefined;
+): boolean => {
+  if (mutes?.isMuted(channel, threadTs) !== true) return false;
+  // Only a REAL command: the legacy `!` prefix is wide ("!!! prod is down"),
+  // and an unknown command would be answered with a "do not recognise" reply.
+  const line = commandLineOf(text, prefix);
+  return line === undefined || !isKnownCommandLine(line);
+};
 
 /** Only plain human DMs: reject bot echoes, edits/joins (subtypes) and non-DM channels. */
 export const shouldHandleDm = (m: RawMessage): boolean =>
@@ -1320,6 +1326,9 @@ export const createSlackApp = (config: SlackAppConfig, deps: Deps) => {
     log,
     decide: async ({ channel, threadTs, items }) => {
       if (!gateModel) throw new Error("no gate model wired");
+      // Muted after the batch was buffered: `handle` would drop it anyway, so
+      // do not spend the cheap model's call on it either.
+      if (deps.mutes?.isMuted(channel, threadTs)) return { verdict: "skip", reason: "thread muted" };
       const last = items[items.length - 1]!;
       const me = await deps.slack?.botUserId().catch(ignoreQuietly("bot user id lookup"));
       return gateModel({

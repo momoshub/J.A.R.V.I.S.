@@ -1119,9 +1119,9 @@ gets no reply, no reaction and no "working" placeholder. This holds for channel
 threads, a DM thread's replies and an untagged reply it would otherwise follow.
 `//bot mute list` shows the muted threads; `//bot mute off` lifts it.
 
-- Commands still run in a muted thread (`//bot ...`, with a leading tag or the
-  legacy `!`), which is how `mute off` works from inside it. Everything else a
-  person writes is ignored.
+- Known commands still run in a muted thread (`//bot mute off`, with a leading tag
+  or the legacy `!status`), which is how `mute off` works from inside it.
+  Everything else a person writes is ignored, an unknown command included.
 - A mute outranks a `follow`: the follow stays saved but is suppressed while the
   thread is muted, and comes back with `mute off`. `follow list` and `mute list`
   both say so.

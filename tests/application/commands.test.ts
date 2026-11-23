@@ -1566,6 +1566,17 @@ describe("mute", () => {
     expect(await dispatchCommand(d, actor(), "C7", "mute off", { threadTs: "5.5" })).toContain("not muted");
   });
 
+  test("`mute on` mutes, and never lifts a mute", async () => {
+    const deps = build();
+    const mutes = createMuteRepo(db);
+    const d = { ...deps, mutes };
+    expect(await dispatchCommand(d, actor(), "C7", "mute on", { threadTs: "5.5" })).toContain("muted");
+    expect(mutes.isMuted("C7", "5.5")).toBe(true);
+    // typed again in the muted thread to make sure: still muted
+    expect(await dispatchCommand(d, actor(), "C7", "mute on", { threadTs: "5.5" })).toContain("already muted");
+    expect(mutes.isMuted("C7", "5.5")).toBe(true);
+  });
+
   test("a link mutes that thread, and a reply's permalink names the thread", async () => {
     const deps = build();
     const mutes = createMuteRepo(db);
