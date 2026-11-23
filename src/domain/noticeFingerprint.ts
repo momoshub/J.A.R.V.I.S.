@@ -10,7 +10,9 @@
  *
  * Slack echoes blocks with extra fields (`block_id`, `verbatim`, `action_ts`)
  * and may escape the quote marker, so only the fields the bot writes are read,
- * whitespace is dropped, and `&gt;` is read as `>`. A `<` is never softened: a
+ * whitespace is dropped, and `&gt;` and `&amp;` (a thread permalink's
+ * `?thread_ts=..&cid=..`) are read as `>` and `&`, in one pass so `&amp;gt;`
+ * stays `&gt;`. A `<` is never softened: a
  * live link in place of an escaped one is a different message.
  *
  * Pure: blocks in, hex digest out.
@@ -21,7 +23,10 @@ type Loose = Record<string, unknown>;
 
 const isRecord = (v: unknown): v is Loose => typeof v === "object" && v !== null && !Array.isArray(v);
 
-const canon = (text: unknown): string => (typeof text === "string" ? text.replaceAll("&gt;", ">").replace(/\s+/g, "") : "");
+const UNESCAPE: Record<string, string> = { "&gt;": ">", "&amp;": "&" };
+
+const canon = (text: unknown): string =>
+  typeof text === "string" ? text.replace(/&(?:gt|amp);/g, (m) => UNESCAPE[m]!).replace(/\s+/g, "") : "";
 
 const textOf = (v: unknown): string => (isRecord(v) ? canon(v.text) : "");
 
