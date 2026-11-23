@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   createHandler,
   createKitListeners,
+  mutedAway,
   createSessionStopHandler,
   idleSession,
   retireOpenKit,
@@ -18,6 +19,7 @@ import { createThreadBriefRepo } from "../../src/infrastructure/db/threadBriefRe
 import { createBugReportRepo } from "../../src/infrastructure/db/bugReportRepo.ts";
 import type { SlackAdminPort } from "../../src/application/slackAdmin.ts";
 import { createUserRepo } from "../../src/infrastructure/db/userRepo.ts";
+import { createMuteRepo, type MuteRepo } from "../../src/infrastructure/db/muteRepo.ts";
 import { createMessageRepo } from "../../src/infrastructure/db/messageRepo.ts";
 import type { LlmPort, LlmStreamEvent } from "../../src/application/ports.ts";
 import type { RespondDeps } from "../../src/application/respond.ts";
@@ -92,6 +94,8 @@ const build = (opts: {
   selfPosts?: SelfPosts;
   /** Thread briefs, to see what the intake hands over for the linked-thread relay. */
   withBriefs?: boolean;
+  /** Muted threads, for the mute drop. */
+  mutes?: MuteRepo;
 }) => {
   const db = openDatabase(":memory:");
   const users = createUserRepo(db);
@@ -105,6 +109,7 @@ const build = (opts: {
     clock: () => t++,
     ownerSlackId: OWNER,
     ...(opts.withBriefs ? { briefs: createThreadBriefRepo(db) } : {}),
+    ...(opts.mutes ? { mutes: opts.mutes } : {}),
     ...(opts.threadQueue ? { threadQueue: opts.threadQueue } : {}),
     ...(opts.runs ? { runs: opts.runs } : {}),
     // a turn's run ticket is what its self-posts are keyed by
@@ -1814,5 +1819,72 @@ describe("createHandler marks what people typed, for the linked-thread relay", (
     });
     const quotes = briefs!.recent(there.channelId, there.threadTs, 10).map((b) => b.text.match(/Quote: "(.*)"/)?.[1]);
     expect(quotes).toEqual(["is it deployed?", "one", "two"]);
+  });
+});
+
+describe("a muted thread", () => {
+  const llm = (calls: unknown[]): LlmPort => ({
+    complete: async (p) => {
+      calls.push(p);
+      return "an answer";
+    },
+  });
+  const muted = () => {
+    const mutes = createMuteRepo(openDatabase(":memory:"));
+    mutes.mute("C1", "111.1", OWNER, 1);
+    return mutes;
+  };
+
+  test("answers nobody: a tag, a followed reply and a batch start no turn and post nothing", async () => {
+    const calls: unknown[] = [];
+    const { handle, msg, said, posts, apiCalls, opened, logs } = build({ llm: llm(calls), streamUpdates: true, mutes: muted() });
+    await handle({ ...msg("hello there", "111.1", "111.2"), mentioned: true, typed: true });
+    await handle({ ...msg("what do you think?", "111.1", "111.3"), following: true, typed: true });
+    await handle({
+      ...msg("two", "111.1", "111.5"),
+      following: true,
+      typed: true,
+      batch: [
+        { userId: OWNER, text: "one", messageTs: "111.4" },
+        { userId: OWNER, text: "two", messageTs: "111.5" },
+      ],
+    });
+    expect(calls).toEqual([]);
+    expect(said).toEqual([]);
+    expect(posts).toEqual([]);
+    expect(apiCalls).toEqual([]);
+    expect(opened()).toBe(0);
+    expect(logs.filter((l) => l.startsWith("mute drop"))).toHaveLength(3);
+  });
+
+  test("another thread in the same channel is answered as usual", async () => {
+    const calls: unknown[] = [];
+    const { handle, msg, said } = build({ llm: llm(calls), streamUpdates: false, mutes: muted() });
+    await handle(msg("hello there", "222.1", "222.2"));
+    expect(calls).toHaveLength(1);
+    expect(said).toEqual([{ text: "an answer" }]);
+  });
+
+  test("a command still runs, so `mute off` works from inside, and then it answers again", async () => {
+    const calls: unknown[] = [];
+    const mutes = muted();
+    const { handle, msg, said } = build({ llm: llm(calls), streamUpdates: false, mutes });
+    await handle(msg("//bot mute off", "111.1", "111.2"));
+    expect(said.map((x) => x.text).join("\n")).toContain("unmuted");
+    expect(mutes.isMuted("C1", "111.1")).toBe(false);
+    expect(calls).toEqual([]);
+    await handle(msg("hello again", "111.1", "111.3"));
+    expect(calls).toHaveLength(1);
+  });
+
+  test("mutedAway: only a muted thread's non-command text, any prefix form", () => {
+    const mutes = muted();
+    expect(mutedAway(mutes, "//bot", "C1", "111.1", "hi <@UBOT>")).toBe(true);
+    expect(mutedAway(mutes, "//bot", "C1", "111.1", "//bot status")).toBe(false);
+    expect(mutedAway(mutes, "//bot", "C1", "111.1", "<@UBOT> //bot mute off")).toBe(false);
+    expect(mutedAway(mutes, "//bot", "C1", "111.1", "!status")).toBe(false);
+    expect(mutedAway(mutes, "//bot", "C1", "999.9", "hi")).toBe(false);
+    expect(mutedAway(mutes, "//bot", "C2", "111.1", "hi")).toBe(false);
+    expect(mutedAway(undefined, "//bot", "C1", "111.1", "hi")).toBe(false);
   });
 });

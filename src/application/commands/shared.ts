@@ -49,6 +49,7 @@ import type { LoopApprovalDeps } from "../loopApproval.ts";
 import type { LearningApprovalDeps } from "../learningApproval.ts";
 import type { StuckWork } from "../../domain/stuckWork.ts";
 import type { FollowRepo } from "../../infrastructure/db/followRepo.ts";
+import type { MuteRepo } from "../../infrastructure/db/muteRepo.ts";
 import type { WorkflowRepo } from "../../infrastructure/db/workflowRepo.ts";
 import type { CommandApprovalRepo } from "../../infrastructure/db/commandApprovalRepo.ts";
 import type { CloudwatchDeps } from "../cloudwatch.ts";
@@ -125,6 +126,8 @@ export type CommandDeps = {
   watches?: WatchRepo;
   /** Threads it was asked to keep up with, tag or no tag. */
   follows?: FollowRepo;
+  /** Threads it was told to stay out of, even when tagged. */
+  mutes?: MuteRepo;
   /** Reminders people asked for, posted on a timer outside any turn. */
   reminders?: ReminderRepo;
   /** The bot's own record of its work, for the `journey` command. */

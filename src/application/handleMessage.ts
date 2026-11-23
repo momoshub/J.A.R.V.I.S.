@@ -51,6 +51,7 @@ import type { LoopRepo } from "../infrastructure/db/loopRepo.ts";
 import type { WatchRepo } from "../infrastructure/db/watchRepo.ts";
 import { cancelWatchesOnWorkerStop } from "./watcher.ts";
 import type { FollowRepo } from "../infrastructure/db/followRepo.ts";
+import type { MuteRepo } from "../infrastructure/db/muteRepo.ts";
 import type { WorkflowRepo } from "../infrastructure/db/workflowRepo.ts";
 import type { AccessRequestRepo } from "../infrastructure/db/accessRequestRepo.ts";
 import type { CommandApprovalRepo } from "../infrastructure/db/commandApprovalRepo.ts";
@@ -114,6 +115,8 @@ export type HandleMessageDeps = {
   watches?: WatchRepo;
   /** Threads it was asked to keep up with, tag or no tag. */
   follows?: FollowRepo;
+  /** Threads it was told to stay out of, even when tagged. */
+  mutes?: MuteRepo;
   /** Reminders people asked for, for the `remind` command. */
   reminders?: ReminderRepo;
   /** The bot's own record of its work, for the `journey` command. */

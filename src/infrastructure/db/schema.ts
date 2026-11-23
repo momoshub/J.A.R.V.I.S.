@@ -119,6 +119,7 @@ export const migrate = (db: Database): void => {
   migrateLearningScope(db);
   migrateSkillDrafts(db);
   migrateTurnTyped(db);
+  migrateMutedThreads(db);
 };
 
 /**
@@ -1437,4 +1438,27 @@ const migrateTurnTyped = (db: Database): void => {
     user_version: 0,
   };
   if (user_version < 47) db.exec("PRAGMA user_version = 47;");
+};
+
+/**
+ * Migration v48: threads the bot was told to stay out of.
+ *
+ * One row per muted thread, added and removed deliberately (`mute`, `mute
+ * off`), no expiry. It lives apart from `followed_threads`: a mute suppresses
+ * a follow without deleting it, so lifting the mute brings the follow back.
+ */
+const migrateMutedThreads = (db: Database): void => {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS muted_threads (
+      channel_id TEXT NOT NULL,
+      thread_ts  TEXT NOT NULL,
+      muted_by   TEXT NOT NULL DEFAULT '',
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (channel_id, thread_ts)
+    );
+  `);
+  const { user_version } = db.query<{ user_version: number }, []>("PRAGMA user_version").get() ?? {
+    user_version: 0,
+  };
+  if (user_version < 48) db.exec("PRAGMA user_version = 48;");
 };

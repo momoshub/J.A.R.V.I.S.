@@ -51,6 +51,7 @@ import { createJourneyRepo } from "./infrastructure/db/journeyRepo.ts";
 import { createBugReportRepo } from "./infrastructure/db/bugReportRepo.ts";
 import { createLoopRepo } from "./infrastructure/db/loopRepo.ts";
 import { createFollowRepo } from "./infrastructure/db/followRepo.ts";
+import { createMuteRepo } from "./infrastructure/db/muteRepo.ts";
 import { createKitViewRepo } from "./infrastructure/db/kitViewRepo.ts";
 import { createWatcher } from "./application/watcher.ts";
 import { createBackgroundWatch } from "./application/backgroundWatch.ts";
@@ -263,6 +264,7 @@ const main = async () => {
   const skillDrafts = createSkillDraftRepo(db);
   const loops = createLoopRepo(db);
   const follows = createFollowRepo(db);
+  const mutes = createMuteRepo(db);
   const kitViews = createKitViewRepo(db);
   const adapterDeps = () => ({
     store: adapterStore,
@@ -721,6 +723,7 @@ const main = async () => {
     turns,
     watches,
     follows,
+    mutes,
     reminders,
     journeys,
     bugReports,

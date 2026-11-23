@@ -1110,6 +1110,27 @@ should have answered, read the reasons first (the prompt is `gateSystem` in
 `src/domain/followGate.ts`), or set `follow_gate=off` while you decide. If replies
 come too late, lower `follow_debounce_seconds`.
 
+## Muting a thread
+
+`//bot mute` (in the thread, or `//bot mute <thread link>`) turns the bot off for
+that one thread: it answers nobody there, even when tagged. A message from a person
+is dropped at the door, before any turn or session starts, so it costs no tokens and
+gets no reply, no reaction and no "working" placeholder. This holds for channel
+threads, a DM thread's replies and an untagged reply it would otherwise follow.
+`//bot mute list` shows the muted threads; `//bot mute off` lifts it.
+
+- Commands still run in a muted thread (`//bot ...`, with a leading tag or the
+  legacy `!`), which is how `mute off` works from inside it. Everything else a
+  person writes is ignored.
+- A mute outranks a `follow`: the follow stays saved but is suppressed while the
+  thread is muted, and comes back with `mute off`. `follow list` and `mute list`
+  both say so.
+- It is about people's messages. Work the bot already has bound to the thread keeps
+  running and may still post there: a watch handing the thread back, a loop, a tell
+  and a workflow's steps.
+- Same role level as `follow` (executer and up). Stored in `muted_threads`
+  (`db/muteRepo.ts`), checked in memory.
+
 ## One turn at a time
 
 A thread's turns run one after another, never beside each other. Two messages a

@@ -210,6 +210,15 @@ no classes.
   redelivers those rows and they are buffered again, instead of waiting in memory
   alone. Like the other timers it holds no session and no queue slot while it waits,
   and `follow_gate=off` removes it.
+- **Muted threads.** `mute` (`commands/schedule.ts`, `db/muteRepo.ts`, table
+  `muted_threads`) turns the bot off for one thread. `mutedAway` in `slack/app.ts`
+  runs first in the `app_mention` and `message` listeners and again at the top of
+  the handler (a gate batch buffered before the mute, a button press and a reaction
+  arrive there): a muted thread's message that is not a command line is dropped
+  before a turn, a reaction or a stream exists. Command lines pass, so `mute off`
+  works from inside. It outranks a follow, which stays stored but unused. Only
+  person-originated intake asks; watch hand-backs, loops, tells and workflow steps
+  reach `respond` another way and are untouched.
 - **GitHub App.** A loopback listener (`GITHUB_APP_PORT`, reached through
   Tailscale Funnel) verifies each webhook, answers 202 and hands it to
   `githubApp`, which keeps only real calls (a mention of the app or its label,
