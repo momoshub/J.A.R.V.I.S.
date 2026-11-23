@@ -735,6 +735,27 @@ older than 6 hours jumps to now.
   to `DRAIN_NOTICE_CHANNEL`; `off` turns drift steering off. One nudge per
   reply, at most 2 per triage run and 4 a day, never in a workflow thread.
 
+Reading it directly (the owner asking what is open, or what it logged): the data
+is in the bot's own database, `DATABASE_PATH` of the live `.env` (not the
+`data/bot.db` default), read with `sqlite3 -readonly`, never written by hand.
+
+- `self_issues`: `id`, `title`, `severity` (`bug` or `critical`), `evidence`,
+  `source_channel` / `source_thread` (where it was seen), `fix_channel` /
+  `fix_thread` (where the fix ran), `state`, `created_at` / `updated_at` (ms).
+  States: `queued` (open, nobody on it), `fixing` (open, a fix is running),
+  `fixed`, `not_fixed`, `failed`, `stale`, `rejected`, `covered`. Unresolved is
+  `queued` + `fixing`, plus `failed` / `not_fixed` when asked for everything not
+  fixed:
+  `select id,state,severity,title,source_channel,source_thread,datetime(created_at/1000,'unixepoch') from self_issues where state in ('queued','fixing') order by severity='critical' desc, id`.
+  With `inner_child` set to `off` nothing runs, so the stale prune does not run
+  either and old `queued` rows pile up past the cap.
+- `drift_events`: `channel_id`, `thread_ts`, `reply_ts`, `rules`, `excerpt`,
+  `nudge`, `outcome`, `created_at`.
+- Settings besides the three above: `inner_child_cursor` (the last turn read, in
+  ms) and `inner_child_drift_channel`.
+- Answer with a small Block Kit table (id, severity, title, a link to the source
+  thread built from the workspace URL, the channel id and `p<ts without the dot>`).
+
 ## The learning harvest
 
 The bot can review its own recent conversations and **propose** what is worth

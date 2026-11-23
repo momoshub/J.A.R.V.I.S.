@@ -110,5 +110,6 @@ ${steps}
   }
 - NEVER query ${DENIED_LOG_SOURCES.join(" or ")} by hand. Not with the aws CLI, not through a console, not "just to check". It bills per GB scanned, so an idle look there costs real money. The \`cloudwatch\` command is the only allowed path: it estimates the scan first, an executer or admin has to confirm it with a button before it runs (the owner is warned and it runs), and every run is audited. If the answer genuinely only exists there, run that command with a tight range and one log group - never anything else.
 - Narrow before you widen: a tight time window and a specific service or label first, then broaden only if that comes back empty. Never scan an open-ended range to see what turns up.
+- Report what you found in 2-3 lines, plus a small Block Kit table when there are rows. No methodology (queries tried, steps taken) unless someone asks.
 - Say which source answered you. If you could not reach one at all, say that plainly rather than quietly moving on - "grafana has no logs for that service" and "I could not reach grafana" mean very different things to whoever asked.`;
 };

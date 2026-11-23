@@ -17,7 +17,7 @@
  */
 import { createHash } from "node:crypto";
 
-export type GuideSlug = "investigate" | "tickets" | "credential-gap" | "desktop" | "parallel" | "block-kit" | "waiting";
+export type GuideSlug = "investigate" | "tickets" | "credential-gap" | "desktop" | "parallel" | "block-kit" | "waiting" | "self-fix";
 
 /** A guide: the block it replaces, and the line that stays always on. */
 export type PromptGuide = {
@@ -44,18 +44,22 @@ export const GUIDE_SUMMARIES: Readonly<Record<GuideSlug, string>> = {
   desktop:
     "driving a Mac app or Brave on the real screen - only through the desktop helper, never osascript, one session at a time. Read before touching the screen",
   parallel:
-    "a message with several independent asks is split and run in parallel, the run mode picked by weight - light parts inline or through the Agent tool, anything that opens a PR, waits on CI or outlives the turn as Orca workers - each answer posted as it lands, and every worker you start gets a `watch worker <dispatchId>` when you can set watches, and a `blocked` task is a worker that stopped without reporting, never success. Read before spawning any background agent",
+    "a message with several independent asks is split and run in parallel, the run mode picked by weight - cheap work inline, anything that opens a PR, waits on CI or outlives the turn as Orca workers (one ask = one worker + one PR, a worker that opens a PR as the GitHub App gets its own `worker-ticket`, reviewers run on opus) - each answer posted as it lands, and every worker you start gets a `watch worker <dispatchId>` when you can set watches, and a `blocked` task is a worker that stopped without reporting, never success. Read before spawning any background agent",
   "block-kit":
-    "a question with a fixed set of answers is asked with `jv:` buttons, never lettered options in text. Read before posting buttons, selects or a modal, or when a turn starts with [block kit event]",
+    "a question with a fixed set of answers is asked with `jv:` buttons, never lettered options in text; a chart is a `data_visualization` block, never a screenshot. Read before posting buttons, selects, a chart or a modal, or when a turn starts with [block kit event]",
+  "self-fix":
+    "changing your own source: never edit the main folder in place - a worktree off origin/main, docs and tests in the same PR, the writer is an Orca worker with its own `worker-ticket` (the session only orchestrates and watches), prompt text gets the probe gate, runtime code a standalone reviewer on opus and a verifier, merge only through `bin/merge-when-green.sh`, then watch the e2e, pull and restart through the helper. Read before changing anything in your own source",
   waiting:
-    "you cannot wait - never say you will do something once X finishes, set a `watch` instead (`watch worker <dispatchId>` after every Orca worker you start; it also fires for a worker idle 15 minutes at its prompt without reporting); `tell` steers another thread without posting anything in Slack, `post` (owner only) starts a new message in another channel or thread; whenever you post into another thread for someone, leave a `brief` there in the same turn (posts nothing, starts no turn). Read for the watch, tell and brief syntax",
+    "you cannot wait - never say you will do something once X finishes, never ask anyone to ping you, set a `watch` instead (`watch worker <dispatchId>` after every Orca worker you start; it also fires for a worker idle 15 minutes at its prompt without reporting; a status message that must stay current is refreshed by a timer watch, never by a promise); `tell` steers another thread without posting anything in Slack, `post` (owner only) starts a new message in another channel or thread; whenever you post into another thread for someone, leave a `brief` there in the same turn (posts nothing, starts no turn). Read for the watch, tell and brief syntax",
 };
 
 /**
  * The two lines that name Orca, as an agent below owner reads them: `orca` is
  * denied there (`ORCA_DENY`), so they point at the Agent tool instead.
  */
-export const AGENT_GUIDE_SUMMARIES: Readonly<Record<"parallel" | "waiting", string>> = {
+export const AGENT_GUIDE_SUMMARIES: Readonly<Record<"parallel" | "waiting" | "self-fix", string>> = {
+  "self-fix":
+    "changing your own source: never edit the main folder in place - a worktree off origin/main, docs and tests in the same PR, you write it yourself or through an Agent tool agent (never `orca`), prompt text gets the probe gate, runtime code a standalone reviewer, merge only through `bin/merge-when-green.sh`, then watch the e2e, pull and restart through the helper. Read before changing anything in your own source",
   parallel:
     "a message with several independent asks is split and run in parallel as Agent tool agents (`run_in_background: true`) in your own process, each answer posted as it lands, never `orca` - it is the owner's. Read before spawning any background agent",
   waiting:
@@ -71,6 +75,7 @@ export const GUIDE_ORDER: readonly GuideSlug[] = [
   "parallel",
   "block-kit",
   "waiting",
+  "self-fix",
 ];
 
 /**
@@ -115,7 +120,7 @@ export const guideIndexForFingerprint = (logSources: readonly string[] = [], orc
       summary:
         slug === "investigate"
           ? investigateSummary(logSources)
-          : !orca && (slug === "parallel" || slug === "waiting")
+          : !orca && (slug === "parallel" || slug === "waiting" || slug === "self-fix")
             ? AGENT_GUIDE_SUMMARIES[slug]
             : GUIDE_SUMMARIES[slug],
       body: slug,
