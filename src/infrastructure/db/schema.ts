@@ -121,6 +121,7 @@ export const migrate = (db: Database): void => {
   migrateTurnTyped(db);
   migrateWatchWriteTargets(db);
   migrateMutedThreads(db);
+  migrateWatchParent(db);
 };
 
 /**
@@ -1480,4 +1481,19 @@ const migrateMutedThreads = (db: Database): void => {
     user_version: 0,
   };
   if (user_version < 49) db.exec("PRAGMA user_version = 49;");
+};
+
+/**
+ * Migration v50: a watch re-armed by a watch's fired turn remembers that watch.
+ *
+ * `parent_watch_id` is the id of the watch whose fired turn set this one and handed it (a subset of) its grant, so a cross-channel
+ * write can be traced back along a re-arm chain. 0 for every other watch, and every row from before the column.
+ */
+const migrateWatchParent = (db: Database): void => {
+  const cols = db.query<{ name: string }, []>("PRAGMA table_info(watches)").all().map((c) => c.name);
+  if (!cols.includes("parent_watch_id")) db.exec("ALTER TABLE watches ADD COLUMN parent_watch_id INTEGER NOT NULL DEFAULT 0");
+  const { user_version } = db.query<{ user_version: number }, []>("PRAGMA user_version").get() ?? {
+    user_version: 0,
+  };
+  if (user_version < 50) db.exec("PRAGMA user_version = 50;");
 };

@@ -38,6 +38,15 @@ describe("commandTickets", () => {
     expect(plain.ok && plain.ctx).not.toHaveProperty("named");
   });
 
+  test("a fired watch's grant rides on the ticket, and only with the watch mark", () => {
+    const tickets = createCommandTickets(() => 0);
+    const grant = { watchId: 3, createdBy: "U1", targets: [{ channel: "C0TEAM00001" }] };
+    const r = tickets.redeem(tickets.issue({ actor: "U1", channel: "C1", watch: true, watchGrant: grant }));
+    expect(r.ok && r.ctx.watchGrant).toEqual(grant);
+    const plain = tickets.redeem(tickets.issue({ actor: "U1", channel: "C1", watchGrant: grant }));
+    expect(plain.ok && plain.ctx).not.toHaveProperty("watchGrant");
+  });
+
   test("a turn a watch fired is marked, and an ordinary one is not", () => {
     const tickets = createCommandTickets(() => 0);
     const fired = tickets.redeem(tickets.issue({ actor: "U1", channel: "C1", watch: true }));

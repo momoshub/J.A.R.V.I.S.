@@ -31,11 +31,14 @@ export type Watch = {
   readonly createdBy: string;
   /** Where the fired turn may write besides its own thread, as the owner's turn named them; empty means nowhere. */
   readonly writeTargets: readonly WriteTarget[];
+  /** The watch whose fired turn re-armed this one and handed it (a subset of) its grant; 0 for any other watch. For the audit trail only. */
+  readonly parentWatchId: number;
 };
 
-export type NewWatch = Omit<Watch, "id" | "state" | "attempts" | "errors" | "lastError" | "nextAt" | "createdBy" | "writeTargets"> & {
+export type NewWatch = Omit<Watch, "id" | "state" | "attempts" | "errors" | "lastError" | "nextAt" | "createdBy" | "writeTargets" | "parentWatchId"> & {
   readonly createdBy?: string;
   readonly writeTargets?: readonly WriteTarget[];
+  readonly parentWatchId?: number;
 };
 
 type Row = {
@@ -55,6 +58,7 @@ type Row = {
   created_at: number;
   created_by: string | null;
   write_targets: string | null;
+  parent_watch_id: number | null;
 };
 
 const STATES: readonly string[] = ["waiting", "fired", "expired", "cancelled", "failed"];
@@ -77,6 +81,7 @@ const toWatch = (r: Row): Watch => ({
   createdAt: r.created_at,
   createdBy: r.created_by ?? "",
   writeTargets: parseTargets(r.write_targets),
+  parentWatchId: r.parent_watch_id ?? 0,
 });
 
 export type WatchRepo = {
@@ -103,9 +108,9 @@ export const createWatchRepo = (db: DbClient): WatchRepo => {
   const insertStmt = db.query(
     `INSERT INTO watches
        (channel_id, thread_ts, slack_user_id, note, check_cmd, every_ms, deadline_at, next_at,
-        state, attempts, errors, last_error, created_at, updated_at, created_by, write_targets)
+        state, attempts, errors, last_error, created_at, updated_at, created_by, write_targets, parent_watch_id)
      VALUES ($channelId, $threadTs, $slackUserId, $note, $check, $everyMs, $deadlineAt, $nextAt,
-        'waiting', 0, 0, '', $at, $at, $createdBy, $writeTargets)
+        'waiting', 0, 0, '', $at, $at, $createdBy, $writeTargets, $parentWatchId)
      RETURNING *`,
   );
   const dueStmt = db.query<Row, [number, number]>(
@@ -158,6 +163,8 @@ export const createWatchRepo = (db: DbClient): WatchRepo => {
           // Targets only mean something with a creator: the grant is the owner's turn's, never anyone else's.
           $createdBy: w.createdBy ?? "",
           $writeTargets: w.createdBy ? serializeTargets((w.writeTargets ?? []).slice(0, MAX_WRITE_TARGETS)) : "",
+          // Only a watch that holds a grant has a parent worth naming.
+          $parentWatchId: w.createdBy && w.writeTargets?.length ? (w.parentWatchId ?? 0) : 0,
         }) as Row,
       ),
     due: (now, limit = 20) => dueStmt.all(now, Math.max(1, limit)).map(toWatch),

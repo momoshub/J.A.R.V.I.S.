@@ -508,7 +508,8 @@ export const handleMessage = async (
       ? { owner: true as const, named: targetsNamedIn(inbound.text) }
       : {}),
     // A turn a watch fired runs as whoever set it (the owner, say), but it read untrusted content: no owner-only command from it.
-    ...(inbound.trigger === "watch" ? { watch: true as const } : {}),
+    // Its grant rides along (from the watch row, via the watcher) so a watch it re-arms can inherit it, never widen it.
+    ...(inbound.trigger === "watch" ? { watch: true as const, ...(inbound.watchGrant ? { watchGrant: inbound.watchGrant } : {}) } : {}),
   });
   const window = deps.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
   // The thread itself is the context, read from Slack: the whole of this thread

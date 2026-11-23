@@ -54,7 +54,7 @@ import type { WorkflowRepo } from "../../infrastructure/db/workflowRepo.ts";
 import type { CommandApprovalRepo } from "../../infrastructure/db/commandApprovalRepo.ts";
 import type { CloudwatchDeps } from "../cloudwatch.ts";
 import { SETTING_KEYS, type SettingsRepo } from "../../infrastructure/db/settingsRepo.ts";
-import type { WriteTarget } from "../../domain/writeTargets.ts";
+import type { WatchGrant, WriteTarget } from "../../domain/writeTargets.ts";
 import { logAndIgnore } from "../ignoredError.ts";
 
 /** Neutral fallbacks; the real prefix/slash come from config (see index.ts). */
@@ -270,6 +270,11 @@ export type Context = {
    * what that message named. `watch` reads it to let the watch it creates write there; nothing else may.
    */
   ownerTurn?: { readonly named: readonly WriteTarget[] };
+  /**
+   * Present only when the turn was fired by a watch that carried a grant (set by the run bridge from the turn ticket, never the brain).
+   * `watch` re-arms from it: the new watch inherits the creator and a SUBSET of these targets, nothing the turn's text names, never more.
+   */
+  watchGrant?: WatchGrant;
   /** Names of the trivial commands. Handed in so a group never imports the registry back. */
   trivialCommands: readonly string[];
   /** The stored roles (or the seeded defaults) this command is judged against. */

@@ -45,7 +45,7 @@ import { BUG_REPORT_COMMANDS } from "./commands/bugReport.ts";
 import { ERRANDS_COMMANDS } from "./commands/errands.ts";
 import { REVIEW_COMMANDS, runReview } from "./commands/review.ts";
 import type { ReviewIdentity } from "../domain/reviewIdentity.ts";
-import type { WriteTarget } from "../domain/writeTargets.ts";
+import type { WatchGrant, WriteTarget } from "../domain/writeTargets.ts";
 import { HARVEST_COMMANDS } from "./commands/harvest.ts";
 import { INNER_CHILD_COMMANDS } from "./commands/innerChild.ts";
 import { RUNTIME_COMMANDS } from "./commands/runtime.ts";
@@ -246,6 +246,8 @@ export type DispatchOptions = {
   ownerTurn?: { readonly named: readonly WriteTarget[] };
   /** Set only by the run bridge, from a turn ticket a watch's firing started: owner-only commands are refused (see below). */
   firedByWatch?: boolean;
+  /** Set with `firedByWatch`, from the same ticket, when that watch carried a grant: `watch` lets a re-armed watch inherit it, as a subset (see `CommandCtx.watchGrant`). */
+  watchGrant?: WatchGrant;
 };
 
 /** Run a command line (e.g. "add @U1 admin") on behalf of `actor`. */
@@ -372,6 +374,7 @@ export const dispatchCommand = async (
       reply: opts.reply,
       fromBrainRun: opts.fromBrainRun === true,
       ...(opts.fromBrainRun === true && opts.ownerTurn ? { ownerTurn: opts.ownerTurn } : {}),
+      ...(opts.fromBrainRun === true && opts.firedByWatch === true && opts.watchGrant ? { watchGrant: opts.watchGrant } : {}),
       trivialCommands: TRIVIAL_COMMANDS,
       roles: book,
       catalogue: deps.roleCatalogue?.() ?? permissionCatalogue({ commands: listCommandInfo(), mcpServers: ["notion", "datadog"] }),

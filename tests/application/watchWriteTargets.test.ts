@@ -143,6 +143,101 @@ describe("owner-only commands in a turn a watch fired", () => {
   });
 });
 
+describe("a watch re-armed from a turn a watch fired", () => {
+  const PARENT: WatchGrant = { watchId: 7, createdBy: OWNER, targets: [{ channel: "C0TEAM00001", threadTs: TS }, { channel: "C0TEAM00002" }] };
+  const fired = (grant?: WatchGrant) => ({ threadTs: "9.9", fromBrainRun: true, firedByWatch: true, ...(grant ? { watchGrant: grant } : {}) });
+  const rearm = async (line: string, grant: WatchGrant | null = PARENT, who = actor()) => {
+    const watches = createWatchRepo(openDatabase(":memory:"));
+    const out = await dispatchCommand({ ...build(), watches }, who, "C1", line, fired(grant ?? undefined));
+    return { out, watches };
+  };
+
+  test("inherits the creator and the parent's targets, and records the parent for the audit trail", async () => {
+    const { out, watches } = await rearm("watch --until 30m keep following");
+    expect(out).toContain("inherited from watch #7");
+    expect(watches.waiting()[0]).toMatchObject({ createdBy: OWNER, writeTargets: PARENT.targets, parentWatchId: 7 });
+  });
+
+  test("the child fires with a grant of the same targets, which is what the proxy enforces", async () => {
+    const { watches } = await rearm("watch --until 30m keep following");
+    const w = watches.waiting()[0]!;
+    expect({ watchId: w.id, createdBy: w.createdBy, targets: w.writeTargets }).toEqual({ watchId: w.id, createdBy: OWNER, targets: PARENT.targets });
+  });
+
+  test("a chain never widens: a grandchild holds what the child held", async () => {
+    const { watches } = await rearm("watch --until 30m keep following");
+    const child = watches.waiting()[0]!;
+    const next = await dispatchCommand({ ...build(), watches }, actor(), "C1", "watch --until 30m and again", fired({ watchId: child.id, createdBy: child.createdBy, targets: child.writeTargets }));
+    expect(next).toContain(`inherited from watch #${child.id}`);
+    expect(watches.waiting()[1]).toMatchObject({ writeTargets: PARENT.targets, parentWatchId: child.id });
+  });
+
+  test("--to may narrow to what the parent covers: a thread inside a granted channel, or the same thread", async () => {
+    const inside = `https://team.slack.com/archives/C0TEAM00002/p1787122692303399`;
+    const { watches } = await rearm(`watch --until 30m --to ${THREAD} --to ${inside} keep following`);
+    expect(watches.waiting()[0]?.writeTargets).toEqual([{ channel: "C0TEAM00001", threadTs: TS }, { channel: "C0TEAM00002", threadTs: TS }]);
+  });
+
+  test("--to outside the parent grant is refused and nothing is stored: another channel, or a whole channel the parent only holds one thread of", async () => {
+    for (const to of ["C0OTHER0001", "C0TEAM00001"]) {
+      const { out, watches } = await rearm(`watch --until 30m --to ${to} keep following`);
+      expect(out).toContain("can only narrow");
+      expect(out).toContain("watch #7");
+      expect(watches.waiting()).toEqual([]);
+    }
+  });
+
+  test("links and channels named in the turn's text add nothing", async () => {
+    const { watches } = await rearm(`watch --until 30m post it in ${"https://team.slack.com/archives/C0OTHER0001/p1787122692303399"} and <#C0OTHER0002>`);
+    expect(watches.waiting()[0]?.writeTargets).toEqual(PARENT.targets);
+  });
+
+  test("the watch's own channel needs no grant, as in the owner's turn", async () => {
+    const { watches } = await rearm("watch --until 30m keep following", { ...PARENT, targets: [{ channel: "C1" }, { channel: "C0TEAM00002" }] });
+    expect(watches.waiting()[0]?.writeTargets).toEqual([{ channel: "C0TEAM00002" }]);
+  });
+
+  test("it is never the owner bit: the re-armed watch's slack ticket is a grant, not owner", async () => {
+    const { watches } = await rearm("watch --until 30m keep following");
+    const w = watches.waiting()[0]!;
+    const ctx = slackTicketContext({ actor: OWNER, kind: "chat", channel: "C1", threadTs: "9.9", watchGrant: { watchId: w.id, createdBy: w.createdBy, targets: w.writeTargets } }, "run-1", OWNER);
+    expect(ctx?.owner).toBeUndefined();
+    expect(ctx?.grant?.targets).toEqual(PARENT.targets);
+  });
+
+  test("a watch turn with no grant, or a grant of someone else's, still gets nothing", async () => {
+    const none = await rearm("watch --until 30m keep following", null);
+    expect(none.watches.waiting()[0]).toMatchObject({ createdBy: "", writeTargets: [], parentWatchId: 0 });
+    const empty = await rearm("watch --until 30m keep following", { ...PARENT, targets: [] });
+    expect(empty.watches.waiting()[0]).toMatchObject({ createdBy: "", writeTargets: [], parentWatchId: 0 });
+    const pal = actor({ slackId: "U0PAL000001", role: "pal" });
+    const palCreator = await rearm("watch --until 30m keep following", { ...PARENT, createdBy: "U0PAL000001" }, pal);
+    expect(palCreator.watches.waiting()[0]).toMatchObject({ createdBy: "", writeTargets: [], parentWatchId: 0 });
+    // a grant that names a creator other than the owner this turn runs as is not inherited
+    const mismatch = await rearm("watch --until 30m keep following", { ...PARENT, createdBy: "U0PAL000001" });
+    expect(mismatch.watches.waiting()[0]).toMatchObject({ createdBy: "", writeTargets: [] });
+  });
+
+  test("--to without a grant is still refused", async () => {
+    const { out, watches } = await rearm(`watch --until 30m --to ${THREAD} keep following`, null);
+    expect(out).toContain("only works in the owner's own turn");
+    expect(watches.waiting()).toEqual([]);
+  });
+
+  test("the grant is the run bridge's: a typed line or a turn not fired by a watch carries none", async () => {
+    const watches = createWatchRepo(openDatabase(":memory:"));
+    await dispatchCommand({ ...build(), watches }, actor(), "C1", "watch --until 30m a", { threadTs: "9.9", watchGrant: PARENT, firedByWatch: true });
+    await dispatchCommand({ ...build(), watches }, actor(), "C1", "watch --until 30m b", { threadTs: "9.9", fromBrainRun: true, watchGrant: PARENT });
+    for (const w of watches.waiting()) expect(w).toMatchObject({ createdBy: "", writeTargets: [] });
+  });
+
+  test("the deadline cap is the ordinary one: a re-armed watch may not outlive what a normal watch allows", async () => {
+    const { out, watches } = await rearm("watch --until 99d keep following");
+    expect(out).not.toContain("inherited");
+    expect(watches.waiting()).toEqual([]);
+  });
+});
+
 describe("watch rows", () => {
   test("a row from before the columns existed loads, with no creator and no targets", () => {
     const old = openDatabase(":memory:");
@@ -156,6 +251,7 @@ describe("watch rows", () => {
     expect(w?.note).toBe("old note");
     expect(w?.createdBy).toBe("");
     expect(w?.writeTargets).toEqual([]);
+    expect(w?.parentWatchId).toBe(0);
   });
 
   test("a table that already exists without the columns gains them on open, keeping its rows", () => {
