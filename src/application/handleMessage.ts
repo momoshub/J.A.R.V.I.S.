@@ -310,6 +310,12 @@ export type InboundMessage = {
    */
   batched?: boolean;
   /**
+   * The bot assembled this text itself from content its sender did not write (a GitHub issue body the app was called on, a
+   * fix brief). Whoever it runs as, it is not what a person typed, so the turn log records it as not typed and the learning
+   * harvest never reviews it.
+   */
+  composed?: boolean;
+  /**
    * How many messages this turn stands for: set by `respond` when everything one person typed while a turn was running is
    * answered in a single turn. `text` then carries all of them, and `messageTs` is the newest's.
    */
@@ -368,11 +374,11 @@ export type InboundMessage = {
 export const typedByPerson = (m: InboundMessage): boolean => !m.trigger && !m.unprompted && !m.autoContinue && !m.following && !m.batched;
 
 /**
- * A person wrote this message's text: the bot did not start the turn itself (`trigger`, `unprompted`, `autoContinue`).
+ * A person wrote this message's text: the bot did not start the turn itself (`trigger`, `unprompted`, `autoContinue`) and did not compose the text (`composed`).
  * Looser than `typedByPerson`: a followed thread's chatter and a queued batch are still people's words. Recorded on the turn log,
  * because the text alone cannot say (a hand-back the bot wrote to itself reads like any message).
  */
-export const writtenByPeople = (m: InboundMessage): boolean => !m.trigger && !m.unprompted && !m.autoContinue;
+export const writtenByPeople = (m: InboundMessage): boolean => !m.trigger && !m.unprompted && !m.autoContinue && !m.composed;
 
 /** What a turn says when the model said nothing. A placeholder, not an answer. */
 export const EMPTY_REPLY_FALLBACK = "I do not have anything useful to add there.";

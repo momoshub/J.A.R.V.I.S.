@@ -1317,6 +1317,8 @@ const main = async () => {
           messageTs: syntheticTs(clock()),
           viaSlash: false,
           following: false,
+          // The prompt is built from the issue or PR text, which its author wrote, not the caller.
+          composed: true,
         });
         if (result.kind === "ignored") return "";
         if (result.text.trim() && !isSilenceNote(result.text)) {
@@ -1417,6 +1419,7 @@ const main = async () => {
         messageTs: syntheticTs(clock()),
         viaSlash: false,
         following: false,
+        composed: true,
       });
       if (result.kind === "ignored") return "";
       if (result.text.trim()) await slackAdmin.post(channelId, result.text, threadTs, SIGNATURES.innerChild);

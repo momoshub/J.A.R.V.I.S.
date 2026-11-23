@@ -763,8 +763,8 @@ What keeps it safe is checked in code, not asked of the model:
 
 - **Only what people typed is read.** The turn log records, from the inbound
   message's own flags (never the text), whether a person typed a turn; a nudge,
-  a loop, a watch or background hand-back, an unprompted turn and an
-  auto-continue are never reviewed, and neither are failed turns. Every proposal
+  a loop, a watch or background hand-back, an unprompted turn, an
+  auto-continue and a turn built from a GitHub issue or PR body are never reviewed, and neither are failed turns. Every proposal
   must cite a turn and quote words from that person's message, verified against
   it, and the quote is shown in the owner's notice. What is guaranteed is that
   the citation is real, not that the proposal follows from it: a person who asks

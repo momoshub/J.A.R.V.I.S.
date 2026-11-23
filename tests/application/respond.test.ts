@@ -771,6 +771,14 @@ describe("recording how a turn ended", () => {
     expect(t?.slackUserId).toBe(OWNER);
   });
 
+  test("a person's turn is recorded as typed, one the bot composed (a GitHub issue body, a fix brief) is not", async () => {
+    const { deps, turns } = withTurns(llm("ok"));
+    await respond(deps, inbound);
+    await respond(deps, { ...inbound, threadTs: "8.8", messageTs: "8.8", composed: true });
+    await respond(deps, { ...inbound, threadTs: "7.7", messageTs: "7.7", unprompted: true });
+    expect(turns.since(0).map((t) => [t.threadTs, t.typed]).sort()).toEqual([["7.7", false], ["8.8", false], ["9.9", true]]);
+  });
+
   test("a turn that threw is written down WITH the error, not just lost to stderr", async () => {
     const { deps, turns } = withTurns({
       complete: async () => {
