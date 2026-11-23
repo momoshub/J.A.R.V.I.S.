@@ -158,10 +158,16 @@ describe("a watch re-armed from a turn a watch fired", () => {
     expect(watches.waiting()[0]).toMatchObject({ createdBy: OWNER, writeTargets: PARENT.targets, parentWatchId: 7 });
   });
 
-  test("the child fires with a grant of the same targets, which is what the proxy enforces", async () => {
-    const { watches } = await rearm("watch --until 30m keep following");
-    const w = watches.waiting()[0]!;
-    expect({ watchId: w.id, createdBy: w.createdBy, targets: w.writeTargets }).toEqual({ watchId: w.id, createdBy: OWNER, targets: PARENT.targets });
+  test("the child, fired by the watcher, hands its turn the same grant", async () => {
+    const watches = createWatchRepo(openDatabase(":memory:"));
+    await dispatchCommand({ ...build(), watches }, actor(), "C1", "watch --until 30m keep following", fired(PARENT));
+    const turns: { watchGrant?: WatchGrant }[] = [];
+    let at = Date.now();
+    const watcher = createWatcher({ watches, clock: () => at, check: async () => ({ code: 0, output: "" }), runTurn: async (r) => void turns.push({ watchGrant: r.watchGrant }) });
+    at += 31 * 60_000;
+    await watcher.tick();
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.watchGrant).toEqual({ watchId: 1, createdBy: OWNER, targets: PARENT.targets });
   });
 
   test("a chain never widens: a grandchild holds what the child held", async () => {
@@ -231,10 +237,38 @@ describe("a watch re-armed from a turn a watch fired", () => {
     for (const w of watches.waiting()) expect(w).toMatchObject({ createdBy: "", writeTargets: [] });
   });
 
-  test("the deadline cap is the ordinary one: a re-armed watch may not outlive what a normal watch allows", async () => {
+  test("the per-watch deadline cap still applies to a re-armed watch", async () => {
     const { out, watches } = await rearm("watch --until 99d keep following");
     expect(out).not.toContain("inherited");
     expect(watches.waiting()).toEqual([]);
+  });
+
+  test("a chain cannot outlive what one watch may: a child's deadline stops at the chain's first watch plus 30 days, and a spent chain is refused", async () => {
+    const watches = createWatchRepo(openDatabase(":memory:"));
+    const deps = { ...build(), watches };
+    const day = 86_400_000;
+    const now = deps.clock();
+    const root = watches.add({ channelId: "C1", threadTs: "9.9", slackUserId: OWNER, note: "root", check: "", everyMs: 60_000, deadlineAt: now - day, createdAt: now - 20 * day, createdBy: OWNER, writeTargets: PARENT.targets }, now - 20 * day);
+    const mid = watches.add({ channelId: "C1", threadTs: "9.9", slackUserId: OWNER, note: "mid", check: "", everyMs: 60_000, deadlineAt: now - 1, createdAt: now - 10 * day, createdBy: OWNER, writeTargets: PARENT.targets, parentWatchId: root.id }, now - 10 * day);
+    const out = await dispatchCommand(deps, actor(), "C1", "watch --until 30d keep following", fired({ ...PARENT, watchId: mid.id }));
+    expect(out).toContain("inherited from watch");
+    const child = watches.waiting().find((w) => w.parentWatchId === mid.id)!;
+    expect(child.deadlineAt).toBe(root.createdAt + 30 * day);
+    expect(child.deadlineAt - now).toBeLessThan(11 * day);
+    // a chain whose first watch is 30 days old has nothing left
+    const old = watches.add({ channelId: "C1", threadTs: "9.9", slackUserId: OWNER, note: "old", check: "", everyMs: 60_000, deadlineAt: now - 1, createdAt: now - 31 * day, createdBy: OWNER, writeTargets: PARENT.targets }, now - 31 * day);
+    const spent = await dispatchCommand(deps, actor(), "C1", "watch --until 1h keep following", fired({ ...PARENT, watchId: old.id }));
+    expect(spent).toContain("has used its");
+    expect(watches.waiting().filter((w) => w.parentWatchId === old.id)).toEqual([]);
+  });
+
+  test("one fired watch hands its grant to only a few waiting children", async () => {
+    const { watches } = await rearm("watch --until 30m one");
+    const deps = { ...build(), watches };
+    for (let i = 0; i < 4; i++) await dispatchCommand(deps, actor(), "C1", `watch --until 30m more ${i}`, fired({ ...PARENT, watchId: 7 }));
+    const sixth = await dispatchCommand(deps, actor(), "C1", "watch --until 30m too many", fired({ ...PARENT, watchId: 7 }));
+    expect(sixth).toContain("has already set 5 watches");
+    expect(watches.waiting()).toHaveLength(5);
   });
 });
 

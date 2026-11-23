@@ -1,7 +1,7 @@
 /** Things that run later or on their own: follow, mute, watch, remind, loop, mindful. */
 
 import { type MessageRef, parseMessageLink, parsePostTarget } from "../../domain/slackLinks.ts";
-import { builtinCheck, humanDuration, parseWatchArgs } from "../../domain/watch.ts";
+import { builtinCheck, humanDuration, MAX_DEADLINE_MS, parseWatchArgs } from "../../domain/watch.ts";
 import { formatWhen, humanLead, parseRemindArgs } from "../../domain/reminder.ts";
 import {
   mindfulReport,
@@ -17,6 +17,8 @@ import { coveredBy, describeTarget, MAX_WRITE_TARGETS, normalizeTargets, targets
 import { PERM } from "../../domain/permissions.ts";
 import { isOwnerRole, roleNamesWith } from "../../domain/roles.ts";
 
+/** How many watches one fired watch may hand its grant to while they wait: enough for a few things followed at once, not a multiplier. */
+const MAX_REARM_CHILDREN = 5;
 const FOLLOW_FILLER = new Set(["thread", "this", "the", "that"]);
 
 /**
@@ -219,6 +221,7 @@ export const SCHEDULE_COMMANDS: readonly CommandDef[] = [
       let createdBy = "";
       let writeTargets: WriteTarget[] = [];
       let parentWatchId = 0;
+      let chainEnd = Infinity;
       // Same test the Slack ticket applies when the grant is used: made by the owner, and this turn still runs as that owner.
       const inherit =
         !ownerTurn && watchGrant && !!deps.ownerSlackId && watchGrant.createdBy === deps.ownerSlackId && actor.slackId === deps.ownerSlackId && watchGrant.targets.length > 0
@@ -253,6 +256,17 @@ export const SCHEDULE_COMMANDS: readonly CommandDef[] = [
           if (outside.length) {
             return `\`--to\` can only narrow here: this turn was fired by watch #${inherit.watchId}, which may write only to ${inherit.targets.map(describeTarget).join("; ")}. Not covered: ${outside.map(describeTarget).join("; ")}. Ask the owner to set a new watch for those.`;
           }
+          // A chain is not a way round the cap: the whole re-arm chain, counted from the first watch in it, lasts what one watch may,
+          // and one fired watch sets only so many children (a fired turn reads untrusted content and must not multiply the grant).
+          let root = deps.watches.get(inherit.watchId);
+          for (let hops = 0; root?.parentWatchId && hops < 100; hops++) root = deps.watches.get(root.parentWatchId) ?? root;
+          chainEnd = (root?.createdAt ?? now) + MAX_DEADLINE_MS;
+          if (chainEnd <= now + 60_000) {
+            return `This re-arm chain started from watch #${root?.id ?? inherit.watchId} and has used its ${humanDuration(MAX_DEADLINE_MS)}: a watch that keeps following cannot outlive that. Ask the owner to set a new watch if it should go on.`;
+          }
+          if (deps.watches.waiting(500).filter((x) => x.parentWatchId === inherit.watchId).length >= MAX_REARM_CHILDREN) {
+            return `Watch #${inherit.watchId} has already set ${MAX_REARM_CHILDREN} watches that inherit its grant: cancel one, or ask the owner to set a new watch.`;
+          }
           createdBy = inherit.createdBy;
           parentWatchId = inherit.watchId;
           // Without `--to` the child keeps the whole parent grant; with it, only the named part of it.
@@ -273,7 +287,7 @@ export const SCHEDULE_COMMANDS: readonly CommandDef[] = [
           note: parsed.note,
           check,
           everyMs: parsed.everyMs,
-          deadlineAt: now + parsed.deadlineMs,
+          deadlineAt: Math.min(now + parsed.deadlineMs, chainEnd),
           createdAt: now,
           createdBy,
           writeTargets,

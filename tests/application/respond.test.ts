@@ -907,6 +907,22 @@ describe("a turn started by a watch can actually DO things", () => {
     expect(issued[2]).not.toHaveProperty("named");
   });
 
+  test("the command ticket carries a fired watch's grant only on a watch turn, never on a typed or other turn", async () => {
+    const { deps } = build2();
+    const issued: Parameters<typeof tickets.issue>[0][] = [];
+    const tickets = createCommandTickets(() => 1, () => "TICKET");
+    const spy = { ...deps, commandTickets: { ...tickets, issue: (ctx: Parameters<typeof tickets.issue>[0]) => (issued.push(ctx), tickets.issue(ctx)) } };
+    const grant = { watchId: 4, createdBy: OWNER, targets: [{ channel: "C0TEAM00001" }] };
+    await respond(spy, { ...fired, slackUserId: OWNER, unprompted: true, trigger: "watch", watchGrant: grant, threadTs: "9.4", messageTs: "9.4" });
+    expect(issued[0]).toMatchObject({ watch: true, watchGrant: grant });
+    await respond(spy, { ...fired, slackUserId: OWNER, trigger: undefined, watchGrant: grant, threadTs: "9.5", messageTs: "9.5" });
+    expect(issued[1]).not.toHaveProperty("watchGrant");
+    expect(issued[1]).not.toHaveProperty("watch");
+    await respond(spy, { ...fired, slackUserId: OWNER, unprompted: true, trigger: "watch", threadTs: "9.6", messageTs: "9.6" });
+    expect(issued[2]).toMatchObject({ watch: true });
+    expect(issued[2]).not.toHaveProperty("watchGrant");
+  });
+
   test("a fired watch's grant reaches the run's billing context, and a typed message carries none", async () => {
     const { deps } = build2();
     const bills: unknown[] = [];
