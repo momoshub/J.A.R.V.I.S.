@@ -149,7 +149,7 @@ export const CHAT_COMMANDS: readonly CommandDef[] = [
     minRole: "pal",
     usage: "<question>",
     summary: "ask me something in one shot",
-    run: async ({ deps, actor, channelId, rest, prefix, threadTs }) => {
+    run: async ({ deps, actor, channelId, rest, prefix, threadTs, fromBrainRun }) => {
       const question = rest.trim();
       if (!question) return `Ask me something: \`${prefix} ask <question>\``;
       if (!deps.llm) return "My brain is not wired up right now.";
@@ -160,7 +160,7 @@ export const CHAT_COMMANDS: readonly CommandDef[] = [
         messages: [{ role: "user", content: question }],
         assistantName: ctx.botName,
         policy: deps.toolPolicy?.(actor.role, channelId),
-        bill: { actor: actor.slackId, kind: "ask", channel: channelId, threadTs, ownMessage: true },
+        bill: { actor: actor.slackId, kind: "ask", channel: channelId, threadTs, ...(fromBrainRun ? {} : { ownMessage: true as const }) },
       });
       return reply.trim() || "I do not have anything useful to add there.";
     },
@@ -171,7 +171,7 @@ export const CHAT_COMMANDS: readonly CommandDef[] = [
     minRole: "pal",
     usage: "<question>",
     summary: "a quick side question - answered without disturbing the work in this thread",
-    run: async ({ deps, actor, channelId, threadTs, rest, prefix }) => {
+    run: async ({ deps, actor, channelId, threadTs, rest, prefix, fromBrainRun }) => {
       const question = rest.trim();
       if (!question) return `What is the side question? \`${prefix} btw <question>\``;
       if (!deps.llm) return "My brain is not wired up right now.";
@@ -202,7 +202,7 @@ export const CHAT_COMMANDS: readonly CommandDef[] = [
         ],
         assistantName: ctx.botName,
         policy,
-        bill: { actor: actor.slackId, kind: "btw", channel: channelId, threadTs, ownMessage: true },
+        bill: { actor: actor.slackId, kind: "btw", channel: channelId, threadTs, ...(fromBrainRun ? {} : { ownMessage: true as const }) },
       });
       // Nothing is appended to `messages` on the way out, so the thread's next
       // real turn never sees this exchange in its unseen turns.
