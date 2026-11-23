@@ -45,6 +45,8 @@ import type { ReminderRepo } from "../infrastructure/db/reminderRepo.ts";
 import type { JourneyRepo } from "../infrastructure/db/journeyRepo.ts";
 import type { BugReportRepo } from "../infrastructure/db/bugReportRepo.ts";
 import type { SelfIssueRepo } from "../infrastructure/db/selfIssueRepo.ts";
+import type { SkillDraftRepo } from "../infrastructure/db/skillDraftRepo.ts";
+import type { SkillDraftApprovalDeps } from "./learningHarvest.ts";
 import type { LoopRepo } from "../infrastructure/db/loopRepo.ts";
 import type { WatchRepo } from "../infrastructure/db/watchRepo.ts";
 import { cancelWatchesOnWorkerStop } from "./watcher.ts";
@@ -120,6 +122,10 @@ export type HandleMessageDeps = {
   bugReports?: BugReportRepo;
   /** The inner child's issue queue, for the `inner-child` command. */
   selfIssues?: SelfIssueRepo;
+  /** The learning harvest's skill drafts, for the `harvest` command. */
+  skillDrafts?: SkillDraftRepo;
+  /** The owner's Approve / Reject on a skill draft, decided by the Slack listener in code. */
+  skillDraftApproval?: SkillDraftApprovalDeps;
   /** The owner's Approve / Reject on a bug report, decided by the Slack listener in code. */
   bugReportApproval?: BugReportApprovalDeps;
   /** The owner's Approve / Reject on a review with nobody's token to run on, decided in code. */

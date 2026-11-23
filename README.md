@@ -170,6 +170,7 @@ Every command is gated by its own `command:<name>` grant, and its sub-actions by
 | `model [role\|subagent\|worker\|plan\|loop\|here\|#channel] [name\|default]` | pal, executer, admin (setting: `settings:manage`) | show the brain; `settings:manage` pins a model per role or channel, or for subagents, Orca workers, planning and loop fires |
 | `logsource [grafana,datadog\|default]` | pal, executer, admin (setting: `settings:manage`) | where it looks for logs - see [Investigating](#investigating) |
 | `inner-child [status]`, `inner-child on\|off`, `inner-child autofix on\|off`, `inner-child channel <#channel>\|off` | pal, executer, admin (setting: `settings:manage`) | whether the self-review feature is on, whether it fixes what it finds (autofix, off by default), its channel and how many issues are open or queued; `settings:manage` switches it, its autofix or sets its channel - see [The inner child](#the-inner-child) |
+| `harvest [status]`, `harvest on\|off` | pal, executer, admin (setting: `settings:manage`) | whether the bot reviews its recent conversations and proposes facts and skills to remember (off by default; the owner approves every one), how many it proposed in the last day and how many skill drafts wait; `settings:manage` switches it - see [The learning harvest](#the-learning-harvest) |
 | `cloudwatch [--group /log/group] [--last 15m \| --from <t> --to <t>] [--region r] [--limit n] <insights query>` (alias `cw`), `cloudwatch help`, `cloudwatch default <group\|reset>` | executer, admin (runs at once with `cloudwatch:direct`, else Confirm first) | query CloudWatch Logs Insights directly - see [CloudWatch](#cloudwatch) |
 | `forget` | pal, executer, admin | wipe the bot's memory of this channel |
 | `sys` (alias `vitals`) | admin | how the host, the bot and Orca are doing, as Block Kit: a verdict header, cpu/memory/swap/disk/battery/host/bot/turns fields, the last hour's trend, then Orca's runtime, active runs, workers by status and a table of live workers (one "unreachable" line when Orca is down or slow). The message text keeps the plain report as the fallback |
@@ -730,6 +731,55 @@ older than 6 hours jumps to now.
   thread. The channel is the `inner_child_drift_channel` setting, falling back
   to `DRAIN_NOTICE_CHANNEL`; `off` turns drift steering off. One nudge per
   reply, at most 2 per triage run and 4 a day, never in a workflow thread.
+
+## The learning harvest
+
+The bot can review its own recent conversations and **propose** what is worth
+keeping, the way a self-reviewing agent saves a fact or turns a solved procedure
+into a skill, but nothing is ever saved until the owner presses Approve. Off by
+default: `harvest on` (the `learning_harvest` setting) starts it, `harvest off`
+stops it, `harvest` shows whether it is on, how many proposals it raised in the
+last day and how many skill drafts wait. Changing it needs `settings:manage`; the
+status is open to everyone. `harvest on` moves the cursor to now, so what was
+said while it was off is never read, and a cursor older than 6 hours jumps to now.
+
+Every 30 minutes, once at least 6 turns people wrote have ended since the cursor,
+one small-model call (`claude-haiku-4-5-20251001`; the `learning_harvest_model`
+setting changes it) reads the batch and may propose:
+
+- **A durable fact the people settled.** It goes through the ordinary learnings
+  path (see `learn`): stored pending, never injected, put to the owner with
+  Approve / Reject, deduped against every learning ever asked (active, pending
+  or rejected) and against the adapter's notes. A fact about one channel is
+  scoped to it.
+- **A skill.** A multi-step procedure that was solved and is likely to recur, or
+  a correction to an existing skill. The owner gets the draft in a DM with
+  Approve / Reject: a new skill whole, a change as a diff. Approve writes it into
+  the adapter's skills the way a hand edit does (a revision `adapter revert`
+  can undo; refused if the skill changed since the draft); Reject is remembered
+  by skill name, so neither that draft nor a reworded one is raised again.
+
+What keeps it safe is checked in code, not asked of the model:
+
+- **Only what people wrote is a source.** Every proposal must quote words copied
+  from a person's own message in the turn it cites, and the quote is verified
+  against that message. Text the bot merely read (a tool result, a web page, a
+  file, another bot) is never a source, so injecting a "fact" into a page cannot
+  reach the owner's approval. The bot's own prompts (nudges, loops, watch
+  hand-backs) are not reviewed.
+- **Private stays private.** A proposal from a private channel, a DM, or a
+  channel Slack will not describe is channel-scoped (a fact) or dropped (a
+  skill, which loads everywhere), whatever the model said.
+- **No secrets or personal data.** A proposal with a token, key, password, email,
+  phone number or Slack id is dropped.
+- **Bounded.** At most 4 proposals a day (facts and skill drafts together), 2 per
+  batch, 3 skill drafts waiting at once; the same proposal is never asked twice.
+  A skill draft is at most 2000 characters (or a diff that size) so what the
+  owner reads is all of what they approve, and it may not set how a skill runs
+  (`model`, `worker`, `run`).
+- **Decided in code.** The buttons (`jv:harvest:`) are handled by their own
+  listener, never a model turn, honoured only from the owner on the untouched
+  message they were posted with.
 
 ## Staying online
 
@@ -1524,7 +1574,7 @@ A permission is an id; `role perms [filter]` and the Roles page list them all:
 | `chat:self-update`, `chat:desktop` | the self-update flow, learn url and watches offered in chat; driving the screen |
 | `commands:unlimited`, `commands:approve` | not held back by the per-window command allowance (`pal` is); pressing the approve / reject buttons on a held command |
 | `access:decide` | deciding access requests |
-| `settings:manage` | the configuration sub-actions of commands: model, review-agents, review policy overrides, logsource, review-inbox moves, inner-child on/off, autofix and channel, ticket config, cloudwatch default group, someone's allowance, `token who`, `note parent` |
+| `settings:manage` | the configuration sub-actions of commands: model, review-agents, review policy overrides, logsource, review-inbox moves, inner-child on/off, autofix and channel, harvest on/off, ticket config, cloudwatch default group, someone's allowance, `token who`, `note parent` |
 | `review:policy`, `runs:stop-any`, `secrets:2fa-manage`, `watch:shell`, `reminders:manage-all`, `cloudwatch:direct` | choosing a review policy; stopping someone else's turn or session; adding and removing 2FA setup keys; shell-check watches (and seeing everyone's watches); everyone's reminders; CloudWatch without the Confirm step |
 
 As seeded: `owner` holds everything. `admin` is sandboxed like an `executer` (never fewer tools than one): `tools:code`, the read-only database servers (`EXECUTER_DB_MCP_SERVERS`), Notion and Datadog, with no arbitrary shell and no permission bypass; on top of that every command at or below admin, all twelve `github:` actions and the admin sub-actions (no `tools:orca`: `Bash(orca:*)` is denied by name). `executer` is sandboxed with `tools:code`, the read-only database servers (`EXECUTER_DB_MCP_SERVERS`) and executer-level commands, the `git`/`pr-create`/`pr-edit`/`comment`/`labels-add`/`reviewers-request` App actions (commit identity only: no `github:push`, so no token). `pal` is sandboxed read-only (GitHub read, Notion read, web, read-only git and aws), may use `quick-review` and react, and is held to the per-window command allowance.

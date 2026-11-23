@@ -67,6 +67,8 @@ import { loadGithubAppCredentials, webhookSecretOf } from "./infrastructure/gith
 import { startWebhookServer } from "./infrastructure/github/webhookServer.ts";
 import { createGithubAppRepo } from "./infrastructure/db/githubAppRepo.ts";
 import { createInnerChild, steerViaRespond } from "./application/innerChild.ts";
+import { createLearningHarvest, type SkillDraftApprovalDeps } from "./application/learningHarvest.ts";
+import { createSkillDraftRepo } from "./infrastructure/db/skillDraftRepo.ts";
 import { decideAccess } from "./domain/access.ts";
 import { sessionThreadKey } from "./domain/agentSession.ts";
 import { createDriftRepo } from "./infrastructure/db/driftRepo.ts";
@@ -255,6 +257,7 @@ const main = async () => {
   // Filled in below, once `deps` exists: the owner's press on a review with nobody's token resolves through it.
   let autoReview: AutoReview | undefined;
   const selfIssues = createSelfIssueRepo(db);
+  const skillDrafts = createSkillDraftRepo(db);
   const loops = createLoopRepo(db);
   const follows = createFollowRepo(db);
   const kitViews = createKitViewRepo(db);
@@ -675,6 +678,15 @@ const main = async () => {
     ownerSlackId: config.ownerSlackId,
     log: (l) => activity.line(`learning approval: ${l}`),
   };
+  // A skill draft the learning harvest proposed waits here for the owner's Approve; the same object backs the button handler.
+  const skillDraftApproval: SkillDraftApprovalDeps = {
+    drafts: skillDrafts,
+    adapter: () => (adapterStore.exists() ? adapterDeps() : undefined),
+    slack: slackAdmin,
+    clock,
+    ownerSlackId: config.ownerSlackId,
+    log: (l) => activity.line(`skill draft approval: ${l}`),
+  };
   const deps: RespondDeps = {
     users,
     messages,
@@ -699,6 +711,8 @@ const main = async () => {
     bugReports,
     selfIssues,
     bugReportApproval: { bugReports, slack: slackAdmin, clock, ownerSlackId: config.ownerSlackId },
+    skillDrafts,
+    skillDraftApproval,
     reviewRunApproval: {
       runs: reviewRuns,
       slack: slackAdmin,
@@ -1443,6 +1457,33 @@ const main = async () => {
     },
     log: (msg) => console.error(`[inner-child] ${msg}`),
   });
+  // The learning harvest: reviews recent conversations and proposes facts and
+  // skills to the owner, who approves each. Off until `harvest on`.
+  const learningHarvest = createLearningHarvest({
+    turns,
+    messages,
+    learnings,
+    learningApproval,
+    drafts: skillDrafts,
+    adapter: () => (adapterStore.exists() ? adapterDeps() : undefined),
+    slack: slackAdmin,
+    llm,
+    clock,
+    ownerSlackId: config.ownerSlackId,
+    botName: () => profile().name,
+    noTools: noTools(config.dbMcpServers),
+    enabled: () => settings.get(SETTING_KEYS.learningHarvest)?.trim().toLowerCase() === "on",
+    model: () => settings.get(SETTING_KEYS.learningHarvestModel)?.trim(),
+    cursor: {
+      get: () => {
+        const v = Number(settings.get(SETTING_KEYS.learningHarvestCursor));
+        return Number.isFinite(v) && v > 0 ? v : undefined;
+      },
+      set: (at) => settings.set(SETTING_KEYS.learningHarvestCursor, String(at)),
+    },
+    skip: (channel, threadTs) => selfIssues.isFixThread(channel, threadTs),
+    log: (msg) => console.error(`[harvest] ${msg}`),
+  });
   // TODO(split): move the timers (watch tick, stuck sweeper, offline alarm) and shutdown to src/application/timers.ts
   // A rejection on a bare timer is unhandled, and an unhandled rejection kills
   // the process - mid-turn, for whoever is talking to the bot. Never let one out.
@@ -1458,6 +1499,7 @@ const main = async () => {
     void watcher.tick().catch(tickFailed("watch"));
     void loopRunner.tick().catch(tickFailed("loop"));
     void innerChild.tick().catch(tickFailed("inner-child"));
+    void learningHarvest.tick().catch(tickFailed("harvest"));
     void reviewInbox.tick().catch(tickFailed("review-inbox"));
     // Questions Orca workers are blocked on, put to the threads that started them.
     void orcaBridge?.tick().catch(tickFailed("orca-questions"));

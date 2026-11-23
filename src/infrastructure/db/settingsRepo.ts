@@ -65,6 +65,12 @@ export const SETTING_KEYS = {
   innerChildCursor: "inner_child_cursor",
   /** Channel each voice-drift nudge is logged in. Empty falls back to `DRAIN_NOTICE_CHANNEL`; "off" stops drift steering. */
   innerChildDriftChannel: "inner_child_drift_channel",
+  /** The learning harvest (`application/learningHarvest.ts`): `on` turns it on, anything else (absent too) is off. */
+  learningHarvest: "learning_harvest",
+  /** Model its review runs on. Default the inner child's triage model. */
+  learningHarvestModel: "learning_harvest_model",
+  /** Where its last review stopped (ms), so a restart neither re-reads nor skips. */
+  learningHarvestCursor: "learning_harvest_cursor",
   /** Channel GitHub review requests of the bot's account are posted and reviewed in. Empty = off. */
   reviewInboxChannel: "review_inbox_channel",
   /** ISO time of the last review request handled. */

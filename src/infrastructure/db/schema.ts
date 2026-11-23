@@ -117,6 +117,7 @@ export const migrate = (db: Database): void => {
   migrateReviewRuns(db);
   migrateLinkedThreads(db);
   migrateLearningScope(db);
+  migrateSkillDrafts(db);
 };
 
 /**
@@ -1384,4 +1385,37 @@ const migrateRoles = (db: Database): void => {
     db.exec("ROLLBACK");
     throw e;
   }
+};
+
+/**
+ * Migration v46: skill drafts the learning harvest proposes.
+ *
+ * One row per proposal, kept after the decision: a rejected row is how the same
+ * skill is never raised again, and `fingerprint` (name + text) is how the same
+ * draft is never asked twice. `base` is the skill file the draft was written
+ * against ('' for a new skill), so an approval is refused if it changed since.
+ */
+const migrateSkillDrafts = (db: Database): void => {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS skill_drafts (
+      id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+      fingerprint        TEXT NOT NULL,
+      name               TEXT NOT NULL,
+      content            TEXT NOT NULL,
+      base               TEXT,
+      state              TEXT NOT NULL DEFAULT 'pending',
+      source_channel     TEXT NOT NULL DEFAULT '',
+      source_thread_ts   TEXT NOT NULL DEFAULT '',
+      notice_channel     TEXT NOT NULL DEFAULT '',
+      notice_ts          TEXT NOT NULL DEFAULT '',
+      notice_fingerprint TEXT NOT NULL DEFAULT '',
+      created_at         INTEGER NOT NULL,
+      decided_at         INTEGER NOT NULL DEFAULT 0
+    );
+  `);
+  db.exec("CREATE INDEX IF NOT EXISTS idx_skill_drafts_fingerprint ON skill_drafts (fingerprint);");
+  const { user_version } = db.query<{ user_version: number }, []>("PRAGMA user_version").get() ?? {
+    user_version: 0,
+  };
+  if (user_version < 46) db.exec("PRAGMA user_version = 46;");
 };

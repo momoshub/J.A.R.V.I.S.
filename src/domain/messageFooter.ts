@@ -41,6 +41,7 @@ export const SIGNATURES = {
   loop: "loop",
   learning: "learning",
   bugReport: "bug report",
+  harvest: "learning harvest",
   reviewInbox: "review inbox",
   githubApp: "GitHub app",
   offlineAlarm: "offline alarm",

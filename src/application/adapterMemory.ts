@@ -315,6 +315,8 @@ export const editAdapterFile = (
   content: string,
   actor: string,
   base?: string,
+  /** The revision's reason; absent says it was a hand edit. */
+  reason?: string,
 ): CommitResult => {
   const rel = path.trim();
   // Canonical paths only. `a/./b` lands on the same mirror file as `a/b` but
@@ -353,7 +355,7 @@ export const editAdapterFile = (
   if (blank) files.delete(rel);
   else files.set(rel, text);
   return commitAdapter(deps, files, {
-    reason: `${blank ? "remove" : "edit"} ${rel} by hand`,
+    reason: reason ?? `${blank ? "remove" : "edit"} ${rel} by hand`,
     actor,
     enforceBudget: false,
   });
