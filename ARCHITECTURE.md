@@ -87,7 +87,7 @@ no classes.
 - **A turn holds no secret.** The CLI is spawned with the bot's environment
   minus every credential-shaped variable (`domain/turnEnv.ts`: by name -
   `*_TOKEN`, `*_SECRET`, `*_API_KEY`... - except the CLI's own
-  `CLAUDE_CODE_OAUTH_TOKEN` and what `TURN_ENV_PASSTHROUGH` names), because a
+  `CLAUDE_CODE_OAUTH_TOKEN` and what `TURN_ENV_PASSTHROUGH` names; a turn the owner's own message started holds an owner ticket (`ownerTickets`) instead of the token and runs on the host login with the claude.ai connectors), because a
   turn's Bash is driven by a model that reads untrusted text. What a turn needs
   from Slack goes through `bin/slack-api.sh`: it presents the turn's
   `JARVIS_SLACK_TICKET` (`slackTickets`, minted when the process starts and
@@ -314,6 +314,7 @@ Orchestrates the domain and depends on **ports**, not concrete adapters.
 - `respond.ts` - routes an inbound message to command or chat
 - `handleMessage.ts` - the chat flow (access -> remember -> ask model -> remember), applying the role's tool policy
 - `cloudwatch.ts` (application) + `domain/cloudwatch.ts` + `infrastructure/aws/cloudwatchCli.ts` + `db/cloudwatchRepo.ts` - the `cloudwatch` command: Logs Insights run by the bot's own `aws` CLI (a turn's `aws logs` stays denied), a scan estimate from the log group's stored size, owner runs after a warning, executer/admin park a `cloudwatch_requests` row behind `jv:cloudwatch:confirm|cancel` buttons decided in code (never a model turn), every request audited
+- `ownerTickets.ts` (application) - the one-turn owner ticket (`jvow_...`): minted only when the bot's record says the owner's own message started the turn, it switches that spawn to the host login + claude.ai connectors (no `CLAUDE_CODE_OAUTH_TOKEN`, no `ENABLE_CLAUDEAI_MCP_SERVERS=false`, `--mcp-config` without `--strict-mcp-config`, the claude.ai Slack connector denied); a child of the turn redeems it at `POST /api/owner-ticket`. Names nobody, grants connectors only
 - `slackTickets.ts`, `slackProxy.ts` (application) + `domain/slackProxy.ts` + `domain/turnEnv.ts` - a turn's Slack access: the per-turn ticket, the allowlisted call made with the bot's token (built-in lists plus the owner's `slack-methods` extras), and the environment scrub
 - `selfPosts.ts` (application) + `domain/selfPost.ts` - what a turn (by its run ticket) posted into its own thread through the proxy, so that turn's closing reply is dropped instead of streamed as a second message (unless it carries a `KEEP_REPLY` line; the proxy strips that marker from the turn's own post/update text and blocks)
 - `commands.ts`, `commandTickets.ts`, `workerTickets.ts`, `commandLimits.ts`, `brainRun.ts` - the command registry (configurable prefix + slash, role gates, help), the brain's tickets, allowances and result delivery. The command definitions live in `commands/`, one file per group (`chat`, `schedule`, `people`, `adapter`, `learnings`, `errands`, `review`, `runtime`, `slack`, `cloudwatch`), with `commands/shared.ts` for the deps, the `CommandDef` type and the helpers more than one group uses

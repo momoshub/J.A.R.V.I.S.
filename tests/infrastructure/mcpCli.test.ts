@@ -25,7 +25,7 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
-const run = async (argv: string[], env: Record<string, string | undefined> = {}) => {
+const run = async (argv: string[], env: Record<string, string | undefined> = {}, fetchFn?: typeof fetch) => {
   const out: string[] = [];
   const err: string[] = [];
   const code = await runMcpCli([...argv, "--claude-json", claudeJson, "--cache-dir", join(dir, "cache"), "--out", join(dir, "out")], {
@@ -34,6 +34,7 @@ const run = async (argv: string[], env: Record<string, string | undefined> = {})
     out: (l) => void out.push(l),
     err: (l) => void err.push(l),
     now: () => new Date("2026-11-18T10:00:00Z"),
+    ...(fetchFn ? { fetchFn } : {}),
   });
   return { code, out: out.join("\n"), err: err.join("\n") };
 };
@@ -143,5 +144,39 @@ describe("mcp list / search / schema (from the cache, no server)", () => {
     expect((await run(["help"])).out).toContain("mcp call <server> <tool>");
     expect((await run([])).code).toBe(2);
     expect((await run(["frobnicate"])).err).toContain("unknown command");
+  });
+});
+
+describe("mcp call and the owner ticket", () => {
+  const owner = { ...turnMcpEnv({ skipPermissions: true }), JARVIS_OWNER_TICKET: "jvow_t", JARVIS_OWNER_API_URL: "http://127.0.0.1:1/api/owner-ticket" };
+  const answering = (status: number): typeof fetch => (async (_url: unknown, init?: { body?: unknown }) => {
+    expect(JSON.parse(String(init?.body))).toEqual({ ticket: "jvow_t" });
+    return new Response("{}", { status });
+  }) as unknown as typeof fetch;
+
+  test("a live ticket lets the call through", async () => {
+    expect((await run(["call", "pg", "run_query", "{}"], owner, answering(200))).code).toBe(0);
+  });
+
+  test("a dead ticket (the turn ended, or the env was copied out) is refused before anything runs", async () => {
+    const r = await run(["call", "pg", "run_query", "{}"], owner, answering(403));
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("owner ticket is no longer valid");
+    expect(existsSync(join(dir, "out"))).toBe(false);
+  });
+
+  test("an unreachable bot, or a ticket with no URL, refuses too", async () => {
+    const down = (async () => {
+      throw new Error("ECONNREFUSED");
+    }) as unknown as typeof fetch;
+    expect((await run(["call", "pg", "run_query", "{}"], owner, down)).err).toContain("could not be reached");
+    expect((await run(["call", "pg", "run_query", "{}"], { ...owner, JARVIS_OWNER_API_URL: undefined })).err).toContain("no URL");
+  });
+
+  test("a turn without a ticket asks nobody", async () => {
+    const never = (async () => {
+      throw new Error("must not be called");
+    }) as unknown as typeof fetch;
+    expect((await run(["call", "pg", "run_query", "{}"], turnMcpEnv({ skipPermissions: true }), never)).code).toBe(0);
   });
 });

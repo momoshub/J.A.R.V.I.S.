@@ -141,6 +141,7 @@ import { createAutoReview, type AutoReview } from "./application/autoReview.ts";
 import { createReviewRunRepo } from "./infrastructure/db/reviewRunRepo.ts";
 import { createCommandTickets, refusalMessage } from "./application/commandTickets.ts";
 import { createSlackTickets, slackTicketContext } from "./application/slackTickets.ts";
+import { createOwnerTickets, ownerTicketWanted } from "./application/ownerTickets.ts";
 import { createNoticeLookup } from "./infrastructure/db/noticeLookup.ts";
 import { createSlackProxy } from "./application/slackProxy.ts";
 import { parseExtraMethods } from "./domain/slackProxy.ts";
@@ -185,6 +186,7 @@ const buildLlm = (
   turnEnv?: () => Promise<Record<string, string | undefined>>,
   agents?: () => Record<string, Record<string, unknown>>,
   slackTicket?: ClaudeCliConfig["slackTicket"],
+  owner?: Pick<ClaudeCliConfig, "ownerTicket" | "ownerApiUrl">,
 ): LlmPort =>
   config.llmProvider === "claude-cli"
     ? createClaudeCliLlm({
@@ -198,6 +200,7 @@ const buildLlm = (
         turnEnv,
         agents,
         slackTicket,
+        ...owner,
         envPassthrough: config.turnEnvPassthrough,
       })
     : createAnthropicLlm({
@@ -333,6 +336,8 @@ const main = async () => {
   const commandTickets = createCommandTickets(() => Date.now(), undefined, config.commandTicketUses);
   // A turn's Slack access: the bot's token stays here, a turn only ever holds a ticket for it.
   const slackTickets = createSlackTickets(() => Date.now());
+  // Host connector access: a turn the owner's own message started holds one, and nobody else's does.
+  const ownerTickets = createOwnerTickets(() => Date.now());
   const selfPosts = createSelfPosts();
   const slackProxy = createSlackProxy({
     tickets: slackTickets,
@@ -568,6 +573,15 @@ const main = async () => {
       if (!ctx) return undefined;
       const token = slackTickets.issue(ctx);
       return { token, end: () => slackTickets.revoke(token) };
+    },
+    {
+      // Only when the bot's own record says the owner sent the message that started the turn.
+      ownerTicket: (bill) => {
+        if (!ownerTicketWanted(bill, config.ownerSlackId)) return undefined;
+        const token = ownerTickets.issue();
+        return { token, end: () => ownerTickets.revoke(token) };
+      },
+      ownerApiUrl: `http://127.0.0.1:${config.dashboardPort}/api/owner-ticket`,
     },
   );
   console.log(`[llm] ${profile().name}'s brain: ${modelLabel(config)}`);
@@ -1013,6 +1027,7 @@ const main = async () => {
         return { ...(await githubActions.run(req)) };
       },
       slackProxy,
+      ownerTickets,
     },
   );
   dashboard.start();
