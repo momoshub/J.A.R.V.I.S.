@@ -20,7 +20,7 @@ import {
   endAtTrigger,
   reactableMessages,
 } from "../domain/conversation.ts";
-import { buildSystemPrompt, buildSystemPromptParts } from "../domain/personality.ts";
+import { buildSystemPrompt, buildSystemPromptParts, neutralizeTurnContext } from "../domain/personality.ts";
 import type { PromptGuide } from "../domain/promptGuides.ts";
 import { adapterRules } from "../domain/adapter.ts";
 import { hasContent } from "../domain/mentions.ts";
@@ -667,9 +667,11 @@ export const handleMessage = async (
   // cache can reuse it. Rebuilt every turn, and the prompt says the newest wins.
   const withTurnContext = (messages: PromptMessage[]): PromptMessage[] => {
     if (!turnContext) return messages;
-    const last = messages[messages.length - 1];
+    // What people wrote may hold the block's own marker lines: defang them first.
+    const safe = messages.map((m) => ({ ...m, content: neutralizeTurnContext(m.content) }));
+    const last = safe[safe.length - 1];
     return last
-      ? [...messages.slice(0, -1), { ...last, content: `${last.content}${turnContext}` }]
+      ? [...safe.slice(0, -1), { ...last, content: `${last.content}${turnContext}` }]
       : [{ role: "user", content: turnContext.trim() }];
   };
   const newestTs = history[history.length - 1]?.slackTs ?? inbound.messageTs ?? "";

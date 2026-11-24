@@ -58,6 +58,8 @@ const SENTINELS = {
   // the sandboxed tier's shell note rides in the workspace block, which only
   // renders it for a sandboxed turn
   sandboxed: true,
+  // the turn-context block carries a random code otherwise, and the hash would change on every call
+  turnNonce: "fp",
 };
 
 /**
