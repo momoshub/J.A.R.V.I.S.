@@ -33,13 +33,20 @@ export const minSec = (ms: number): string => {
   return `${Math.floor(total / 60)}m ${total % 60}s`;
 };
 
-/** One line: `claude-opus-5-5 · in 95.9k · out 10.6k · cache 1.62M · $1.30 · 3m 16s`. */
+/**
+ * One line: `claude-opus-5-5 · in 95.9k · out 10.6k · cache r 1.62M w 39.4k · $1.30 · 3m 16s`.
+ *
+ * Cache reads and writes are shown apart because they are priced far apart (a
+ * write costs several times a read) and because their sum says nothing: a turn
+ * with two API calls reads the same prompt twice, so one summed figure showed a
+ * 50k prompt as 100k. `r` is cache hits, `w` is what had to be written fresh.
+ */
 export const usageFooter = (u: FooterUsage): string =>
   [
     u.model || "unknown model",
     `in ${compactTokens(u.inputTokens)}`,
     `out ${compactTokens(u.outputTokens)}`,
-    `cache ${compactTokens(u.cacheReadTokens + u.cacheWriteTokens)}`,
+    `cache r ${compactTokens(u.cacheReadTokens)} w ${compactTokens(u.cacheWriteTokens)}`,
     `$${u.costUsd.toFixed(2)}`,
     minSec(u.durationMs),
   ].join(" · ");

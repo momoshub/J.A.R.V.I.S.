@@ -12,8 +12,15 @@ const USAGE = {
 };
 
 describe("usage footer", () => {
+  test("cache reads and writes are shown apart, never summed", () => {
+    // the measured case: a ~50k prompt read twice and 39k written once
+    const line = usageFooter({ ...USAGE, cacheReadTokens: 60_456, cacheWriteTokens: 39_411 });
+    expect(line).toContain("cache r 60.5k w 39.4k");
+    expect(line).not.toContain("99.9k");
+  });
+
   test("one line: model, in, out, cache, cost, minutes and seconds", () => {
-    expect(usageFooter(USAGE)).toBe("claude-opus-5-5 · in 95.9k · out 10.6k · cache 1.62M · $1.30 · 3m 16s");
+    expect(usageFooter(USAGE)).toBe("claude-opus-5-5 · in 95.9k · out 10.6k · cache r 1.6M w 20.4k · $1.30 · 3m 16s");
   });
 
   test("time is always minutes and seconds, even under a minute", () => {

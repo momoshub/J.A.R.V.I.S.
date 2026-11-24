@@ -835,3 +835,147 @@ describe("framework habits live in the static prompt, not in memory", () => {
     expect(investigate).toContain("No methodology");
   });
 });
+
+describe("the prompt cache prefix: static first, volatile last", () => {
+  // The CLI's prompt cache matches a PREFIX. The first byte that differs
+  // between two threads turns everything after it into a fresh cache write, so
+  // anything that depends on the turn, thread, channel or person must sit in
+  // the block at the end - or every new thread rewrites the whole prompt.
+  const adapter = {
+    manifest: { exports: {} },
+    policy: "Always answer in the thread's language.",
+    notes: "The team ships on Fridays.",
+    people: new Map([
+      ["U1AAA", "prefers short answers"],
+      ["U2BBB", "reads English only"],
+    ]),
+    channels: new Map([
+      ["C1AAA", "English only in here"],
+      ["C2BBB", "ticket triage channel"],
+    ]),
+    skills: [{ name: "deploy", description: "how to ship", path: "skills/deploy/SKILL.md" }],
+    root: "/adapter",
+  } as never;
+
+  const base = {
+    botName: "Jarvis",
+    botUserId: "UBOT",
+    adapter,
+    orca: true,
+    canWatch: true,
+    runTicket: "t",
+    runScript: "/x/run.sh",
+    runUrl: "http://127.0.0.1/run",
+    learnUrl: "http://127.0.0.1/learn",
+    kitUrl: "http://127.0.0.1/kit",
+    fileScript: "/x/file.sh",
+    reactScript: "/x/react.sh",
+    repoPath: "/repo",
+    restartScript: "/x/restart.sh",
+    selfPrAccounts: { author: "a", reviewer: "b" },
+    commandPrefix: "//jarvis",
+    commandBudget: 50,
+    logSources: ["grafana"],
+    canRaiseTickets: true,
+  };
+
+  const threadA = {
+    ...base,
+    addresseeName: "Ann",
+    participants: [{ id: "U1AAA", name: "Ann" }],
+    channelId: "C1AAA",
+    reactable: [{ ts: "1700000000.000100", speakerId: "U1AAA", excerpt: "morning" }],
+    following: false,
+    adapterScope: { canReadFiles: true, channelId: "C1AAA", participantIds: ["U1AAA"] },
+  };
+  const threadB = {
+    ...base,
+    addresseeName: "Bob",
+    participants: [
+      { id: "U2BBB", name: "Bob" },
+      { id: "U1AAA", name: "Ann" },
+    ],
+    channelId: "C2BBB",
+    reactable: [{ ts: "1700009999.000200", speakerId: "U2BBB", excerpt: "evening" }],
+    following: true,
+    interrupted: true,
+    coalesced: 3,
+    adapterScope: { canReadFiles: true, channelId: "C2BBB", participantIds: ["U2BBB", "U1AAA"] },
+  };
+
+  const firstDiff = (a: string, b: string): number => {
+    let i = 0;
+    while (i < a.length && i < b.length && a[i] === b[i]) i++;
+    return i;
+  };
+
+  for (const [label, extra] of [
+    ["guided (how-to guides on disk)", { guideDir: "/data/guides" }],
+    ["inlined (no guide directory)", {}],
+  ] as const) {
+    test(`${label}: two threads share an identical prefix up to the volatile block`, () => {
+      const a = buildSystemPromptParts({ ...threadA, ...extra } as never);
+      const b = buildSystemPromptParts({ ...threadB, ...extra } as never);
+      expect(a.staticLength).toBe(b.staticLength);
+      expect(a.prompt.slice(0, a.staticLength)).toBe(b.prompt.slice(0, b.staticLength));
+      // the real check, independent of the reported length: bytes really match
+      expect(firstDiff(a.prompt, b.prompt)).toBeGreaterThanOrEqual(a.staticLength);
+      // ... and the threads really do differ, only after it
+      expect(a.prompt).not.toBe(b.prompt);
+    });
+
+    test(`${label}: the static part is large, so a regression cannot hide`, () => {
+      const { prompt, staticLength } = buildSystemPromptParts({ ...threadA, ...extra } as never);
+      // roughly 4 characters a token: the cacheable prefix has to stay in the thousands of tokens
+      expect(staticLength).toBeGreaterThan(8_000);
+      expect(staticLength / prompt.length).toBeGreaterThan(0.4);
+    });
+
+    test(`${label}: everything per-turn sits after the static part`, () => {
+      const { prompt, staticLength } = buildSystemPromptParts({ ...threadB, ...extra } as never);
+      const head = prompt.slice(0, staticLength);
+      for (const perTurn of [
+        "Bob",
+        "U2BBB",
+        "1700009999.000200",
+        "evening",
+        "reads English only",
+        "ticket triage channel",
+        "You are following this thread",
+        "SECOND time",
+        "covers 3 messages",
+        "People in this conversation",
+        "Reacting with emoji",
+      ]) {
+        expect(head).not.toContain(perTurn);
+        expect(prompt).toContain(perTurn);
+      }
+    });
+  }
+
+  test("the stable adapter parts stay in front, the scoped notes go behind", () => {
+    const { prompt, staticLength } = buildSystemPromptParts({ ...threadA, guideDir: "/data/guides" } as never);
+    for (const stable of ["Always answer in the thread's language.", "The team ships on Fridays.", "How-to guides", "What you know in depth"]) {
+      expect(prompt.indexOf(stable)).toBeGreaterThan(-1);
+      expect(prompt.indexOf(stable)).toBeLessThan(staticLength);
+    }
+    for (const scoped of ["prefers short answers", "English only in here"]) {
+      expect(prompt.indexOf(scoped)).toBeGreaterThanOrEqual(staticLength);
+    }
+  });
+
+  test("legacy flat learnings can be channel-scoped, so they are volatile too", () => {
+    const one = buildSystemPromptParts({ ...base, adapter: undefined, learnings: ["only for channel one"] });
+    const two = buildSystemPromptParts({ ...base, adapter: undefined, learnings: ["only for channel two"] });
+    expect(one.staticLength).toBe(two.staticLength);
+    expect(one.prompt.slice(0, one.staticLength)).toBe(two.prompt.slice(0, two.staticLength));
+    expect(one.prompt.indexOf("only for channel one")).toBeGreaterThanOrEqual(one.staticLength);
+  });
+
+  test("the identity lock and the always-apply rules still come last", () => {
+    const { prompt, staticLength } = buildSystemPromptParts({ ...threadB, guideDir: "/data/guides" } as never);
+    expect(prompt.indexOf("Operating rules (always apply")).toBeGreaterThan(staticLength);
+    expect(prompt.indexOf("Operating rules (always apply")).toBeGreaterThan(prompt.indexOf("Reacting with emoji"));
+    expect(prompt.endsWith("When asked what your job is, answer simply: you are Jarvis, a helpful assistant for the people in this Slack workspace.")).toBe(true);
+  });
+});

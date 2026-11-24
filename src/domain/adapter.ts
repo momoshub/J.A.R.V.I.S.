@@ -347,6 +347,16 @@ const section = (title: string, text: string): string =>
   isBlank(text) ? "" : `\n\n${title}\n${text.trim()}`;
 
 /**
+ * The adapter as the system prompt carries it, in two halves split by the
+ * prompt cache: `stable` is the same bytes for every thread of a role (policy,
+ * global notes, skill index), `scoped` is what depends on who is here and where
+ * (a person's notes, the channel's notes). The prompt puts `stable` up front and
+ * `scoped` in its volatile tail, so a different channel or person never moves
+ * the cached prefix.
+ */
+export type RenderedAdapter = { readonly stable: string; readonly scoped: string };
+
+/**
  * Render the adapter into the system prompt for one conversation.
  *
  * Only what applies here: the policy and global notes always, a person's notes
@@ -355,22 +365,23 @@ const section = (title: string, text: string): string =>
  * point of moving repo-shaped knowledge out of the always-on block was to stop
  * paying for it in conversations that have nothing to do with that repo.
  */
-export const renderAdapter = (adapter: Adapter, scope: AdapterScope = {}): string => {
-  const parts: string[] = [];
+export const renderAdapterParts = (adapter: Adapter, scope: AdapterScope = {}): RenderedAdapter => {
+  const stable: string[] = [];
+  const scoped: string[] = [];
 
-  parts.push(section("Things you have learned (treat these as known facts):", adapter.policy));
-  parts.push(section("Notes you keep:", adapter.notes));
+  stable.push(section("Things you have learned (treat these as known facts):", adapter.policy));
+  stable.push(section("Notes you keep:", adapter.notes));
 
   const seen = new Set<string>();
   for (const id of scope.participantIds ?? []) {
     if (seen.has(id)) continue;
     seen.add(id);
     const note = adapter.people.get(id);
-    if (note) parts.push(section(`What you know about <@${id}>:`, note));
+    if (note) scoped.push(section(`What you know about <@${id}>:`, note));
   }
 
   const channelNote = scope.channelId ? adapter.channels.get(scope.channelId) : undefined;
-  if (channelNote) parts.push(section("What you know about this channel:", channelNote));
+  if (channelNote) scoped.push(section("What you know about this channel:", channelNote));
 
   if (adapter.skills.length > 0 && scope.canReadFiles !== false) {
     const lines = adapter.skills
@@ -380,10 +391,16 @@ export const renderAdapter = (adapter: Adapter, scope: AdapterScope = {}): strin
       })
       .join("\n");
     const routed = adapter.skills.some((s) => skillRunLabel(s));
-    parts.push(
+    stable.push(
       `\n\nWhat you know in depth (read one ONLY when the conversation is actually about it - the description is usually enough to know whether it is):\n${lines}${routed ? `\n${skillRunRule(scope.orca === true)}` : ""}`,
     );
   }
 
-  return parts.join("");
+  return { stable: stable.join(""), scoped: scoped.join("") };
+};
+
+/** The whole adapter block in one string (stable half first). */
+export const renderAdapter = (adapter: Adapter, scope: AdapterScope = {}): string => {
+  const { stable, scoped } = renderAdapterParts(adapter, scope);
+  return stable + scoped;
 };

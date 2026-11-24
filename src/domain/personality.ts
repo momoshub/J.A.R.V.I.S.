@@ -15,7 +15,7 @@ import { selfUpdateRules, type SelfPrAccounts } from "./selfUpdate.ts";
 import { SLACK_BREVITY, SLACK_FORMAT } from "./slackFormat.ts";
 import { BLOCK_KIT_RULES } from "./blockKit.ts";
 import { kitRules } from "./kitEvents.ts";
-import { type Adapter, type AdapterScope, renderAdapter } from "./adapter.ts";
+import { type Adapter, type AdapterScope, renderAdapterParts } from "./adapter.ts";
 import { AGENT_GUIDE_SUMMARIES, asGuide, investigateSummary, type PromptGuide, renderGuideIndex } from "./promptGuides.ts";
 import { briefRule } from "./threadBrief.ts";
 import { WORKER_MCP_TRIM_RULE } from "./workerMcp.ts";
@@ -508,19 +508,26 @@ export const buildSystemPrompt = (options: Partial<BuildSystemPromptOptions> = {
 /**
  * The prompt, plus the guides it points at. The caller writes `guides` into
  * `guideDir` before the turn runs - this stays pure, so it only names them.
+ * `staticLength` is where the per-thread part begins: everything before it is
+ * the same for every thread of a role, and is what the prompt cache can reuse.
  */
 export const buildSystemPromptParts = (
   options: Partial<BuildSystemPromptOptions> = {},
-): { readonly prompt: string; readonly guides: readonly PromptGuide[] } => {
+): { readonly prompt: string; readonly guides: readonly PromptGuide[]; readonly staticLength: number } => {
   const botName = options.botName?.trim() || DEFAULT_BOT_NAME;
   const base = options.base?.trim() ? options.base.trim() : DEFAULT_PERSONALITY;
 
   // Memory is the adapter when one is configured, and the legacy flat list
   // otherwise - an instance that has not migrated must keep working unchanged.
+  // The adapter's policy, notes and skill index are the same for every thread
+  // (static); its person and channel notes depend on who is here and where
+  // (volatile). The legacy list is channel-scoped, so it is volatile whole.
   const learnings = (options.learnings ?? []).map((l) => l.trim()).filter(Boolean);
-  const learningsBlock = options.adapter
-    ? renderAdapter(options.adapter, { ...options.adapterScope, orca: options.orca === true })
-    : learnings.length
+  const adapterParts = options.adapter
+    ? renderAdapterParts(options.adapter, { ...options.adapterScope, orca: options.orca === true })
+    : { stable: "", scoped: "" };
+  const legacyLearnings =
+    !options.adapter && learnings.length
       ? `\n\nThings you have learned (treat these as known facts):\n${learnings.map((l) => `- ${l}`).join("\n")}`
       : "";
 
@@ -569,11 +576,23 @@ export const buildSystemPromptParts = (
   // above" belong where the identity lock already is, for the same reason.
   const workspace = options.sandboxed === true ? `${WORKSPACE_NOTE}\n${SANDBOX_SHELL_NOTE}` : `${WORKSPACE_NOTE}\n${MCP_CODE_MODE_NOTE}`;
   const tail = `${remembering}\n\n${workspace}\n\n${operatingRules(options.slackExtraMethods)}\n\n${BEFORE_YOU_SEND}\n\n${identityLock(botName, options.botUserId)}`;
+  // Static first, volatile last (the prompt cache matches a PREFIX: the first
+  // byte that differs between two threads makes everything after it a fresh,
+  // expensive cache write). `stable` is the same for every thread of a role,
+  // `volatile` is everything that depends on this turn, thread, channel or
+  // person. The tail stays last on purpose (see above), so it is read after
+  // the volatile block and is the only static text left uncached per thread.
+  const volatile = `${legacyLearnings}${adapterParts.scoped}${addressed}${roster}${reactions}${following}`;
+  const finish = (stable: string, guides: readonly PromptGuide[]) => ({
+    prompt: `${stable}${volatile}${tail}`,
+    guides,
+    staticLength: stable.length,
+  });
   if (!guided) {
-    return {
-      prompt: `${base}${learningsBlock}${addressed}${roster}${attachments}${investigating}${tickets}${slackReading}${desktop}${reaching}${selfWork}${splitQuestionRules(waiting ? (options.commandPrefix ?? "//bot") : undefined, orca)}${reactions}${interactive}${following}${commands}${tail}`,
-      guides: [],
-    };
+    return finish(
+      `${base}${adapterParts.stable}${attachments}${investigating}${tickets}${slackReading}${desktop}${reaching}${selfWork}${splitQuestionRules(waiting ? (options.commandPrefix ?? "//bot") : undefined, orca)}${interactive}${commands}`,
+      [],
+    );
   }
   const guides = [
     asGuide("investigate", investigating, investigateSummary(options.logSources ?? [])),
@@ -590,8 +609,5 @@ export const buildSystemPromptParts = (
     asGuide("self-fix", selfWork, orca ? undefined : AGENT_GUIDE_SUMMARIES["self-fix"]),
   ].filter((g): g is PromptGuide => !!g);
   const index = renderGuideIndex(guides, options.guideDir ?? "");
-  return {
-    prompt: `${base}${learningsBlock}${addressed}${roster}${attachments}${slackReading}${reactions}${following}${commands}${index}${tail}`,
-    guides,
-  };
+  return finish(`${base}${adapterParts.stable}${attachments}${slackReading}${commands}${index}`, guides);
 };
