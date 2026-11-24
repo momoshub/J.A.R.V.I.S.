@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { openDatabase } from "../../src/infrastructure/db/client.ts";
 import { createUserRepo } from "../../src/infrastructure/db/userRepo.ts";
 import { createMessageRepo } from "../../src/infrastructure/db/messageRepo.ts";
+import { TURN_CONTEXT_OPEN } from "../../src/domain/personality.ts";
 import { respond, type RespondDeps } from "../../src/application/respond.ts";
 import { createThreadQueue } from "../../src/application/threadQueue.ts";
 import { createRunRegistry, cutForRestart, RESTART_STOPPER } from "../../src/application/runRegistry.ts";
@@ -323,7 +324,7 @@ describe("respond", () => {
     const order: string[] = [];
     const deps = build({
       complete: async (p) => {
-        const asked = p.messages[p.messages.length - 1]?.content ?? "";
+        const asked = (p.messages[p.messages.length - 1]?.content ?? "").split(TURN_CONTEXT_OPEN)[0]!;
         seen.push(asked);
         order.push(`start ${asked}`);
         await new Promise((r) => setTimeout(r, 30));
@@ -392,7 +393,7 @@ describe("respond", () => {
     const seen: string[] = [];
     const deps = build({
       complete: async (p) => {
-        seen.push(p.messages[p.messages.length - 1]?.content ?? "");
+        seen.push((p.messages[p.messages.length - 1]?.content ?? "").split(TURN_CONTEXT_OPEN)[0]!);
         await new Promise((r) => setTimeout(r, 30));
         return "ok";
       },
@@ -422,7 +423,7 @@ describe("respond", () => {
       const gate = new Promise<void>((r) => (release = r));
       const brain: LlmPort = {
         complete: async (p) => {
-          const last = p.messages[p.messages.length - 1]?.content ?? "";
+          const last = (p.messages[p.messages.length - 1]?.content ?? "").split(TURN_CONTEXT_OPEN)[0]!;
           asked.push(last);
           if (asked.length === 1) await gate;
           return `reply ${asked.length}`;

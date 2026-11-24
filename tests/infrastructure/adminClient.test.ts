@@ -63,7 +63,7 @@ describe("every message the admin client writes is signed", () => {
     await admin.post("D1", "done", "100.1", undefined, usage);
     await admin.post("D1", "done", "100.1", "workflow worker", usage);
     expect(signedBy(calls[0]?.[1])).toBe(footerLine("Jarvis", undefined, usageFooter(usage)));
-    expect(signedBy(calls[0]?.[1])).toBe("Jarvis · claude-opus-5-5 · in 95.9k · out 10.6k · cache 1.62M · $1.30 · 3m 16s");
+    expect(signedBy(calls[0]?.[1])).toBe("Jarvis · claude-opus-5-5 · in 95.9k · out 10.6k · cache r 1.6M w 20.4k · $1.30 · 3m 16s");
     expect(signedBy(calls[1]?.[1])).toStartWith("workflow worker · claude-opus-5-5 · ");
   });
 
