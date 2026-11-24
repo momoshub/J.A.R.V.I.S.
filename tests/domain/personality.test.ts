@@ -5,6 +5,8 @@ import {
   DEFAULT_PERSONALITY,
   ORCA_BATCH_CHECK,
   SANDBOX_SHELL_NOTE,
+  TURN_CONTEXT_CLOSE,
+  TURN_CONTEXT_OPEN,
 } from "../../src/domain/personality.ts";
 import { AGENT_GUIDE_SUMMARIES, guideFile, type PromptGuide } from "../../src/domain/promptGuides.ts";
 
@@ -836,11 +838,13 @@ describe("framework habits live in the static prompt, not in memory", () => {
   });
 });
 
-describe("the prompt cache prefix: static first, volatile last", () => {
-  // The CLI's prompt cache matches a PREFIX. The first byte that differs
-  // between two threads turns everything after it into a fresh cache write, so
-  // anything that depends on the turn, thread, channel or person must sit in
-  // the block at the end - or every new thread rewrites the whole prompt.
+describe("the prompt cache: the system prompt is the same for every thread, the turn rides in the message", () => {
+  // The prompt cache matches whole content blocks and --append-system-prompt
+  // reaches the API as ONE block, so a single differing byte anywhere in it
+  // (measured, not assumed: a reordered prompt still rewrote everything) makes
+  // every new thread rewrite all of it. So the system prompt must be
+  // byte-identical across threads, and whatever depends on the turn, thread,
+  // channel or person travels in the turn's message instead.
   const adapter = {
     manifest: { exports: {} },
     policy: "Always answer in the thread's language.",
@@ -903,37 +907,25 @@ describe("the prompt cache prefix: static first, volatile last", () => {
     adapterScope: { canReadFiles: true, channelId: "C2BBB", participantIds: ["U2BBB", "U1AAA"] },
   };
 
-  const firstDiff = (a: string, b: string): number => {
-    let i = 0;
-    while (i < a.length && i < b.length && a[i] === b[i]) i++;
-    return i;
-  };
-
   for (const [label, extra] of [
     ["guided (how-to guides on disk)", { guideDir: "/data/guides" }],
     ["inlined (no guide directory)", {}],
   ] as const) {
-    test(`${label}: two threads share an identical prefix up to the volatile block`, () => {
+    test(`${label}: two threads get a byte-identical system prompt`, () => {
       const a = buildSystemPromptParts({ ...threadA, ...extra } as never);
       const b = buildSystemPromptParts({ ...threadB, ...extra } as never);
-      expect(a.staticLength).toBe(b.staticLength);
-      expect(a.prompt.slice(0, a.staticLength)).toBe(b.prompt.slice(0, b.staticLength));
-      // the real check, independent of the reported length: bytes really match
-      expect(firstDiff(a.prompt, b.prompt)).toBeGreaterThanOrEqual(a.staticLength);
-      // ... and the threads really do differ, only after it
-      expect(a.prompt).not.toBe(b.prompt);
+      expect(a.system).toBe(b.system);
+      expect(a.volatile).not.toBe(b.volatile);
     });
 
-    test(`${label}: the static part is large, so a regression cannot hide`, () => {
-      const { prompt, staticLength } = buildSystemPromptParts({ ...threadA, ...extra } as never);
-      // roughly 4 characters a token: the cacheable prefix has to stay in the thousands of tokens
-      expect(staticLength).toBeGreaterThan(8_000);
-      expect(staticLength / prompt.length).toBeGreaterThan(0.4);
+    test(`${label}: the system prompt is large, so a regression cannot hide`, () => {
+      const { system } = buildSystemPromptParts({ ...threadA, ...extra } as never);
+      // roughly 4 characters a token: the cached part has to stay in the thousands of tokens
+      expect(system.length).toBeGreaterThan(10_000);
     });
 
-    test(`${label}: everything per-turn sits after the static part`, () => {
-      const { prompt, staticLength } = buildSystemPromptParts({ ...threadB, ...extra } as never);
-      const head = prompt.slice(0, staticLength);
+    test(`${label}: everything per-turn is in the volatile block, and only there`, () => {
+      const { system, volatile } = buildSystemPromptParts({ ...threadB, ...extra } as never);
       for (const perTurn of [
         "Bob",
         "U2BBB",
@@ -944,38 +936,50 @@ describe("the prompt cache prefix: static first, volatile last", () => {
         "You are following this thread",
         "SECOND time",
         "covers 3 messages",
-        "People in this conversation",
-        "Reacting with emoji",
+        "People in this conversation (mention",
+        "Reacting with emoji (your call",
       ]) {
-        expect(head).not.toContain(perTurn);
-        expect(prompt).toContain(perTurn);
+        expect(system).not.toContain(perTurn);
+        expect(volatile).toContain(perTurn);
       }
+      expect(volatile.startsWith(TURN_CONTEXT_OPEN)).toBe(true);
+      expect(volatile.endsWith(TURN_CONTEXT_CLOSE)).toBe(true);
     });
   }
 
-  test("the stable adapter parts stay in front, the scoped notes go behind", () => {
-    const { prompt, staticLength } = buildSystemPromptParts({ ...threadA, guideDir: "/data/guides" } as never);
+  test("the system prompt says the turn context exists and that the newest one wins", () => {
+    const { system } = buildSystemPromptParts({ ...threadA } as never);
+    expect(system).toContain("this turn's context");
+    expect(system).toContain("the newest wins");
+  });
+
+  test("a turn with nothing per-turn carries no block at all", () => {
+    expect(buildSystemPromptParts({ botName: "Jarvis" }).volatile).toBe("");
+  });
+
+  test("the stable adapter parts stay in the system prompt, the scoped notes go to the turn", () => {
+    const { system, volatile } = buildSystemPromptParts({ ...threadA, guideDir: "/data/guides" } as never);
     for (const stable of ["Always answer in the thread's language.", "The team ships on Fridays.", "How-to guides", "What you know in depth"]) {
-      expect(prompt.indexOf(stable)).toBeGreaterThan(-1);
-      expect(prompt.indexOf(stable)).toBeLessThan(staticLength);
+      expect(system).toContain(stable);
     }
     for (const scoped of ["prefers short answers", "English only in here"]) {
-      expect(prompt.indexOf(scoped)).toBeGreaterThanOrEqual(staticLength);
+      expect(system).not.toContain(scoped);
+      expect(volatile).toContain(scoped);
     }
   });
 
-  test("legacy flat learnings can be channel-scoped, so they are volatile too", () => {
+  test("legacy flat learnings can be channel-scoped, so they ride in the turn too", () => {
     const one = buildSystemPromptParts({ ...base, adapter: undefined, learnings: ["only for channel one"] });
     const two = buildSystemPromptParts({ ...base, adapter: undefined, learnings: ["only for channel two"] });
-    expect(one.staticLength).toBe(two.staticLength);
-    expect(one.prompt.slice(0, one.staticLength)).toBe(two.prompt.slice(0, two.staticLength));
-    expect(one.prompt.indexOf("only for channel one")).toBeGreaterThanOrEqual(one.staticLength);
+    expect(one.system).toBe(two.system);
+    expect(one.volatile).toContain("only for channel one");
   });
 
-  test("the identity lock and the always-apply rules still come last", () => {
+  test("`prompt` still holds everything in one string, the identity lock last", () => {
     const { prompt, staticLength } = buildSystemPromptParts({ ...threadB, guideDir: "/data/guides" } as never);
-    expect(prompt.indexOf("Operating rules (always apply")).toBeGreaterThan(staticLength);
-    expect(prompt.indexOf("Operating rules (always apply")).toBeGreaterThan(prompt.indexOf("Reacting with emoji"));
-    expect(prompt.endsWith("When asked what your job is, answer simply: you are Jarvis, a helpful assistant for the people in this Slack workspace.")).toBe(true);
+    expect(prompt).toContain("Reacting with emoji (your call");
+    expect(prompt.indexOf("Operating rules (always apply")).toBeGreaterThan(prompt.indexOf("Reacting with emoji (your call"));
+    expect(prompt.slice(0, staticLength)).not.toContain("Bob");
+    expect(prompt.endsWith("a helpful assistant for the people in this Slack workspace.")).toBe(true);
   });
 });

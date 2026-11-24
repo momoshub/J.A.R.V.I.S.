@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { SANDBOX_SHELL_NOTE } from "../../src/domain/personality.ts";
+import { SANDBOX_SHELL_NOTE, TURN_CONTEXT_OPEN } from "../../src/domain/personality.ts";
 import { openDatabase, type DbClient } from "../../src/infrastructure/db/client.ts";
 import { createUserRepo } from "../../src/infrastructure/db/userRepo.ts";
 import { createMessageRepo } from "../../src/infrastructure/db/messageRepo.ts";
@@ -44,12 +44,19 @@ const noopSlack: SlackAdminPort = {
 
 const OWNER = "U0OWNER0001";
 
+/** The turn's own context rides at the end of its last message; most tests are about the message itself. */
+const withoutTurnContext = (messages: readonly PromptMessage[]): PromptMessage[] =>
+  messages.map((m) => ({ ...m, content: m.content.split(TURN_CONTEXT_OPEN)[0]! }));
+
 const fakeLlm = (
   reply: string,
   onCall?: (m: readonly PromptMessage[], system: string) => void,
+  /** Gets the messages exactly as sent, turn context included. */
+  onRaw?: (m: readonly PromptMessage[], system: string) => void,
 ): LlmPort => ({
   complete: async ({ messages, system }) => {
-    onCall?.(messages, system);
+    onCall?.(withoutTurnContext(messages), system);
+    onRaw?.(messages, system);
     return reply;
   },
 });
@@ -208,9 +215,10 @@ describe("handleMessage", () => {
     expect(history[1]?.content).toBe("Streamed");
   });
 
-  test("puts channel participants (with tags) into the system prompt", async () => {
+  test("puts channel participants (with tags) into the turn's message, not the system prompt", async () => {
     let seenSystem = "";
-    const deps = build(fakeLlm("ok", (_m, system) => (seenSystem = system)));
+    let seenTurn = "";
+    const deps = build(fakeLlm("ok", undefined, (m, system) => ((seenSystem = system), (seenTurn = m[m.length - 1]?.content ?? ""))));
     // another user has spoken in this channel earlier
     deps.messages.append(
       { channelId: "C1", slackUserId: "U2OTHER", role: "user", content: "hi all" },
@@ -222,9 +230,23 @@ describe("handleMessage", () => {
       text: "who is here?",
       displayName: "Kai",
     });
-    expect(seenSystem).toContain("People in this conversation");
-    expect(seenSystem).toContain(`<@${OWNER}>`);
-    expect(seenSystem).toContain("<@U2OTHER>");
+    expect(seenTurn).toContain("People in this conversation (mention");
+    expect(seenTurn).toContain(`<@${OWNER}>`);
+    expect(seenTurn).toContain("<@U2OTHER>");
+    // the system prompt is the same for every thread, so the prompt cache can reuse it
+    expect(seenSystem).not.toContain("<@U2OTHER>");
+    expect(seenSystem).not.toContain("People in this conversation (mention");
+  });
+
+  test("two different threads get a byte-identical system prompt", async () => {
+    const systems: string[] = [];
+    const deps = build(fakeLlm("ok", (_m, system) => void systems.push(system)));
+    deps.messages.append({ channelId: "C1", slackUserId: "U2OTHER", role: "user", content: "hi all" }, 500);
+    deps.reactScript = "/bin/react.sh";
+    await handleMessage(deps, { channelId: "C1", slackUserId: OWNER, text: "one", displayName: "Kai", messageTs: "1787241529.047069" });
+    await handleMessage(deps, { channelId: "C2", slackUserId: OWNER, text: "two", displayName: "Kai", messageTs: "1787241999.000001", threadTs: "1787241999.000001" });
+    expect(systems).toHaveLength(2);
+    expect(systems[0]).toBe(systems[1]!);
   });
 
   test("streaming path that returns empty still yields a safe reply", async () => {
@@ -253,7 +275,7 @@ describe("handleMessage", () => {
 
   test("remembers the Slack ts and offers earlier messages as reaction targets", async () => {
     let system = "";
-    const deps = build(fakeLlm("sure thing", (_m, s) => (system = s)));
+    const deps = build(fakeLlm("sure thing", undefined, (m, s) => (system = m[m.length - 1]?.content ?? s)));
     deps.reactScript = "/bin/react.sh";
 
     await handleMessage(deps, {
@@ -337,7 +359,7 @@ describe("handleMessage", () => {
 
   test("reaction targets come from this thread only", async () => {
     let system = "";
-    const deps = build(fakeLlm("ok", (_m, s) => (system = s)));
+    const deps = build(fakeLlm("ok", undefined, (m, s) => (system = m[m.length - 1]?.content ?? s)));
     deps.reactScript = "/bin/react.sh";
     await handleMessage(deps, {
       channelId: "D1",
@@ -501,7 +523,7 @@ describe("handleMessage", () => {
     const seen: LlmCompleteParams[] = [];
     const deps = build({
       complete: async (p) => {
-        seen.push(p);
+        seen.push({ ...p, messages: withoutTurnContext(p.messages) });
         return "ok";
       },
     });
@@ -533,7 +555,7 @@ describe("handleMessage", () => {
     const seen: LlmCompleteParams[] = [];
     const deps = build({
       complete: async (p) => {
-        seen.push(p);
+        seen.push({ ...p, messages: withoutTurnContext(p.messages) });
         if (seen.length === 1) {
           cut.abort(RESTART_STOPPER);
           return "half an ans";
@@ -650,7 +672,7 @@ describe("handleMessage", () => {
     const deps = build({
       complete: async (p) => {
         calls += 1;
-        seen.push(p);
+        seen.push({ ...p, messages: withoutTurnContext(p.messages) });
         if (calls === 1) throw new Error("claude CLI exited with code 143: no output");
         return "ok";
       },
@@ -676,7 +698,7 @@ describe("handleMessage", () => {
     const seen: LlmCompleteParams[] = [];
     const deps = build({
       complete: async (p) => {
-        seen.push(p);
+        seen.push({ ...p, messages: withoutTurnContext(p.messages) });
         return "ok";
       },
     });
@@ -712,7 +734,7 @@ describe("handleMessage", () => {
     const seen: LlmCompleteParams[] = [];
     const deps = build({
       complete: async (p) => {
-        seen.push(p);
+        seen.push({ ...p, messages: withoutTurnContext(p.messages) });
         return "ok";
       },
     });
@@ -776,7 +798,7 @@ describe("handleMessage", () => {
     const seen: LlmCompleteParams[] = [];
     const deps = build({
       complete: async (p) => {
-        seen.push(p);
+        seen.push({ ...p, messages: withoutTurnContext(p.messages) });
         return "ok";
       },
     });
@@ -792,7 +814,7 @@ describe("handleMessage", () => {
     const seen: LlmCompleteParams[] = [];
     const deps = build({
       complete: async (p) => {
-        seen.push(p);
+        seen.push({ ...p, messages: withoutTurnContext(p.messages) });
         return "ok";
       },
     });

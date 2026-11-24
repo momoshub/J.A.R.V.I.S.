@@ -596,12 +596,15 @@ export const handleMessage = async (
   // The prompt names the guide files, so they must exist before it runs. A
   // failed write falls back to the inlined prompt rather than pointing at
   // files that are not there.
-  let system = built.prompt;
+  let system = built.system;
+  let turnContext = built.volatile;
   if (built.guides.length > 0 && deps.guideDir && deps.writeGuides) {
     try {
       deps.writeGuides(deps.guideDir, built.guides);
     } catch {
-      system = buildSystemPromptParts({ ...promptOptions, guideDir: undefined }).prompt;
+      const inlined = buildSystemPromptParts({ ...promptOptions, guideDir: undefined });
+      system = inlined.system;
+      turnContext = inlined.volatile;
     }
   }
 
@@ -657,6 +660,17 @@ export const handleMessage = async (
     return last
       ? [...messages.slice(0, -1), { ...last, content: `${last.content}${block}` }]
       : [{ role: "user", content: block.trim() }];
+  };
+  // This turn's own context (who is addressed, who is here, what can be reacted
+  // to, the follow rules) rides at the end of the message too, never in the
+  // system prompt: that stays byte-identical for every thread so the prompt
+  // cache can reuse it. Rebuilt every turn, and the prompt says the newest wins.
+  const withTurnContext = (messages: PromptMessage[]): PromptMessage[] => {
+    if (!turnContext) return messages;
+    const last = messages[messages.length - 1];
+    return last
+      ? [...messages.slice(0, -1), { ...last, content: `${last.content}${turnContext}` }]
+      : [{ role: "user", content: turnContext.trim() }];
   };
   const newestTs = history[history.length - 1]?.slackTs ?? inbound.messageTs ?? "";
 
@@ -721,7 +735,7 @@ export const handleMessage = async (
   try {
     raw = await run({
       ...base,
-      messages: withBriefs(bound ? buildContextWindow(unseenTurns(history, bound.lastTs), window) : cold(), !bound),
+      messages: withTurnContext(withBriefs(bound ? buildContextWindow(unseenTurns(history, bound.lastTs), window) : cold(), !bound)),
       ...(key ? { session: { id: sessionId, resume: resumed, name } } : {}),
     });
   } catch (err) {
@@ -732,7 +746,7 @@ export const handleMessage = async (
     sessionId = deps.newSessionId?.() ?? crypto.randomUUID();
     resumed = false;
     if (key) sessions?.claim(key.channelId, key.threadTs, tier, sessionId, newestTs, deps.clock(), fingerprint);
-    raw = await run({ ...base, messages: withBriefs(cold(), true), session: { id: sessionId, resume: false, name } });
+    raw = await run({ ...base, messages: withTurnContext(withBriefs(cold(), true)), session: { id: sessionId, resume: false, name } });
   }
   const reply = raw.trim();
 

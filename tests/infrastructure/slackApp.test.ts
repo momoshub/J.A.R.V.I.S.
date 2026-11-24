@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { TURN_CONTEXT_OPEN } from "../../src/domain/personality.ts";
 import {
   createHandler,
   createKitListeners,
@@ -726,7 +727,7 @@ describe("createHandler streaming truth table", () => {
     let seen = "";
     const llm: LlmPort = {
       complete: async (p) => {
-        seen = p.messages[p.messages.length - 1]?.content ?? "";
+        seen = (p.messages[p.messages.length - 1]?.content ?? "").split(TURN_CONTEXT_OPEN)[0]!;
         return "on it";
       },
     };
@@ -751,7 +752,7 @@ describe("createHandler streaming truth table", () => {
     let seen = "";
     const llm: LlmPort = {
       complete: async (p) => {
-        seen = p.messages[p.messages.length - 1]?.content ?? "";
+        seen = (p.messages[p.messages.length - 1]?.content ?? "").split(TURN_CONTEXT_OPEN)[0]!;
         return "ok";
       },
     };

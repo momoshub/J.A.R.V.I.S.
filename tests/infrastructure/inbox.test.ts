@@ -416,7 +416,8 @@ describe("a reply cut off by a restart", () => {
     const llm: LlmPort = {
       complete: async () => "ok",
       stream: async (p, sink) => {
-        systems.push(p.system);
+        // the retry rule rides in the turn's message, not the (cache-shared) system prompt
+        systems.push(`${p.system}${p.messages[p.messages.length - 1]?.content ?? ""}`);
         sink({ type: "text", delta: "answer" });
         return "answer";
       },
