@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { applySelfPostCall, closingReply, createKeepMarkerFilter, hasKeepMarker, isProgressPost, KEEP_REPLY, PROGRESS_POST_MAX_CHARS, replaceableSelfPost, stripKeepMarker, stripKeepMarkerFromCall, type SelfPost } from "../../src/domain/selfPost.ts";
 
 const posted: SelfPost[] = [{ ts: "9.1" }];
+// what the proxy records for the real case: the post was far over the progress cap
 
 const VI_POST =
   "dạ stuck thật anh :man-bowing::skin-tone-2: sub agent Fable cũ chết theo turn hôm đó, 2h21m không branch, không PR. lỗi của em: chỉ watch file kết quả, không watch con agent nên nó chết mà không ai biết\n- đã chạy lại Fable dạng process riêng, không chết theo turn nữa\n- 2 watch: một cái báo khi bài xong, một cái báo ngay nếu writer chết giữa chừng\n- lỗ này nằm ở skill blog, em đã gửi bug report #4 để anh duyệt sửa\nxong em gửi tiêu đề, PR, ảnh diagram + nút Publish/Revise vào thread này, tối đa 3 tiếng :coffee:";
@@ -10,6 +11,10 @@ const VI_REPLY =
   "Dạ stuck thật anh :man-bowing::skin-tone-2: Sub agent Fable cũ chết theo turn hôm đó. Sau 2h21m vẫn không có branch, không có PR nào. Lỗi của em: em chỉ watch file kết quả, không watch chính con agent, nên nó chết mà không ai biết. Em cập nhật hết trong message em đã post ở thread này rồi.  - em đã chạy lại Fable thành một process riêng, lần này không chết theo turn nữa - có 2 watch: một cái báo khi bài xong, một cái báo ngay nếu writer chết giữa chừng - lỗ này nằm ở skill blog, em đã gửi bug report #4 chờ anh duyệt sửa  Bài xong em gửi vào thread này tiêu đề, link PR, ảnh diagram và nút Publish/Revise, tối đa 3 tiếng :coffee:";
 
 describe("closingReply", () => {
+  test("the real Vietnamese case with the length the proxy records: the post is over the progress cap, dropped", () => {
+    expect(VI_POST.length).toBeGreaterThan(PROGRESS_POST_MAX_CHARS);
+    expect(closingReply(VI_REPLY, [{ ts: "9.1", len: VI_POST.length }])).toEqual({ kind: "drop" });
+  });
   test("the real Vietnamese reword after a self-post is dropped", () => {
     expect(VI_POST.length).toBeGreaterThan(0);
     expect(closingReply(VI_REPLY, posted)).toEqual({ kind: "drop" });
@@ -243,6 +248,18 @@ describe("a progress line does not swallow the closing reply", () => {
     const same = applySelfPostCall(first, { method: "chat.update", params: { channel: "C1", ts: "5.5", blocks: "[{\"type\":\"divider\"}]" }, answer: ok("5.5") }, "1.1");
     expect(same).toEqual([{ ts: "5.5", len: PROGRESS.length, rich: true }]);
     expect(closingReply(ANSWER, same)).toEqual({ kind: "drop" });
+  });
+  test("a post or update whose body is markdown_text is measured; with no body at all the length stays unknown (an answer), never 0", () => {
+    const post = (params: Record<string, string>) => applySelfPostCall([], { method: "chat.postMessage", params: { channel: "C1", thread_ts: "1.1", ...params }, answer: ok("5.5") }, "1.1");
+    const big = post({ markdown_text: "x".repeat(1100) });
+    expect(big).toEqual([{ ts: "5.5", len: 1100 }]);
+    expect(closingReply("I posted the full answer above in this thread, see it.".repeat(30), big)).toEqual({ kind: "drop" });
+    expect(post({})).toEqual([{ ts: "5.5" }]);
+    expect(closingReply(ANSWER, post({}))).toEqual({ kind: "drop" });
+    const grown = applySelfPostCall([progress("5.5")], { method: "chat.update", params: { channel: "C1", ts: "5.5", markdown_text: ANSWER }, answer: ok("5.5") }, "1.1");
+    expect(grown).toEqual([{ ts: "5.5", len: 1172 }]);
+    expect(closingReply(ANSWER, grown)).toEqual({ kind: "drop" });
+    expect(replaceableSelfPost(post({}), false)).toEqual({ ts: "5.5" });
   });
   test("KEEP_REPLY paths are unchanged: explicit, not flagged implicit", () => {
     expect(closingReply(`${ANSWER}\n${KEEP_REPLY}`, [progress()])).toEqual({ kind: "send", text: ANSWER });

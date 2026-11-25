@@ -35,9 +35,14 @@ export const PROGRESS_REPLY_RATIO = 2;
 export const isProgressPost = (post: SelfPost, replyLen: number): boolean =>
   !post.rich && post.len !== undefined && post.len <= PROGRESS_POST_MAX_CHARS && post.len * PROGRESS_REPLY_RATIO < replyLen;
 
-const textLength = (params: Readonly<Record<string, string>>): number => (params.text ?? "").trim().length;
+/** The plain body of a call (`text`, else Slack's `markdown_text`); undefined when it sends neither, so its length stays unknown, never 0. */
+const bodyLength = (params: Readonly<Record<string, string>>): number | undefined => {
+  const body = params.text ?? params.markdown_text;
+  return body === undefined ? undefined : body.trim().length;
+};
 
 const hasContent = (raw: string | undefined): boolean => raw !== undefined && raw.trim() !== "" && raw.trim() !== "[]";
+const lenField = (len: number | undefined): { readonly len?: number } => (len !== undefined ? { len } : {});
 const isRich = (params: Readonly<Record<string, string>>): boolean => hasContent(params.blocks) || hasContent(params.attachments);
 
 /** The call a turn made, as the proxy saw it: the checked params and Slack's answer. */
@@ -222,17 +227,17 @@ export const applySelfPostCall = (posts: readonly SelfPost[], call: SelfPostCall
   if (!answer.ok) return posts;
   if (call.method === "chat.postMessage") {
     if (call.params.thread_ts !== threadTs || !answer.ts) return posts;
-    return posts.some((p) => p.ts === answer.ts) ? posts : [...posts, { ts: answer.ts, len: textLength(call.params), ...(isRich(call.params) ? { rich: true as const } : {}) }];
+    return posts.some((p) => p.ts === answer.ts) ? posts : [...posts, { ts: answer.ts, ...lenField(bodyLength(call.params)), ...(isRich(call.params) ? { rich: true as const } : {}) }];
   }
   if (call.method === "chat.update") {
     const ts = call.params.ts;
     // an update of a message this turn posted keeps the turn marked as having posted, and blocks make it rich for good
     if (!ts || !posts.some((p) => p.ts === ts)) return posts;
-    // an update that sends text refreshes the length (a progress line grown into the answer stops being one); one without leaves it
+    // an update that sends a body (`text` or `markdown_text`) refreshes the length (a progress line grown into the answer stops being one); one without leaves it
     return posts.map((p) => {
       if (p.ts !== ts) return p;
-      const len = call.params.text !== undefined ? textLength(call.params) : p.len;
-      return { ts: p.ts, ...(len !== undefined ? { len } : {}), ...(p.rich || isRich(call.params) ? { rich: true as const } : {}) };
+      const len = bodyLength(call.params) ?? p.len;
+      return { ts: p.ts, ...lenField(len), ...(p.rich || isRich(call.params) ? { rich: true as const } : {}) };
     });
   }
   return posts;

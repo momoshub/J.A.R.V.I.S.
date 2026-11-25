@@ -116,7 +116,7 @@ no classes.
   progress line (plain, at most `PROGRESS_POST_MAX_CHARS` = 280 chars, and under 1/`PROGRESS_REPLY_RATIO`
   = half of the closing reply's length, `isProgressPost`), the reply is kept as if it carried
   the marker (logged `closing reply kept, the turn's own posts were progress lines`). One
-  rich, answer-sized or unknown-length post keeps the drop. With the marker (or that implicit keep) and exactly one plain text post of the turn (no blocks or
+  rich, answer-sized or unknown-length post keeps the drop (a post's length is its `text`, else `markdown_text`; neither means unknown). Known trade-off: a short real answer post followed by a reply more than twice as long that is only meta is read as progress, and with a single post the reply then replaces it. With the marker (or that implicit keep) and exactly one plain text post of the turn (no blocks or
   attachments, no upload, `replaceableSelfPost`) the reply is written onto that post
   with `chat.update` (footer included) and the stream messages go, so one ask stays
   one message; with several posts, a rich post, an upload or a refused update it is
