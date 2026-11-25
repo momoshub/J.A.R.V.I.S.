@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DEFAULT_MCP_SCHEMA_CACHE_DIR, createClaudeJsonReader, stdioServersFor, type StdioServer } from "../llm/mcpConfig.ts";
@@ -18,6 +18,9 @@ import {
   type ToolInfo,
 } from "../../domain/mcpCodeMode.ts";
 import { exposedTools } from "../../domain/mcpApproval.ts";
+import { renderMcpTypes } from "../../domain/mcpTypes.ts";
+import { DEFAULT_SANDBOX_LIMITS, MAX_SANDBOX_MEMORY_MB, positiveInt, secondsToMs } from "../../domain/mcpSandbox.ts";
+import { runInSandbox, type ToolBridge } from "./sandbox.ts";
 import { approvalsPath, createFileApprovalStore } from "./approvals.ts";
 import { createFileSchemaCache, createLazyProxy, schemaCachePath, spawnStdioServer, type JsonRpc } from "./lazyProxy.ts";
 
@@ -35,6 +38,8 @@ export type CliIo = {
   readonly out: (line: string) => void;
   readonly err: (line: string) => void;
   readonly now?: () => Date;
+  /** The script piped to `mcp run -`. */
+  readonly stdin?: () => Promise<string>;
   /** For the owner-ticket check; the global `fetch` when absent. */
   readonly fetchFn?: typeof fetch;
 };
@@ -85,54 +90,97 @@ const loadServer = (cacheDir: string, name: string, def: StdioServer): Loaded =>
   return { name, def, tools: shown.flatMap((t) => toolInfoOf(t) ?? []), hidden: cached.tools.length - shown.length, listed: cached.tools.flatMap((t) => toolInfoOf(t)?.name ?? []) };
 };
 
-const callServer = async (
+type ToolReply = { ok: true; result: unknown } | { ok: false; error: string };
+
+/**
+ * One server's lazy proxy, started on the first call and kept for as many calls as the caller makes (`mcp run` makes
+ * many; `mcp call` one). The command and env are what the bot launches the server with: the turn's environment under the server's own `env`.
+ */
+const openServer = (
   cacheDir: string,
   server: Loaded,
-  tool: string,
-  args: unknown,
   env: Readonly<Record<string, string | undefined>>,
   timeoutMs: number,
   log: (line: string) => void,
-): Promise<{ ok: true; result: unknown } | { ok: false; error: string }> => {
+): { call: (tool: string, args: unknown) => Promise<ToolReply>; close: () => void } => {
   const { name, def } = server;
   const command = [def.command, ...def.args];
-  let settle: (m: JsonRpc) => void = () => {};
-  const answer = new Promise<JsonRpc>((resolve) => (settle = resolve));
+  const waiting = new Map<number, (m: JsonRpc) => void>();
+  let nextId = 2;
   const proxy = createLazyProxy({
     cache: createFileSchemaCache(schemaCachePath(cacheDir, name, command)),
     approvals: createFileApprovalStore(approvalsPath(cacheDir, name)),
     server: name,
-    // The same command and env the bot launches the server with: the turn's environment under the server's own `env`.
     spawn: () => spawnStdioServer(command, { ...env, ...def.env }),
-    out: (m) => void (m.id === 2 && settle(m)),
+    out: (m) => {
+      const id = typeof m.id === "number" ? m.id : undefined;
+      if (id !== undefined) waiting.get(id)?.(m);
+    },
     log: (line) => log(`[${name}] ${line}`),
   });
-  const timer = setTimeout(() => settle({ jsonrpc: "2.0", id: 2, error: { code: -32001, message: `no answer within ${timeoutMs / 1000}s` } }), timeoutMs);
-  try {
-    await proxy.handle({
-      jsonrpc: "2.0",
-      id: 1,
-      method: "initialize",
-      params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "jarvis-mcp-cli", version: "1" } },
-    });
-    await proxy.handle({ jsonrpc: "2.0", method: "notifications/initialized" });
-    void proxy.handle({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: tool, arguments: args } });
-    const reply = await answer;
-    if (reply.error && typeof reply.error === "object") return { ok: false, error: String((reply.error as { message?: unknown }).message ?? "the call failed") };
-    return { ok: true, result: reply.result };
-  } finally {
-    clearTimeout(timer);
-    proxy.close();
-  }
+  let started: Promise<void> | undefined;
+  const start = (): Promise<void> =>
+    (started ??= (async () => {
+      await proxy.handle({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "initialize",
+        params: { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "jarvis-mcp-cli", version: "1" } },
+      });
+      await proxy.handle({ jsonrpc: "2.0", method: "notifications/initialized" });
+    })());
+  return {
+    call: async (tool, args) => {
+      await start();
+      const id = nextId++;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const answer = new Promise<JsonRpc>((resolve) => {
+        waiting.set(id, resolve);
+        timer = setTimeout(() => resolve({ jsonrpc: "2.0", id, error: { code: -32001, message: `no answer within ${timeoutMs / 1000}s` } }), timeoutMs);
+      });
+      try {
+        void proxy.handle({ jsonrpc: "2.0", id, method: "tools/call", params: { name: tool, arguments: args } });
+        const reply = await answer;
+        if (reply.error && typeof reply.error === "object") return { ok: false, error: String((reply.error as { message?: unknown }).message ?? "the call failed") };
+        return { ok: true, result: reply.result };
+      } finally {
+        clearTimeout(timer);
+        waiting.delete(id);
+      }
+    },
+    close: () => proxy.close(),
+  };
+};
+
+/**
+ * The one gate every tool call passes, from `mcp call` and from each call a `mcp run` script bridges: the turn's role
+ * (`BOT_MCP_ACCESS`, `BOT_MCP_DENY`), a live owner ticket, and a tool the cache lists. Approval gating happens in the proxy
+ * the call then goes through. Undefined when the call may go ahead, else why it may not.
+ */
+const callRefusal = async (io: CliIo, server: Loaded, tool: string): Promise<string | undefined> => {
+  const refusal = mcpCallRefusal(io.env, server.name, tool) ?? (await ownerTicketRefusal(io.env, io.fetchFn));
+  if (refusal) return `refused: ${refusal}`;
+  // A tool the cache lists but the owner has not approved is refused by the proxy; one it does not list at all is a typo.
+  if (server.tools && !server.listed.includes(tool)) return `"${server.name}" lists no tool "${tool}" (\`mcp search\` finds one)`;
+  return undefined;
 };
 
 const stamp = (d: Date): string => d.toISOString().replace(/[-:]/g, "").replace(/\..*/, "").replace("T", "-");
+
+/** The 0600 file in the 0700 out dir (default `$TMPDIR/jarvis-mcp-out`) every `call` and `run` result goes to. */
+const writeOutput = (outDir: string | undefined, label: string, ext: string, text: string, now: (() => Date) | undefined): string => {
+  const dir = outDir || join(tmpdir(), "jarvis-mcp-out");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const file = join(dir, `${label}-${stamp((now ?? (() => new Date()))())}-${Math.random().toString(36).slice(2, 6)}.${ext}`.replace(/[^A-Za-z0-9_.-]/g, "_"));
+  writeFileSync(file, text, { mode: 0o600 });
+  return file;
+};
 
 const render = (payload: CallPayload): { text: string; ext: string } =>
   payload.kind === "text" ? { text: payload.text, ext: "txt" } : { text: JSON.stringify(payload.value, null, 1), ext: "json" };
 
 export const runMcpCli = async (argv: readonly string[], io: CliIo): Promise<number> => {
-  const { flags, rest } = splitFlags(argv, ["claude-json", "cache-dir", "fields", "out", "timeout"]);
+  const { flags, rest } = splitFlags(argv, ["claude-json", "cache-dir", "fields", "out", "timeout", "max-calls", "memory"]);
   const [command, ...args] = rest;
   if (!command || command === "help" || command === "--help" || command === "-h") {
     io.out(MCP_CLI_HELP);
@@ -170,6 +218,92 @@ export const runMcpCli = async (argv: readonly string[], io: CliIo): Promise<num
     return 0;
   }
 
+  if (command === "types") {
+    const wanted = args.length > 0 ? args : servers.map((s) => s.name);
+    const unknown = wanted.filter((n) => !servers.some((s) => s.name === n));
+    if (unknown.length > 0) return fail(`unknown server "${unknown[0]}". \`mcp list\` shows the ones this host has.`);
+    // What a script may call: the approved tools, minus what the turn's role is denied (the same check each bridged call makes).
+    const usable = servers
+      .filter((s) => wanted.includes(s.name))
+      .map((s) => ({ name: s.name, tools: (s.tools ?? []).filter((t) => mcpCallRefusal(io.env, s.name, t.name) === undefined) }));
+    const noCache = servers.filter((s) => wanted.includes(s.name) && !s.tools).map((s) => s.name);
+    if (noCache.length > 0) io.err(`mcp: no schema cache yet for ${noCache.join(", ")} (one \`mcp call\` fills it), so they have no types`);
+    if (usable.every((s) => s.tools.length === 0)) return fail("no tools to describe");
+    io.out(renderMcpTypes(usable));
+    return 0;
+  }
+
+  if (command === "run") {
+    const [source] = args;
+    if (!source) return fail("usage: mcp run <file.ts | -> [--timeout <seconds>] [--out <dir>]");
+    const timeoutMs = secondsToMs(flags.timeout, DEFAULT_SANDBOX_LIMITS.timeoutMs);
+    const maxCalls = positiveInt(flags["max-calls"], DEFAULT_SANDBOX_LIMITS.maxCalls);
+    const memoryMb = positiveInt(flags.memory, DEFAULT_SANDBOX_LIMITS.memoryBytes / (1024 * 1024));
+    if (timeoutMs === undefined) return fail("--timeout is a number of seconds");
+    if (maxCalls === undefined) return fail("--max-calls is a whole number");
+    if (memoryMb === undefined || memoryMb > MAX_SANDBOX_MEMORY_MB) return fail(`--memory is a number of megabytes, at most ${MAX_SANDBOX_MEMORY_MB}`);
+    // A script needs the same standing as `call` has, before anything of it runs; each bridged call is gated again.
+    const early = mcpCallRefusal(io.env, "", "") ?? (await ownerTicketRefusal(io.env, io.fetchFn));
+    if (early) return fail(`refused: ${early}`);
+    let source_text: string;
+    try {
+      source_text = source === "-" ? (io.stdin ? await io.stdin() : "") : readFileSync(source.startsWith("/") ? source : join(io.cwd, source), "utf8");
+    } catch (e) {
+      return fail(`cannot read ${source}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    if (!source_text.trim()) return fail("the script is empty");
+    let js: string;
+    try {
+      // Macros (`import ... with { type: "macro" }`) run in THIS process at transpile time, with its env, files and network,
+      // and their return value is inlined into the script: that would undo the isolate. They are switched off, and a script
+      // with any import is refused before it is transformed (`scanImports` does not run macros; `scan` does). The isolate
+      // has no module loader, so no legitimate script is lost.
+      const transpiler = new Bun.Transpiler({ loader: "ts", target: "bun", trimUnusedImports: false, macro: false } as unknown as ConstructorParameters<typeof Bun.Transpiler>[0]);
+      if (transpiler.scanImports(source_text).length > 0) return fail("the script does not compile: imports are not available in the sandbox (the only globals are `mcp` and `console`)");
+      js = transpiler.transformSync(source_text);
+    } catch (e) {
+      return fail(`the script does not compile: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    const sessions = new Map<string, ReturnType<typeof openServer>>();
+    let finished = false;
+    const bridge: ToolBridge = async (serverName, toolName, toolArgs) => {
+      const server = servers.find((s) => s.name === serverName);
+      if (!server) return { ok: false, error: `unknown server "${serverName}" (\`mcp list\` shows the ones this host has)` };
+      const refusal = await callRefusal(io, server, toolName);
+      if (refusal) return { ok: false, error: refusal };
+      // The script may be over (timeout) while the gate above was still awaiting the owner-ticket check: start nothing then.
+      if (finished) return { ok: false, error: "the script has ended" };
+      let session = sessions.get(serverName);
+      if (!session) sessions.set(serverName, (session = openServer(cacheDir, server, io.env, DEFAULT_CALL_TIMEOUT_S * 1000, (line) => io.err(line))));
+      const reply = await session.call(toolName, toolArgs);
+      if (!reply.ok) return reply;
+      const payload = payloadOf(reply.result);
+      const value = payload.kind === "text" ? payload.text : payload.value;
+      if ((reply.result as { isError?: unknown } | undefined)?.isError === true) return { ok: false, error: typeof value === "string" ? value : JSON.stringify(value) };
+      return { ok: true, value };
+    };
+    const limits = { ...DEFAULT_SANDBOX_LIMITS, timeoutMs, maxCalls, memoryBytes: memoryMb * 1024 * 1024 };
+    const outcome = await runInSandbox(js, limits, bridge).finally(() => {
+      finished = true;
+      sessions.forEach((s) => s.close());
+    });
+
+    const logText = outcome.logs;
+    const text = `${outcome.ok && outcome.value !== undefined ? `${outcome.value}\n` : ""}${logText ? `--- console ---\n${logText}` : ""}`;
+    const file = text ? writeOutput(flags.out, "run", outcome.ok && outcome.value !== undefined && !logText ? "json" : "txt", text, io.now) : undefined;
+    if (!outcome.ok) {
+      if (file) io.out(`output so far: ${file}`);
+      // The transpiler drops types and blank lines, so the line is the compiled script's; its text says where that is.
+      const at = outcome.line ? js.split("\n")[outcome.line - 1]?.trim().slice(0, 120) : undefined;
+      return fail(`the script failed${outcome.line ? ` at line ${outcome.line} of the compiled script${at ? ` (\`${at}\`)` : ""}` : ""}: ${outcome.error}`);
+    }
+    io.out(file ? `result: ${file}` : "result: (the script printed nothing and returned nothing)");
+    io.out(`size: ${Buffer.byteLength(text)} bytes, ${outcome.calls} tool call${outcome.calls === 1 ? "" : "s"}`);
+    if (text) io.out(`head: ${text.replace(/\s+/g, " ").trim().slice(0, 600)}`);
+    return 0;
+  }
+
   if (command === "schema" || command === "call") {
     const [serverName, toolName, argText] = args;
     if (!serverName || !toolName) return fail(command === "schema" ? "usage: mcp schema <server> <tool>" : "usage: mcp call <server> <tool> '<json args>' [--fields a,b.c]");
@@ -183,10 +317,8 @@ export const runMcpCli = async (argv: readonly string[], io: CliIo): Promise<num
     }
 
     // The turn's role: refuse here what the turn's own --disallowedTools would refuse.
-    const refusal = mcpCallRefusal(io.env, serverName, toolName) ?? (await ownerTicketRefusal(io.env, io.fetchFn));
-    if (refusal) return fail(`refused: ${refusal}`);
-    // A tool the cache lists but the owner has not approved is refused by the proxy below; one it does not list at all is a typo.
-    if (server.tools && !server.listed.includes(toolName)) return fail(`"${serverName}" lists no tool "${toolName}" (\`mcp search\` finds one)`);
+    const refusal = await callRefusal(io, server, toolName);
+    if (refusal) return fail(refusal);
     let callArgs: unknown = {};
     if (argText) {
       try {
@@ -200,7 +332,8 @@ export const runMcpCli = async (argv: readonly string[], io: CliIo): Promise<num
     const seconds = Number(flags.timeout ?? DEFAULT_CALL_TIMEOUT_S);
     if (!Number.isFinite(seconds) || seconds <= 0) return fail("--timeout is a number of seconds");
 
-    const called = await callServer(cacheDir, server, toolName, callArgs, io.env, seconds * 1000, (line) => io.err(line));
+    const opened = openServer(cacheDir, server, io.env, seconds * 1000, (line) => io.err(line));
+    const called = await opened.call(toolName, callArgs).finally(opened.close);
     if (!called.ok) return fail(called.error);
     const result = called.result as { isError?: unknown } | undefined;
     const isError = result?.isError === true;
@@ -210,10 +343,7 @@ export const runMcpCli = async (argv: readonly string[], io: CliIo): Promise<num
     const note = fields.length > 0 && whole.kind !== "json" ? "  (--fields ignored: the result is not JSON)" : "";
 
     const { text, ext } = render(payload);
-    const dir = flags.out || join(tmpdir(), "jarvis-mcp-out");
-    mkdirSync(dir, { recursive: true, mode: 0o700 });
-    const file = join(dir, `${serverName}-${toolName}-${stamp((io.now ?? (() => new Date()))())}-${Math.random().toString(36).slice(2, 6)}.${ext}`.replace(/[^A-Za-z0-9_.-]/g, "_"));
-    writeFileSync(file, text, { mode: 0o600 });
+    const file = writeOutput(flags.out, `${serverName}-${toolName}`, ext, text, io.now);
 
     const rows = payload.kind === "json" ? rowCountOf(payload.value) : undefined;
     io.out(`${isError ? "the tool reported an error; " : ""}result: ${file}`);
