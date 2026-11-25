@@ -58,6 +58,11 @@ describe("isSilenceNote: react-only narration and NO_REPLY", () => {
       "I added a 👍 reaction to your message as you asked - anything else?",
       "Reacted to the wrong message, fixed it: the ✅ is now on the deploy post.",
       "The bot posts NO_REPLY when it has nothing to say, so that is why the thread stayed empty. Want me to change that?",
+      "Survey results so far:\n- Alice: approved\n- Bob: approved\n- Carol: no reply",
+      "I chased the vendor on Monday and again on Wednesday about the invoice. Status: no reply.",
+      "Checked the ticket. Did the customer answer? No reply.",
+      "Here is what happened with the three DMs I sent this morning:\n\nNo reply.",
+      "Reacted, will do.",
       "Reactions are added with reactions.add, one call per emoji.",
     ]) {
       expect(isSilenceNote(t)).toBe(false);

@@ -17,8 +17,12 @@
 const SILENCE =
   /^(?:empty reply|no[_ ]reply(?: needed| required)?|no response(?: needed| required)?|nothing (?:to add|further|more to add)|staying (?:quiet|silent)|silence|(?:a )?reaction is enough|not for me)\b/;
 
-/** A trailing NO_REPLY line, with or without a summary written before it. */
-const TRAILING_NO_REPLY = /(?:^|\n|[.!?:]\s)[\s`*_~"'(]*no[_ ]reply[\s`*_~"').!]*$/i;
+/**
+ * The literal sentinel (upper case, underscore) closing the reply: alone, on its own last line, or after sentence
+ * punctuation. Deliberately strict because it applies at any length: "Carol: no reply" ending a status answer is
+ * an answer. Loose forms ("no reply", lower case) are only judged by the short-note check below.
+ */
+const TRAILING_NO_REPLY = /(?:^|\n|[.!?:]\s)[\s`*_~"'(]*NO_REPLY[\s`*_~"').!]*$/;
 
 /** True when the reply is the NO_REPLY sentinel, alone or as the last line after some narration. */
 export const endsInNoReply = (text: string): boolean => TRAILING_NO_REPLY.test(text.trim());
@@ -29,8 +33,8 @@ const REACT_LEAD =
 
 /** Words allowed after that start for the note to be nothing but "...and I said nothing". */
 const NARRATION_WORDS = new Set(
-  `a an the and but so i did didnt do not no nothing only just here there it this that reply replied response message text needed required necessary
-  posted post sent send wrote add added further more else to for staying stay quiet silent silence instead enough is was will be with of other separate
+  `a an the and but so i did didnt not no nothing only just here there it this that reply replied response message text needed required necessary
+  posted post sent send wrote add added further more else to for staying stay quiet silent silence instead enough is was be with of other separate
   written words any say said one on`.split(/\s+/),
 );
 
