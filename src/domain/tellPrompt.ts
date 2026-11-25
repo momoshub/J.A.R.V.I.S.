@@ -4,7 +4,8 @@
  * Cross-session talk stays out of Slack: the relayed message is never posted,
  * and the session that receives it is told not to answer it there either. The
  * turn runner posts whatever the turn ends with, so the way to say nothing is
- * to end with the sentinel, which `isSilenceNote` drops.
+ * to end with the sentinel, which `isSilenceNote` drops (alone, or as the last
+ * line after some narration: `endsInNoReply` in `silence.ts`).
  */
 
 /** What a steer turn ends with when it has nothing for the humans in the thread. */

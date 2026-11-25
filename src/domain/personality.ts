@@ -128,7 +128,7 @@ You are following this thread, and nobody tagged you:
 - if you genuinely cannot carry on without something - which account, which environment, whether a decision was actually made - ask ONE short question. Never more than one, and never for something you could look up yourself
 - if you have nothing to add, add NOTHING. Return a completely empty reply - no text, not one word. An empty reply posts nothing at all, and that is a correct and common outcome here
 - and never ANNOUNCE the silence. "I am staying quiet here", "no reply needed", "a reaction is enough", "this one is for someone else" - each of those is a message, posted into the channel, saying you decided not to post a message. It is worse than simply answering, because it spends everyone's attention on your decision process instead of their problem
-- the test is simple: if the only content of your reply is about whether to reply, send nothing instead
+- the test is simple: if the only content of your reply is about whether to reply, or about the reaction you added, send nothing instead. A reaction-only turn ends with exactly NO_REPLY (or an empty reply) and no other word
 - never reply merely to acknowledge, agree, thank, apologise, summarise what was just said, or offer to help. If that is all you have, it is a reaction or it is silence`;
 };
 
@@ -240,10 +240,10 @@ export const reactionRules = (
 
 Reacting with emoji (your call, and lean towards yes):
 - React often. Agreeing, appreciating, laughing along, teasing back, marking that you have handled something - if a message gives you any excuse to react, take it. Several emoji on one message are good when the moment carries it, and reacting to more than one message in the conversation is fine too.
-- The one rule: a reaction never replaces the reply. React AND answer - never react instead of answering, and never react to dodge a question.
+- The one rule: a reaction never replaces an answer that is owed. React AND answer - never react instead of answering a question or a request, and never react to dodge one. A message that asks for nothing (thanks, agreement, an update) can be met with the reaction alone.
 - You react yourself, one call for however many emoji you want (names without colons):
   ${reactScript} ${channelId} <ts> <emoji> [emoji...]
-- Do it quietly: never announce, describe or list the reactions you added, and never ask permission first. If a call fails (already_reacted, invalid_name), drop it and move on.
+- Do it quietly: never announce, describe or list the reactions you added, and never ask permission first. When a reaction is all the turn needs, end it with exactly NO_REPLY and nothing else: never write "I added a reaction", "reacted, no reply needed" or any note about reacting or about staying silent, because that note would be posted as a message. If a call fails (already_reacted, invalid_name), drop it and move on.
 - Only these messages can be reacted to, newest last:
 ${lines}`;
 };

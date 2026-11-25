@@ -50,9 +50,6 @@ const LOOP_TRIGGER: InternalKind = "loop";
 /** A held turn's final reply when it is a real answer; nothing for a silent run. */
 export type LoopTurnReply = { text: string } | undefined | void;
 
-/** A trailing NO_REPLY line, with or without a summary written before it. */
-const TRAILING_NO_REPLY = /(?:^|\n|[.!?:]\s)[\s`*_~"'(]*no[_ ]reply[\s`*_~"').!]*$/i;
-
 /**
  * What a loop's final reply is worth posting: nothing for an empty reply, the
  * "nothing useful to add" fallback an empty reply becomes, a silence note, or a
@@ -61,7 +58,7 @@ const TRAILING_NO_REPLY = /(?:^|\n|[.!?:]\s)[\s`*_~"'(]*no[_ ]reply[\s`*_~"').!]
  */
 export const loopReplyOf = (text: string): { text: string } | undefined => {
   const t = text.trim();
-  if (!t || t === EMPTY_REPLY_FALLBACK || isSilenceNote(t) || TRAILING_NO_REPLY.test(t)) return undefined;
+  if (!t || t === EMPTY_REPLY_FALLBACK || isSilenceNote(t)) return undefined;
   return { text: t };
 };
 
