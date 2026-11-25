@@ -29,7 +29,7 @@ const build = (extra: Partial<DashboardDeps> = {}) => {
   const settings = createSettingsRepo(db);
   users.upsert({ slackId: OWNER, role: "owner", displayName: "Kai", addedBy: "system", createdAt: 1 });
   const profile = () =>
-    loadBotProfile(settings, { name: "TestBot", thinkingLabel: "thinking...", thinkingDoneLabel: "✅" });
+    loadBotProfile(settings, { name: "TestBot", thinkingLabel: "thinking..." });
   const dash = createDashboard(
     { port: 0, ownerSlackId: OWNER, model: "claude-opus-4-8", distDir: "/nonexistent", commandPrefix: "//bot", slashCommand: "/bot" },
     {
@@ -369,12 +369,11 @@ describe("dashboard mutations", () => {
       postJson(`/api/identity`, {
         name: "Jarvis",
         thinkingLabel: "☄️",
-        thinkingDoneLabel: "🐦‍🔥",
         prompt: "You are terse.",
       }),
     );
     expect(settings.get(SETTING_KEYS.botName)).toBe("Jarvis");
-    expect(settings.get(SETTING_KEYS.thinkingDoneLabel)).toBe("🐦‍🔥");
+    expect(settings.get(SETTING_KEYS.thinkingLabel)).toBe("☄️");
     expect(settings.get(SETTING_KEYS.systemPrompt)).toBe("You are terse.");
   });
 
@@ -476,7 +475,7 @@ describe("running a command through the API", () => {
     users.upsert({ slackId: OWNER, role: "owner", displayName: "Kai", addedBy: "system", createdAt: 1 });
     const seen: unknown[] = [];
     const profile = () =>
-      loadBotProfile(settings, { name: "TestBot", thinkingLabel: "thinking...", thinkingDoneLabel: "✅" });
+      loadBotProfile(settings, { name: "TestBot", thinkingLabel: "thinking..." });
     const dash = createDashboard(
       { port: 0, ownerSlackId: OWNER, model: "m", distDir: "/nonexistent", commandPrefix: "//bot", slashCommand: "/bot" },
       {

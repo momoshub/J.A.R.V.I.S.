@@ -117,7 +117,6 @@ export type AdapterFile = { path: string; content: string };
 export type Identity = {
   name: string;
   thinkingLabel: string;
-  thinkingDoneLabel: string;
   persona: string;
   usingDefault: boolean;
   defaultPersona: string;

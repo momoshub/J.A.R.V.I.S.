@@ -9,7 +9,6 @@ export const SETTING_KEYS = {
   botName: "bot_name",
   systemPrompt: "system_prompt",
   thinkingLabel: "thinking_label",
-  thinkingDoneLabel: "thinking_done_label",
   disabledCommands: "disabled_commands",
   /** MCP servers named by hand beyond the databases, Notion and Datadog; each is a `mcp:<server>` grant. Comma separated. */
   roleMcpServers: "role_mcp_servers",

@@ -403,7 +403,6 @@ const main = async () => {
     loadBotProfile(settings, {
       name: config.botName,
       thinkingLabel: config.botThinkingLabel,
-      thinkingDoneLabel: config.botThinkingDoneLabel,
     });
 
   // Full-access cwd (owner/admin) is neutral (outside Jarvis's source); sandboxed
@@ -1122,7 +1121,6 @@ const main = async () => {
       streamUpdates: config.slackStreamUpdates,
       botName: profile().name,
       thinkingLabel: () => profile().thinkingLabel,
-      thinkingDoneLabel: () => profile().thinkingDoneLabel,
       commandPrefix: config.commandPrefix,
       slashCommand: config.slashCommand,
     },

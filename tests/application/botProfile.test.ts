@@ -4,7 +4,7 @@ import { createSettingsRepo, SETTING_KEYS } from "../../src/infrastructure/db/se
 import { loadBotProfile } from "../../src/application/botProfile.ts";
 
 const settings = () => createSettingsRepo(openDatabase(":memory:"));
-const defaults = { name: "EnvName", thinkingLabel: "env-thinking", thinkingDoneLabel: "env-done" };
+const defaults = { name: "EnvName", thinkingLabel: "env-thinking" };
 
 describe("loadBotProfile precedence", () => {
   test("DB setting wins over the env default", () => {
@@ -18,7 +18,7 @@ describe("loadBotProfile precedence", () => {
   });
 
   test("built-in default when both setting and env are absent", () => {
-    expect(loadBotProfile(settings(), { thinkingLabel: "x", thinkingDoneLabel: "y" }).name).toBe("Assistant");
+    expect(loadBotProfile(settings(), { thinkingLabel: "x" }).name).toBe("Assistant");
   });
 
   test("whitespace-only settings fall through", () => {
@@ -37,11 +37,10 @@ describe("loadBotProfile precedence", () => {
     expect(loadBotProfile(s, defaults).persona).toBe("custom persona");
   });
 
-  test("thinking labels resolve from settings then defaults", () => {
+  test("the thinking label resolves from settings then defaults", () => {
     const s = settings();
-    s.set(SETTING_KEYS.thinkingDoneLabel, "🐦‍🔥");
-    const p = loadBotProfile(s, defaults);
-    expect(p.thinkingDoneLabel).toBe("🐦‍🔥");
-    expect(p.thinkingLabel).toBe("env-thinking");
+    expect(loadBotProfile(s, defaults).thinkingLabel).toBe("env-thinking");
+    s.set(SETTING_KEYS.thinkingLabel, "🐦‍🔥");
+    expect(loadBotProfile(s, defaults).thinkingLabel).toBe("🐦‍🔥");
   });
 });

@@ -436,7 +436,6 @@ export const createDashboard = (config: DashboardConfig, deps: DashboardDeps) =>
           return reply(app.saveIdentity({
             name: body.name,
             thinkingLabel: body.thinkingLabel,
-            thinkingDoneLabel: body.thinkingDoneLabel,
             prompt: body.prompt,
           }));
         case "/api/prompt/reset":

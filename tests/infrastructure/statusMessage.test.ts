@@ -9,7 +9,10 @@ const fake = (opts: { failures?: (call: number, op: string) => unknown } = {}) =
   const calls: Call[] = [];
   const t0 = Date.now();
   let n = 0;
-  const textOf = (v: StatusView): string => (v.blocks[0] as unknown as { elements: { text: string }[] }).elements[0]?.text ?? "";
+  const textOf = (v: StatusView): string => {
+    const plan = v.blocks[0] as unknown as { title: string; tasks: { status: string; title: string }[] };
+    return [plan.title, ...plan.tasks.map((t) => `${t.status}: ${t.title}`)].join("\n");
+  };
   const hit = (op: Call["op"], ts: string | undefined, text: string): void => {
     const failure = opts.failures?.(++n, op);
     if (failure) throw failure;
@@ -42,7 +45,7 @@ describe("the status message while the turn runs", () => {
     m.step({ id: "a", title: "Reading a file", state: "complete" });
     await Bun.sleep(80);
     expect(f.calls.map((c) => c.op)).toEqual(["post", "update"]);
-    expect(f.calls[1]?.text).toBe("✅ Reading a file");
+    expect(f.calls[1]?.text).toBe("Working… 1 step\ncomplete: Reading a file");
     await m.end();
     await m.idle();
   });
@@ -94,7 +97,7 @@ describe("the status message while the turn runs", () => {
     m.step({ id: "a", title: "A", state: "complete" });
     await Bun.sleep(200);
     expect(limited).toBe(2);
-    expect(f.calls.filter((c) => c.op === "update").at(-1)?.text).toBe("✅ A");
+    expect(f.calls.filter((c) => c.op === "update").at(-1)?.text).toBe("Working… 1 step\ncomplete: A");
     await m.end();
     await m.idle();
   });
@@ -120,10 +123,10 @@ describe("the status message while the turn runs", () => {
     const m = createStatusMessage({ api: f.api, ...FAST });
     m.thinking("working on it...");
     await Bun.sleep(15);
-    expect(f.calls[0]).toMatchObject({ op: "post", text: "⏳ working on it..." });
+    expect(f.calls[0]).toMatchObject({ op: "post", text: "Working…\nin_progress: working on it..." });
     m.step({ id: "a", title: "A", state: "in_progress" });
     await Bun.sleep(80);
-    expect(f.calls.at(-1)).toMatchObject({ op: "update", text: "⏳ A" });
+    expect(f.calls.at(-1)).toMatchObject({ op: "update", text: "Working… 1 step\nin_progress: A" });
     await m.end();
     await m.idle();
   });
@@ -185,7 +188,7 @@ describe("the status message when the turn ends", () => {
     await m.idle();
     await Bun.sleep(60);
     expect(f.calls.some((c) => c.op === "remove")).toBe(false);
-    expect(f.calls.at(-1)).toMatchObject({ op: "update", ts: "100.1", text: "🔧 3 steps, 1 failed\n• Run: gh pr view" });
+    expect(f.calls.at(-1)).toMatchObject({ op: "update", ts: "100.1", text: "🔧 3 steps, 1 failed\nerror: Run: gh pr view" });
     expect(f.store.removed).toEqual(["100.1"]);
   });
 
@@ -198,7 +201,7 @@ describe("the status message when the turn ends", () => {
     await m.end();
     await m.idle();
     expect(f.calls.map((c) => c.op)).toEqual(["post"]);
-    expect(f.calls[0]?.text).toBe("🔧 2 steps, 1 failed\n• B");
+    expect(f.calls[0]?.text).toBe("🔧 2 steps, 1 failed\nerror: B");
   });
 
   test("nothing shown, nothing posted", async () => {
@@ -221,7 +224,7 @@ describe("the status message when the turn ends", () => {
     m.step({ id: "b", title: "B", state: "error" });
     await m.end();
     await m.idle();
-    expect(f.calls.at(-1)).toMatchObject({ op: "update", text: "🔧 2 steps, 1 failed\n• B" });
+    expect(f.calls.at(-1)).toMatchObject({ op: "update", text: "🔧 2 steps, 1 failed\nerror: B" });
     expect(f.store.removed).toEqual(["100.1"]);
   });
 

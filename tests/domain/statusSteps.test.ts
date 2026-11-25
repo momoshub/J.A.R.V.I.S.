@@ -2,11 +2,11 @@ import { describe, expect, test } from "bun:test";
 import {
   STATUS_FINISHED_SHOWN,
   STATUS_RUNNING_SHOWN,
-  STATUS_TEXT_BUDGET,
-  escapeMrkdwn,
+  STATUS_TASKS_MAX,
+  STATUS_TITLE_CHARS,
   finalStatus,
   renderStatus,
-  stepLine,
+  taskTitle,
   type StatusStep,
 } from "../../src/domain/statusSteps.ts";
 
@@ -16,78 +16,88 @@ const step = (id: string, state: StatusStep["state"] = "complete", title = `Step
   state,
   ...(logLine ? { logLine } : {}),
 });
-const linesOf = (steps: readonly StatusStep[], thinking?: string): string[] => {
-  const block = renderStatus(steps, thinking).blocks[0] as unknown as { elements: { text: string }[] };
-  return (block.elements[0]?.text ?? "").split("\n");
-};
 
-describe("a step line", () => {
-  test("carries its state icon, title and log line", () => {
-    expect(stepLine(step("a", "in_progress", "Run: 🏃 Listing files", "17"))).toBe("⏳ Run: 🏃 Listing files · log line 17");
-    expect(stepLine(step("a", "complete"))).toBe("✅ Step a");
-    expect(stepLine(step("a", "error"))).toBe("❌ Step a");
+type Task = { type: string; task_id: string; title: string; status: string };
+type Plan = { type: string; title: string; tasks: Task[] };
+const planOf = (view: { blocks: unknown[] } | undefined): Plan => (view?.blocks[0] ?? {}) as Plan;
+const tasksOf = (steps: readonly StatusStep[], thinking?: string): Task[] => planOf(renderStatus(steps, thinking)).tasks;
+
+describe("a task card title", () => {
+  test("is the step title, plus the log line when there is one", () => {
+    expect(taskTitle(step("a", "in_progress", "Run: 🏃 Listing files", "17"))).toBe("Run: 🏃 Listing files · log line 17");
+    expect(taskTitle(step("a"))).toBe("Step a");
   });
 
   test("a long title is clipped but a grouped one keeps its run count", () => {
-    const line = stepLine(step("a", "complete", `${"x".repeat(400)} (7 runs)`, "3"));
-    expect(line.length).toBeLessThan(260);
-    expect(line).toContain(" (7 runs) · log line 3");
+    const title = taskTitle(step("a", "complete", `${"x".repeat(400)} (7 runs)`, "3"));
+    expect(title.length).toBeLessThanOrEqual(STATUS_TITLE_CHARS);
+    expect(title).toContain(" (7 runs) · log line 3");
   });
 
-  test("mrkdwn control characters cannot ping or link", () => {
-    expect(escapeMrkdwn("<!channel> a & b <https://x|y>")).toBe("&lt;!channel&gt; a &amp; b &lt;https://x|y&gt;");
-    expect(stepLine(step("a", "complete", "Run: <!here>"))).not.toContain("<!here>");
+  test("is plain text: nothing is escaped", () => {
+    expect(taskTitle(step("a", "complete", "Run: a && b <c>"))).toBe("Run: a && b <c>");
   });
 });
 
 describe("the running message", () => {
-  test("one line per step, in order, as one context block", () => {
-    const view = renderStatus([step("a"), step("b", "in_progress")]);
+  test("one plan block, a task card per step in order with its status", () => {
+    const view = renderStatus([step("a"), step("b", "in_progress"), step("c", "error")]);
     expect(view.blocks).toHaveLength(1);
-    expect(view.blocks[0]?.type).toBe("context");
-    expect(linesOf([step("a"), step("b", "in_progress")])).toEqual(["✅ Step a", "⏳ Step b"]);
-    expect(view.text).toContain("2 steps");
+    const plan = planOf(view);
+    expect(plan.type).toBe("plan");
+    expect(plan.title).toBe("Working… 3 steps");
+    expect(plan.tasks.map((t) => [t.type, t.task_id, t.title, t.status])).toEqual([
+      ["task_card", "a", "Step a", "complete"],
+      ["task_card", "b", "Step b", "in_progress"],
+      ["task_card", "c", "Step c", "error"],
+    ]);
+    expect(view.text).toBe("🔧 Working… 3 steps");
   });
 
-  test("shows the last few finished steps and counts the rest", () => {
+  test("shows the last few finished steps and counts the rest in the title", () => {
     const steps = Array.from({ length: 12 }, (_, i) => step(String(i)));
-    const lines = linesOf(steps);
-    expect(lines[0]).toBe("_…and 7 more steps_");
-    expect(lines).toHaveLength(1 + STATUS_FINISHED_SHOWN);
-    expect(lines.at(-1)).toBe("✅ Step 11");
-    expect(lines.join("\n")).not.toContain("Step 6");
+    const plan = planOf(renderStatus(steps));
+    expect(plan.title).toBe(`Working… 12 steps (showing ${STATUS_FINISHED_SHOWN})`);
+    expect(plan.tasks).toHaveLength(STATUS_FINISHED_SHOWN);
+    expect(plan.tasks.at(-1)?.title).toBe("Step 11");
+    expect(JSON.stringify(plan.tasks)).not.toContain("Step 6");
   });
 
   test("a step in progress is never hidden behind finished ones", () => {
     const steps = [step("slow", "in_progress"), ...Array.from({ length: 10 }, (_, i) => step(String(i)))];
-    const lines = linesOf(steps);
-    expect(lines).toContain("⏳ Step slow");
-    expect(lines[0]).toMatch(/and 5 more steps/);
+    const plan = planOf(renderStatus(steps));
+    expect(plan.tasks.map((t) => t.title)).toContain("Step slow");
+    expect(plan.title).toBe(`Working… 11 steps (showing ${STATUS_FINISHED_SHOWN + 1})`);
   });
 
   test("a burst of running steps is capped too, newest kept", () => {
     const steps = Array.from({ length: 20 }, (_, i) => step(String(i), "in_progress"));
-    const lines = linesOf(steps);
-    expect(lines).toHaveLength(1 + STATUS_RUNNING_SHOWN);
-    expect(lines[0]).toBe("_…and 12 more steps_");
-    expect(lines.at(-1)).toBe("⏳ Step 19");
+    const tasks = tasksOf(steps);
+    expect(tasks).toHaveLength(STATUS_RUNNING_SHOWN);
+    expect(tasks.at(-1)?.title).toBe("Step 19");
   });
 
-  test("one hidden step reads in the singular", () => {
-    const steps = Array.from({ length: STATUS_FINISHED_SHOWN + 1 }, (_, i) => step(String(i)));
-    expect(linesOf(steps)[0]).toBe("_…and 1 more step_");
+  test("one step reads in the singular, and a full list has no 'showing'", () => {
+    expect(planOf(renderStatus([step("a")])).title).toBe("Working… 1 step");
   });
 
-  test("stays under the block text limit however long the titles", () => {
-    const steps = Array.from({ length: 30 }, (_, i) => step(String(i), i % 2 ? "complete" : "in_progress", "y".repeat(500)));
-    const text = (renderStatus(steps).blocks[0] as unknown as { elements: { text: string }[] }).elements[0]?.text ?? "";
-    expect(text.length).toBeLessThanOrEqual(STATUS_TEXT_BUDGET + 40);
-    expect(text.length).toBeLessThan(3_000);
+  test("never more tasks than one plan may carry, however long the titles", () => {
+    const steps = Array.from({ length: 60 }, (_, i) => step(String(i), i % 2 ? "complete" : "in_progress", "y".repeat(500)));
+    const tasks = tasksOf(steps);
+    expect(tasks.length).toBeLessThanOrEqual(STATUS_TASKS_MAX);
+    expect(tasks.every((t) => t.title.length <= STATUS_TITLE_CHARS)).toBe(true);
   });
 
-  test("the thinking line is shown only while there is no step", () => {
-    expect(linesOf([], "working on it...")).toEqual(["⏳ working on it..."]);
-    expect(linesOf([step("a")], "working on it...")).toEqual(["✅ Step a"]);
+  test("task ids are sanitised to what Slack allows and stay unique", () => {
+    const tasks = tasksOf([step("tool use/1:a", "complete"), step("tool_use_1_a", "complete"), step("", "in_progress")]);
+    expect(tasks.map((t) => t.task_id)).toEqual(["tool_use_1_a", "tool_use_1_a_2", "step_2"]);
+    expect(tasks.every((t) => /^[A-Za-z0-9_-]+$/.test(t.task_id))).toBe(true);
+  });
+
+  test("the thinking label is one running task, shown only while there is no step", () => {
+    expect(tasksOf([], "working on it...").map((t) => [t.title, t.status])).toEqual([["working on it...", "in_progress"]]);
+    expect(tasksOf([step("a")], "working on it...").map((t) => t.title)).toEqual(["Step a"]);
+    expect(tasksOf([]).map((t) => t.title)).toEqual(["Working…"]);
   });
 });
 
@@ -97,11 +107,13 @@ describe("what is left when the turn ends", () => {
     expect(finalStatus([])).toBeUndefined();
   });
 
-  test("one summary line and the failures in full, when a step failed", () => {
+  test("a plan titled with the summary and the failures as error cards", () => {
     const view = finalStatus([step("a"), step("b", "error", "Run: gh pr view"), step("c")]);
     expect(view?.text).toBe("🔧 3 steps, 1 failed");
-    const text = (view?.blocks[0] as unknown as { elements: { text: string }[] }).elements[0]?.text;
-    expect(text).toBe("🔧 3 steps, 1 failed\n• Run: gh pr view");
+    const plan = planOf(view);
+    expect(plan.type).toBe("plan");
+    expect(plan.title).toBe("🔧 3 steps, 1 failed");
+    expect(plan.tasks.map((t) => [t.task_id, t.title, t.status])).toEqual([["b", "Run: gh pr view", "error"]]);
   });
 
   test("a lone failed step is kept, unlike a lone clean one", () => {
@@ -112,17 +124,11 @@ describe("what is left when the turn ends", () => {
     expect(finalStatus([step("a"), step("b", "in_progress")])).toBeUndefined();
   });
 
-  test("many long, escape-heavy failures stay under the block limit, the rest counted", () => {
-    const steps = Array.from({ length: 60 }, (_, i) => step(String(i), "error", `Run: a && b & <c> ${"&".repeat(120)}`));
-    const view = finalStatus(steps);
-    const text = (view?.blocks[0] as unknown as { elements: { text: string }[] }).elements[0]?.text ?? "";
-    expect(text.length).toBeLessThan(3_000);
-    expect(text.startsWith("🔧 60 steps, 60 failed")).toBe(true);
-    expect(text).toMatch(/_…and \d+ more failed_$/);
-  });
-
-  test("failure text is escaped", () => {
-    const view = finalStatus([step("a"), step("b", "error", "Run: <!channel>")]);
-    expect(JSON.stringify(view?.blocks)).not.toContain("<!channel>");
+  test("many failures are capped and the rest counted in the title", () => {
+    const steps = Array.from({ length: 60 }, (_, i) => step(String(i), "error", `Run: ${"&".repeat(300)}`));
+    const plan = planOf(finalStatus(steps));
+    expect(plan.tasks).toHaveLength(STATUS_TASKS_MAX);
+    expect(plan.tasks.every((t) => t.status === "error" && t.title.length <= STATUS_TITLE_CHARS)).toBe(true);
+    expect(plan.title).toBe(`🔧 60 steps, 60 failed (…and ${60 - STATUS_TASKS_MAX} more failed)`);
   });
 });
