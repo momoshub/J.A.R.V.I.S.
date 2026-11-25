@@ -631,7 +631,6 @@ export const createDashboardService = (p: DashboardPorts) => {
     return {
       name: profile.name,
       thinkingLabel: profile.thinkingLabel,
-      thinkingDoneLabel: profile.thinkingDoneLabel,
       persona: override ?? DEFAULT_PERSONALITY,
       usingDefault: override === undefined,
       defaultPersona: DEFAULT_PERSONALITY,
@@ -642,7 +641,6 @@ export const createDashboardService = (p: DashboardPorts) => {
   saveIdentity: (body: {
     readonly name: unknown;
     readonly thinkingLabel: unknown;
-    readonly thinkingDoneLabel: unknown;
     readonly prompt: unknown;
   }): Outcome<null> => {
     const name = text(body.name);
@@ -654,7 +652,6 @@ export const createDashboardService = (p: DashboardPorts) => {
       else p.settings.remove(key);
     };
     setOrClear(SETTING_KEYS.thinkingLabel, body.thinkingLabel);
-    setOrClear(SETTING_KEYS.thinkingDoneLabel, body.thinkingDoneLabel);
     const prompt = text(body.prompt);
     if (prompt) p.settings.set(SETTING_KEYS.systemPrompt, prompt);
     return done(null);

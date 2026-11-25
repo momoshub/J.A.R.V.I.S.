@@ -23,7 +23,7 @@ const ports = (over: Partial<DashboardPorts> = {}) => {
   const p: DashboardPorts = {
     ownerSlackId: OWNER,
     clock: () => 1_000_000,
-    profile: () => ({ name: "Bot", thinkingLabel: "thinking", thinkingDoneLabel: "done" }) as ReturnType<DashboardPorts["profile"]>,
+    profile: () => ({ name: "Bot", thinkingLabel: "thinking" }) as ReturnType<DashboardPorts["profile"]>,
     users: {
       get: (id) => users.get(id),
       list: () => [...users.values()],
@@ -180,13 +180,12 @@ describe("dashboard use cases", () => {
 
   test("saveIdentity requires a name, clears blank labels, keeps the prompt when blank", () => {
     const { app, settings } = ports();
-    expect(app.saveIdentity({ name: " ", thinkingLabel: "", thinkingDoneLabel: "", prompt: "" }).ok).toBe(false);
+    expect(app.saveIdentity({ name: " ", thinkingLabel: "", prompt: "" }).ok).toBe(false);
     settings.set(SETTING_KEYS.thinkingLabel, "old");
     settings.set(SETTING_KEYS.systemPrompt, "kept");
-    app.saveIdentity({ name: "Jay", thinkingLabel: " ", thinkingDoneLabel: "fin", prompt: "" });
+    app.saveIdentity({ name: "Jay", thinkingLabel: " ", prompt: "" });
     expect(settings.get(SETTING_KEYS.botName)).toBe("Jay");
     expect(settings.has(SETTING_KEYS.thinkingLabel)).toBe(false);
-    expect(settings.get(SETTING_KEYS.thinkingDoneLabel)).toBe("fin");
     expect(settings.get(SETTING_KEYS.systemPrompt)).toBe("kept");
     expect(app.identity()).toMatchObject({ persona: "kept", usingDefault: false });
     app.resetPrompt();

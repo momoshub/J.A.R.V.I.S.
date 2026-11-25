@@ -12,7 +12,6 @@ export const action = guard(async ({ request }) => {
     await post("identity", {
       name: fd.get("name"),
       thinkingLabel: fd.get("thinkingLabel"),
-      thinkingDoneLabel: fd.get("thinkingDoneLabel"),
       prompt: fd.get("prompt"),
     });
   return { ok: true };
@@ -39,10 +38,6 @@ export function IdentityPage() {
           <label>
             <span>thinking label (long messages)</span>
             <input name="thinkingLabel" defaultValue={id.thinkingLabel} />
-          </label>
-          <label>
-            <span>thinking done label</span>
-            <input name="thinkingDoneLabel" defaultValue={id.thinkingDoneLabel} />
           </label>
         </div>
         <label>

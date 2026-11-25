@@ -56,7 +56,6 @@ const schema = z
     // dashboard-managed DB settings take precedence, so the code stays generic.
     BOT_NAME: z.string().default("Assistant"),
     BOT_THINKING_LABEL: z.string().default("working on it..."),
-    BOT_THINKING_DONE_LABEL: z.string().default("✅"),
 
     // Command interfaces. COMMAND_PREFIX is the message trigger (e.g. "//bot" or
     // "X/jarvis"); SLASH_COMMAND is the Slack slash command registered in the app.
@@ -254,7 +253,6 @@ export type AppConfig = {
   inboxDatabasePath: string;
   botName: string;
   botThinkingLabel: string;
-  botThinkingDoneLabel: string;
   commandPrefix: string;
   slashCommand: string;
   llmProvider: LlmProvider;
@@ -349,7 +347,6 @@ export const loadConfig = (source: Record<string, string | undefined> = process.
     inboxDatabasePath: env.INBOX_DATABASE_PATH,
     botName: env.BOT_NAME,
     botThinkingLabel: env.BOT_THINKING_LABEL,
-    botThinkingDoneLabel: env.BOT_THINKING_DONE_LABEL,
     commandPrefix: env.COMMAND_PREFIX,
     slashCommand: env.SLASH_COMMAND,
     llmProvider: env.LLM_PROVIDER,

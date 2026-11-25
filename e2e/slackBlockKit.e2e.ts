@@ -76,7 +76,6 @@ describe.skipIf(!enabled)("Block Kit reply against real Slack", () => {
       streamUpdates: true,
       botName: "e2e",
       thinkingLabel: () => "thinking",
-      thinkingDoneLabel: () => "done",
       commandPrefix: "//e2e",
       slashCommand: "/e2e",
       thinkingAfterMs: 60_000,

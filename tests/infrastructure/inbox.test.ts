@@ -432,7 +432,6 @@ describe("a reply cut off by a restart", () => {
       streamUpdates: true,
       botName: "Bot",
       thinkingLabel: () => "..",
-      thinkingDoneLabel: () => "done",
       commandPrefix: "//bot",
       slashCommand: "/bot",
       inbox: inboxReceiver,

@@ -88,7 +88,7 @@ Required / notable env (see `.env.example`):
 | `STALE_PROMISE_INTERVAL_MS` / `STALE_PROMISE_MIN_AGE_MS` / `STALE_PROMISE_WINDOW_MS` / `STALE_PROMISE_MAX_NUDGES` | Stale-promise sweep (default every 15 min, a promise must be 30 min old, threads active in the last 24 h, at most 3 nudges per sweep; interval `0` turns it off). See "Stale promises" below. Each nudge is logged as `[stale-promise] ...` |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_MODEL` | required only when `LLM_PROVIDER=anthropic` |
 | `BOT_NAME` | bootstrap bot name for a fresh DB (default `Assistant`) |
-| `BOT_THINKING_LABEL` / `BOT_THINKING_DONE_LABEL` | bootstrap "thinking" step labels |
+| `BOT_THINKING_LABEL` | bootstrap "thinking" line label |
 | `COMMAND_PREFIX` | message command trigger (default `//bot`; legacy `!` always works) |
 | `SLASH_COMMAND` | Slack slash command to register (default `/bot`) |
 | `OWNER_SLACK_ID` | the owner, cannot be removed |

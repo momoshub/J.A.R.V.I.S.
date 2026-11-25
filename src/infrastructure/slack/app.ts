@@ -159,8 +159,6 @@ export type SlackAppConfig = {
   botName: string;
   /** Live label for the "thinking" step (read per message so edits apply). */
   thinkingLabel: () => string;
-  /** Not shown any more: the thinking line is part of the status message and goes away, it is no longer a card that flips to this label. Kept for the dashboard setting. */
-  thinkingDoneLabel: () => string;
   /** Silence before a thinking line appears; defaults to THINKING_AFTER_MS. */
   thinkingAfterMs?: number;
   /** How long a clean turn's status message stays after the turn ends; defaults to STATUS_DELETE_DELAY_MS. Tests shorten it. */
