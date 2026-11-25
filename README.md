@@ -291,13 +291,22 @@ takes the tools it lists as its baseline; a tool it lists later is hidden from
 every turn and refused if called until the owner runs `X/jv mcp-tools approve
 <server> <tool>` (`X/jv mcp-tools pending` lists what is waiting).
 
-**Code mode.** A full-access turn can call a tool from the shell instead of
+**Code mode.** A full-access turn can use a tool from the shell instead of
 loading its result into the conversation: `bun bin/mcp.ts list | search <query> |
-schema <server> <tool> | call <server> <tool> '<json>' [--fields a,b.c]`. A call
-starts the real server (the same command and env the bot uses), writes the whole
-result to a file under the temp directory and prints only its path, size, row
-count and a short head; `--fields` keeps only those dotted paths of a JSON result.
-It refuses a server or tool the turn's role may not use.
+schema <server> <tool> | call <server> <tool> '<json>' [--fields a,b.c] | types
+[<server>...] | run <file.ts | ->`. A call starts the real server (the same
+command and env the bot uses), writes the whole result to a file under the temp
+directory and prints only its path, size, row count and a short head; `--fields`
+keeps only those dotted paths of a JSON result. For many calls or a lot of data,
+`types` prints TypeScript declarations of the tools and `run` executes one script
+written against them in an isolate with no network, files, process or env (QuickJS
+compiled to WebAssembly): it sees only `mcp.<server>.<tool>(args)` and
+`console.log`, chains, loops and filters there, and only its final value and logs
+reach the context, as a file path and a short head. Credentials stay on the host;
+the script has a time (60s), memory (64 MB), tool-call (100) and output limit
+(`--timeout`, `--memory`, `--max-calls`). Both refuse a server or tool the turn's
+role may not use, check it again on every call a script makes, and honour the
+owner's tool approvals.
 
 ## Investigating
 
