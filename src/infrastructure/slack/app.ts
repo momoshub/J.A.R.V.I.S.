@@ -1309,9 +1309,11 @@ export const createSlackApp = (config: SlackAppConfig, deps: Deps) => {
   const acceptedBotIds = config.acceptedBotIds ?? [];
   // Caps how long two bots may answer each other in one thread; a person writing resets it.
   const botLoops = createBotLoopGuard();
+  // Keyed by channel too: thread timestamps are only unique within one.
+  const loopKey = (channel: string, threadTs: string): string => `${channel}:${threadTs}`;
   /** An accepted bot's message may be answered unless its thread already ran a full cap of bot turns. */
   const admitBotTurn = (channel: string, threadTs: string, user: string | undefined): boolean => {
-    const verdict = botLoops.admit(threadTs);
+    const verdict = botLoops.admit(loopKey(channel, threadTs));
     if (!verdict.ok) log(`bot skip channel=${channel} thread=${threadTs} user=${user}: ${verdict.reason}`);
     return verdict.ok;
   };
@@ -1480,9 +1482,10 @@ export const createSlackApp = (config: SlackAppConfig, deps: Deps) => {
     const e = event as { channel: string; user?: string; bot_id?: string; text: string; ts: string; thread_ts?: string };
     if (!e.user) return;
     // A person writing starts the run of bot turns over, muted or not.
-    if (!e.bot_id) botLoops.human(threadKeyOf(e));
+    if (!e.bot_id) botLoops.human(loopKey(e.channel, threadKeyOf(e)));
     const ownId = e.bot_id && acceptedBotIds.length ? await deps.slack?.botUserId().catch(ignoreQuietly("bot user id lookup")) : undefined;
-    const mentionBot = !!ownId && isAcceptedBot(e, acceptedBotIds, ownId);
+    // Bolt already drops the bot's own events, so an unknown own id does not unaccept a tag.
+    const mentionBot = isAcceptedBot(e, acceptedBotIds, ownId);
     if (mutedAway(deps.mutes, config.commandPrefix, e.channel, threadKeyOf(e), e.text)) {
       log(`mute drop channel=${e.channel} thread=${threadKeyOf(e)} user=${e.user}: tagged`);
       return;
@@ -2158,7 +2161,7 @@ export const createSlackApp = (config: SlackAppConfig, deps: Deps) => {
     // question whoever it was asked of.
     if (m.user && asPerson && isSpeech(m.subtype)) void retireOnReply(client, m);
     // Only an actual person ends a run of bot turns, not another bot's post.
-    if (m.user && !m.bot_id && isSpeech(m.subtype)) botLoops.human(threadKeyOf(m));
+    if (m.user && !m.bot_id && isSpeech(m.subtype)) botLoops.human(loopKey(m.channel, threadKeyOf(m)));
     if (!shouldHandleDm(m, viaBot ? acceptedBotIds : [])) {
       // Three ways a thread is one it keeps up with, tag or no tag. It OPENED
       // this one - it started the conversation, so it is expected to follow

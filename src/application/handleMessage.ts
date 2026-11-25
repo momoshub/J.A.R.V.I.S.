@@ -816,6 +816,9 @@ const loadThread = async (
       createdAt: Math.round(Number(m.ts) * 1000) || 0,
       slackTs: m.ts,
       threadTs: inbound.threadTs,
+      // A bot post that carries a user is a bot speaking for that person (`ACCEPTED_BOT_IDS`);
+      // the trigger itself is marked from what the intake decided.
+      ...((m.bot && m.userId && !m.own) || (m.ts === inbound.messageTs && inbound.viaBot) ? { viaBot: true } : {}),
     }));
   const turns = endAtTrigger(read, inbound.messageTs);
 
@@ -830,6 +833,7 @@ const loadThread = async (
       createdAt: deps.clock(),
       slackTs: inbound.messageTs ?? "",
       threadTs: inbound.threadTs,
+      ...(inbound.viaBot ? { viaBot: true } : {}),
     });
   }
   return turns;
