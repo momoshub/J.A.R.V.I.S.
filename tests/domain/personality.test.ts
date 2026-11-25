@@ -115,6 +115,7 @@ describe("buildSystemPrompt", () => {
     expect(p).toContain('- ts 1.1 - from <@U1>: "shipped it"');
     expect(p).toContain('- ts 2.2 - from <@U2>: "nice one"');
     expect(p).toContain("Several emoji on one message are good");
+    expect(p).toContain("end it with exactly NO_REPLY");
   });
 
   test("a reactable message an allowlisted bot posted is marked via bot", () => {
@@ -130,11 +131,11 @@ describe("buildSystemPrompt", () => {
     expect(p).toContain('- ts 2.2 - from <@U1> (via bot): "by the bot"');
   });
 
-  test("reactions are encouraged, silent, and never a substitute for replying", () => {
+  test("reactions are encouraged, silent, and never a substitute for an owed answer", () => {
     const p = buildSystemPrompt({ channelId: "C1", reactScript: "/bin/react.sh", reactable: [{ ts: "1.1", speakerId: "U1", excerpt: "hi" }] });
     expect(p).toContain("React often");
     expect(p).toContain("lean towards yes");
-    expect(p).toContain("a reaction never replaces the reply");
+    expect(p).toContain("a reaction never replaces an answer that is owed");
     expect(p).toContain("never announce, describe or list the reactions you added");
   });
 
