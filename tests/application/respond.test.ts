@@ -12,7 +12,9 @@ import { createWatchRepo } from "../../src/infrastructure/db/watchRepo.ts";
 import { tellPrompt } from "../../src/domain/tellPrompt.ts";
 import { createCommandTickets } from "../../src/application/commandTickets.ts";
 import type { SlackAdminPort } from "../../src/application/slackAdmin.ts";
-import type { LlmPort } from "../../src/application/ports.ts";
+import type { BillingContext, LlmPort } from "../../src/application/ports.ts";
+import { slackTicketContext } from "../../src/application/slackTickets.ts";
+import { checkSlackCall } from "../../src/domain/slackProxy.ts";
 import { seededBook } from "../../src/domain/roleSeed.ts";
 import { staticBook } from "../../src/domain/roles.ts";
 import { disabledRoleOf, enforceRolePolicies } from "../../src/application/rolePolicies.ts";
@@ -935,6 +937,33 @@ describe("a turn started by a watch can actually DO things", () => {
     expect(bills[0]).not.toHaveProperty("ownMessage");
     expect(bills[1]).toMatchObject({ ownMessage: true });
     expect(bills[1]).not.toHaveProperty("watchGrant");
+  });
+
+  test("a followed thread's untagged message gets the owner bit only when the owner alone wrote it, so it may chat.update the bot's own message elsewhere", async () => {
+    const { deps } = build2();
+    const bills: BillingContext[] = [];
+    const llm = { complete: async (p: { bill?: BillingContext }) => (bills.push(p.bill!), "ok") };
+    const spy = { ...deps, llm } as typeof deps;
+    const followed = { ...fired, slackUserId: OWNER, trigger: undefined, following: true };
+    // the owner's own untagged message
+    await respond(spy, { ...followed, threadTs: "9.7", messageTs: "9.7", humanMessages: [{ userId: OWNER, text: "x", messageTs: "9.7" }] });
+    // the owner's buffered batch, all of it theirs
+    await respond(spy, { ...followed, batched: true, threadTs: "9.8", messageTs: "9.9", humanMessages: [{ userId: OWNER, text: "a", messageTs: "9.8" }, { userId: OWNER, text: "b", messageTs: "9.9" }] });
+    // a batch with somebody else's words in it, and a followed turn with no record of who typed it
+    await respond(spy, { ...followed, batched: true, threadTs: "9.10", messageTs: "9.11", humanMessages: [{ userId: OWNER, text: "a", messageTs: "9.10" }, { userId: "U0PAL0001", text: "b", messageTs: "9.11" }] });
+    await respond(spy, { ...followed, threadTs: "9.12", messageTs: "9.12" });
+    // a run the bot started never counts, whatever else it carries
+    await respond(spy, { ...fired, slackUserId: OWNER, unprompted: true, trigger: "watch", following: true, threadTs: "9.13", messageTs: "9.13", humanMessages: [{ userId: OWNER, text: "x", messageTs: "9.13" }] });
+    expect(bills.map((b) => b.ownMessage === true)).toEqual([true, true, false, false, false]);
+
+    // the first one is the Slack ticket's owner bit, and with it the cross-channel own-message update passes (the proxy then checks the bot wrote it)
+    const ctx = slackTicketContext(bills[0], undefined, OWNER)!;
+    expect(ctx.owner).toBe(true);
+    const away = { channel: "C0OTHER0001", ts: "77.7", text: "fixed" };
+    const call = checkSlackCall("chat.update", away, ctx);
+    expect(call.ok && call.ownMessageIn).toEqual({ channel: "C0OTHER0001", ts: "77.7" });
+    // a followed turn that is not the owner's stays in its channel
+    expect(checkSlackCall("chat.update", away, slackTicketContext(bills[2], undefined, OWNER)!).ok).toBe(false);
   });
 
   test("and it is told how, so it does not hand the job back", async () => {
