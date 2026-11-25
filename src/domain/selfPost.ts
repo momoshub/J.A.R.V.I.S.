@@ -8,6 +8,10 @@
  * message into its own thread, its closing reply is dropped, unless the turn
  * opts in with `KEEP_REPLY` on a line of its own (or as the closing token) in that reply.
  *
+ * One exception, because losing the answer is the worst failure: a short plain line (a progress update on a long
+ * job) is not an answer. When every message the turn posted is such a line, next to a clearly longer closing
+ * reply, the reply is kept as if it carried the marker (`isProgressPost`).
+ *
  * Pure: no I/O. The record of what a turn posted lives in `application/selfPosts.ts`.
  */
 
@@ -15,9 +19,30 @@
  * One message the turn put into its own thread. `rich` is set once it carried blocks or attachments (a board, buttons):
  * such a message is never overwritten by the closing reply, and the flag stays even if a later update is plain text.
  */
-export type SelfPost = { readonly ts: string; readonly rich?: true };
+export type SelfPost = {
+  readonly ts: string;
+  readonly rich?: true;
+  /** Length of the plain `text` as last posted or updated; unknown (absent) counts as answer-sized. */
+  readonly len?: number;
+};
+
+/** A progress line stays short: a post longer than this is an answer, whatever the closing reply looks like. */
+export const PROGRESS_POST_MAX_CHARS = 280;
+/** And it is clearly smaller than the closing reply: the post must be under 1/this of the reply, so a reworded copy of a short answer is never mistaken for progress. */
+export const PROGRESS_REPLY_RATIO = 2;
+
+/** Is this post a progress line next to a closing reply of `replyLen` chars: plain, short, and clearly shorter than the reply? */
+export const isProgressPost = (post: SelfPost, replyLen: number): boolean =>
+  !post.rich && post.len !== undefined && post.len <= PROGRESS_POST_MAX_CHARS && post.len * PROGRESS_REPLY_RATIO < replyLen;
+
+/** The plain body of a call (`text`, else Slack's `markdown_text`); undefined when it sends neither, so its length stays unknown, never 0. */
+const bodyLength = (params: Readonly<Record<string, string>>): number | undefined => {
+  const body = params.text ?? params.markdown_text;
+  return body === undefined ? undefined : body.trim().length;
+};
 
 const hasContent = (raw: string | undefined): boolean => raw !== undefined && raw.trim() !== "" && raw.trim() !== "[]";
+const lenField = (len: number | undefined): { readonly len?: number } => (len !== undefined ? { len } : {});
 const isRich = (params: Readonly<Record<string, string>>): boolean => hasContent(params.blocks) || hasContent(params.attachments);
 
 /** The call a turn made, as the proxy saw it: the checked params and Slack's answer. */
@@ -106,10 +131,19 @@ export const stripKeepMarkerFromCall = (method: string, params: Readonly<Record<
  * `text`, or `drop` it. The marker is an instruction to the bot, so it is
  * stripped whenever it is there, posts or not, and a reply that was only the
  * marker says nothing and is dropped. Without the marker, a turn with a post
- * of its own drops and a turn that posted nothing sends the reply as it is.
+ * of its own drops, unless every post was a progress line (`implicit: true`, sent
+ * like a marked reply), and a turn that posted nothing sends the reply as it is.
  */
-export const closingReply = (reply: string, posts: readonly SelfPost[]): { readonly kind: "send"; readonly text: string } | { readonly kind: "drop" } => {
-  if (!hasKeepMarker(reply)) return posts.length > 0 ? { kind: "drop" } : { kind: "send", text: reply };
+export const closingReply = (
+  reply: string,
+  posts: readonly SelfPost[],
+): { readonly kind: "send"; readonly text: string; readonly implicit?: true } | { readonly kind: "drop" } => {
+  if (!hasKeepMarker(reply)) {
+    if (posts.length === 0) return { kind: "send", text: reply };
+    // every post of the turn is a progress line: the reply is the answer, kept as if it carried the marker
+    const replyLen = reply.trim().length;
+    return posts.every((p) => isProgressPost(p, replyLen)) ? { kind: "send", text: reply, implicit: true } : { kind: "drop" };
+  }
   const text = stripKeepMarker(reply);
   return text ? { kind: "send", text } : { kind: "drop" };
 };
@@ -193,13 +227,18 @@ export const applySelfPostCall = (posts: readonly SelfPost[], call: SelfPostCall
   if (!answer.ok) return posts;
   if (call.method === "chat.postMessage") {
     if (call.params.thread_ts !== threadTs || !answer.ts) return posts;
-    return posts.some((p) => p.ts === answer.ts) ? posts : [...posts, { ts: answer.ts, ...(isRich(call.params) ? { rich: true as const } : {}) }];
+    return posts.some((p) => p.ts === answer.ts) ? posts : [...posts, { ts: answer.ts, ...lenField(bodyLength(call.params)), ...(isRich(call.params) ? { rich: true as const } : {}) }];
   }
   if (call.method === "chat.update") {
     const ts = call.params.ts;
     // an update of a message this turn posted keeps the turn marked as having posted, and blocks make it rich for good
     if (!ts || !posts.some((p) => p.ts === ts)) return posts;
-    return posts.map((p) => (p.ts === ts && isRich(call.params) ? { ts: p.ts, rich: true as const } : p));
+    // an update that sends a body (`text` or `markdown_text`) refreshes the length (a progress line grown into the answer stops being one); one without leaves it
+    return posts.map((p) => {
+      if (p.ts !== ts) return p;
+      const len = bodyLength(call.params) ?? p.len;
+      return { ts: p.ts, ...lenField(len), ...(p.rich || isRich(call.params) ? { rich: true as const } : {}) };
+    });
   }
   return posts;
 };

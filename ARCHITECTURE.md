@@ -107,12 +107,16 @@ no classes.
   `conversations.replies`) and finds its own user id as the author; anything else
   there is refused, and the call is logged with the channel and ts. A turn a `watch` fired is not an owner's turn, but a watch the owner created in their own turn carries a grant instead (`domain/writeTargets.ts`): `chat.postMessage`, `reactions.add` and `files.completeUploadExternal` may name another channel only when it is one of the targets that turn named (`watch --to`, a link or channel in the request or in the owner's message), a thread target holds the write to that thread, everything else is refused as in any non-owner turn, and a grant write is logged with the watch id. A fired watch turn that sets the next watch (a re-arm) inherits that grant as a subset (`watchGrant` on the command ticket, `watches.parent_watch_id` for the audit trail): the same targets or fewer, `--to` can only narrow, text adds nothing, never the owner bit, and the chain as a whole never outlives one watch's 30 days (counted from its first watch) nor fans out past 5 waiting children per fired watch. The command door is shut the same way: the command ticket of a turn a watch fired says so (`watch: true`), and the run bridge refuses every owner-only command in it (`firedByWatch` in `dispatchCommand`). A post or update that lands in the turn's own thread is also
   noted per turn (`selfPosts`, keyed by the turn's run ticket carried on the Slack
-  ticket) and the answer handed back carries a `jarvis_note` saying the closing reply
-  will be dropped, and how to add something (`chat.update` the post and fold the
+  ticket, with the plain text length of each post, refreshed by a `chat.update` of it) and the answer handed back carries a `jarvis_note` saying the closing reply
+  will be dropped if that post is the answer, and how to add something (`chat.update` the post and fold the
   later part in; a `KEEP_REPLY` line in the closing reply replaces the turn's single
   text post). The Slack handler then sends no closing reply for that turn unless it
   carries the marker (`domain/selfPost.ts`); the drop is logged with thread and
-  length. With the marker and exactly one plain text post of the turn (no blocks or
+  length. One exception keeps the answer from vanishing: when EVERY post of the turn is a
+  progress line (plain, at most `PROGRESS_POST_MAX_CHARS` = 280 chars, and under 1/`PROGRESS_REPLY_RATIO`
+  = half of the closing reply's length, `isProgressPost`), the reply is kept as if it carried
+  the marker (logged `closing reply kept, the turn's own posts were progress lines`). One
+  rich, answer-sized or unknown-length post keeps the drop (a post's length is its `text`, else `markdown_text`; neither means unknown). Known trade-off: a short real answer post followed by a reply more than twice as long that is only meta is read as progress, and with a single post the reply then replaces it. With the marker (or that implicit keep) and exactly one plain text post of the turn (no blocks or
   attachments, no upload, `replaceableSelfPost`) the reply is written onto that post
   with `chat.update` (footer included) and the stream messages go, so one ask stays
   one message; with several posts, a rich post, an upload or a refused update it is

@@ -934,7 +934,8 @@ describe("createHandler streaming truth table", () => {
 
     test("any other closing reply is dropped as well, a correction without the marker included", async () => {
       const selfPosts = createSelfPosts();
-      const r = turnBuild(selfPosts, postingLlm(selfPosts, "Staging is green.", CORRECTION, [card, { type: "text", delta: CORRECTION }]));
+      // the post is answer-sized (over the progress cap): a short one would be a progress line, and the reply kept
+      const r = turnBuild(selfPosts, postingLlm(selfPosts, ANSWER, CORRECTION, [card, { type: "text", delta: CORRECTION }]));
       await r.handle(r.msg("is staging green", "000.9"));
       expect(r.deletes).toEqual(["222.2"]);
       expect(r.updates).toHaveLength(0);
@@ -951,6 +952,78 @@ describe("createHandler streaming truth table", () => {
       expect(r.deletes).toContain("222.2");
       expect(r.updates).toHaveLength(0);
       expect(r.said).toHaveLength(0);
+    });
+
+    test("an answer-sized post, a rich post, or a post grown to answer size: the closing reply is dropped", async () => {
+      const selfPosts = createSelfPosts();
+      const grown: LlmPort = {
+        complete: async () => ANSWER,
+        stream: async (p, sink) => {
+          if (p.runTicket) {
+            selfPost(selfPosts, p.runTicket, "đang đối chiếu root cause", "000.9", "333.3");
+            selfPosts.record(p.runTicket, "000.9", { method: "chat.update", params: { channel: "C1", ts: "333.3", text: ANSWER }, answer: JSON.stringify({ ok: true, ts: "333.3" }) });
+          }
+          sink({ type: "text", delta: ANSWER });
+          return ANSWER;
+        },
+      };
+      const g = turnBuild(selfPosts, grown);
+      await g.handle(g.msg("why is checkout slow", "000.9"));
+      expect(g.updates).toHaveLength(0);
+      expect(g.said).toHaveLength(0);
+      expect(g.logs.some((l) => l.includes("closing reply dropped"))).toBe(true);
+      const richPosts = createSelfPosts();
+      const rich: LlmPort = {
+        complete: async () => ANSWER,
+        stream: async (p, sink) => {
+          if (p.runTicket)
+            richPosts.record(p.runTicket, "000.9", {
+              method: "chat.postMessage",
+              params: { channel: "C1", thread_ts: "000.9", text: "đang chạy", blocks: JSON.stringify([{ type: "divider" }]) },
+              answer: JSON.stringify({ ok: true, ts: "333.3" }),
+            });
+          sink({ type: "text", delta: ANSWER });
+          return ANSWER;
+        },
+      };
+      const r = turnBuild(richPosts, rich);
+      await r.handle(r.msg("why is checkout slow", "000.9"));
+      expect(r.updates).toHaveLength(0);
+      expect(r.said).toHaveLength(0);
+    });
+
+    test("a progress line then the answer: the answer replaces the progress post, one message, logged as an implicit keep", async () => {
+      const selfPosts = createSelfPosts();
+      const PROGRESS = "đang đối chiếu root cause, tìm xem query tile nằm ở đâu";
+      const r = turnBuild(selfPosts, postingLlm(selfPosts, PROGRESS, ANSWER, [card, { type: "text", delta: ANSWER }]));
+      await r.handle(r.msg("why is checkout slow", "000.9"));
+      expect(r.deletes).toEqual(["222.2"]);
+      expect(r.said).toHaveLength(0);
+      expect(r.updates).toHaveLength(1);
+      expect(r.updates[0]).toMatchObject({ ts: "333.3" });
+      expect(String(r.updates[0]?.text)).toContain("orders query");
+      expect(r.logs.some((l) => l.includes("closing reply kept, the turn's own posts were progress lines"))).toBe(true);
+      expect(r.logs.some((l) => l.includes("closing reply dropped"))).toBe(false);
+    });
+
+    test("several progress lines then the answer: the answer is sent as a message of its own", async () => {
+      const selfPosts = createSelfPosts();
+      const llm: LlmPort = {
+        complete: async () => ANSWER,
+        stream: async (p, sink) => {
+          if (p.runTicket) {
+            selfPost(selfPosts, p.runTicket, "đang đọc log", "000.9", "333.3");
+            selfPost(selfPosts, p.runTicket, "đang đối chiếu root cause", "000.9", "333.4");
+          }
+          sink({ type: "text", delta: ANSWER });
+          return ANSWER;
+        },
+      };
+      const r = turnBuild(selfPosts, llm);
+      await r.handle(r.msg("why is checkout slow", "000.9"));
+      expect(r.updates.map((u) => u.ts)).toEqual(["222.2"]);
+      expect(r.deletes).toHaveLength(0);
+      expect(r.logs.some((l) => l.includes("closing reply kept, the turn's own posts were progress lines"))).toBe(true);
     });
 
     test("with the KEEP_REPLY marker the correction is sent, the marker stripped", async () => {

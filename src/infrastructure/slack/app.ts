@@ -571,7 +571,8 @@ export const createHandler =
       if (!streamed) await dropQuiet(msg, (stream?.orphans ?? []).map((ts) => ({ ts })), log);
       // A turn that posted its answer into this thread itself does not stream a closing reply: every
       // stream message goes, the messages the turn posted are never touched. Only the posts of THIS turn
-      // count (keyed by its run ticket). The turn keeps its reply by putting KEEP_REPLY on a line of it.
+      // count (keyed by its run ticket). The turn keeps its reply by putting KEEP_REPLY on a line of it, or
+      // implicitly when every post of the turn was only a short progress line (the answer is never swallowed by one).
       // A turn that closed with NO_REPLY is dropped too, even when its stream already shows some narration.
       const posted = result.kind === "reply" && result.turn ? (deps.selfPosts?.posts(result.turn) ?? []) : [];
       const closing = closingReply(result.text, posted);
@@ -580,6 +581,9 @@ export const createHandler =
           log(`closing reply dropped, the turn posted its own answer channel=${msg.channelId} thread=${msg.threadTs} length=${result.text.length}`);
         }
         return dropQuiet(msg, parts, log);
+      }
+      if (closing.implicit) {
+        log(`closing reply kept, the turn's own posts were progress lines channel=${msg.channelId} thread=${msg.threadTs} length=${result.text.length}`);
       }
       const replyText = closing.text;
       const fail = (e: unknown) => log(`collapse failed: ${e instanceof Error ? e.message : String(e)}`);
@@ -637,10 +641,10 @@ export const createHandler =
         }
         return true;
       };
-      // KEEP_REPLY after exactly one plain text post of the turn: one ask is one message, so the closing reply
+      // KEEP_REPLY (or the implicit keep after progress lines) after exactly one plain text post of the turn: one ask is one message, so the closing reply
       // takes the place of that post (footer included) and the stream messages go. Several posts, a post with
       // blocks, an upload, or an update Slack refuses: the reply is sent as its own message, as before.
-      const replaceable = result.kind === "reply" && result.turn && hasKeepMarker(result.text) ? replaceableSelfPost(posted, deps.selfPosts?.uploaded(result.turn) ?? false) : undefined;
+      const replaceable = result.kind === "reply" && result.turn && (hasKeepMarker(result.text) || closing.implicit) ? replaceableSelfPost(posted, deps.selfPosts?.uploaded(result.turn) ?? false) : undefined;
       if (replaceable) {
         const replaced = await updateTidy(replaceable.ts, replyText, true)
           .then(() => true)

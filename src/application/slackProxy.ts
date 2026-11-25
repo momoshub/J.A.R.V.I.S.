@@ -56,10 +56,10 @@ export type SlackProxyDeps = {
 
 /**
  * Added to Slack's answer when the turn has just put a message into its own
- * thread. The Slack handler drops the closing reply of such a turn, and a tool
- * result right after the post is read at the moment it matters.
+ * thread. The Slack handler drops the closing reply of such a turn (unless every post
+ * was a short progress line), and a tool result right after the post is read at the moment it matters.
  */
-export const SELF_POST_NOTE = `this message is now in the thread the turn runs in. One ask is one message: your closing reply will be dropped, not posted. To add or correct something, chat.update the message you posted and fold it in. If this is your only text post, a line ${KEEP_REPLY} in the closing reply replaces it with that reply (the line itself is not shown); never post a second message next to it`;
+export const SELF_POST_NOTE = `this message is now in the thread the turn runs in. One ask is one message: if this is your answer, your closing reply will be dropped, not posted; to add or correct something, chat.update the message you posted and fold it in. A short progress line (a few sentences at most) is not an answer: when every post of yours is one and the closing reply is clearly longer, the closing reply is posted, and if this is your only post it replaces it. A line ${KEEP_REPLY} in the closing reply is the explicit way to keep it (the line itself is not shown); never post a second message next to it`;
 
 /** Slack's own fields untouched, `jarvis_note` added. A body that is not a JSON object is left as it is. */
 const withSelfPostNote = (body: string): string => {
