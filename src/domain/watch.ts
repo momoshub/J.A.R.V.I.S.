@@ -257,8 +257,13 @@ export const parseWatchArgs = (rest: string): WatchArgs => {
       pastWait = true;
       continue;
     }
-    if (kind === "reply" && w === "from" && words[i + 1]) {
-      from = (words[++i] ?? "").replace(/^<@|>$/g, "").split("|")[0];
+    // `from <@U…>` only counts straight after the thread link and only with a
+    // real mention: "reply <link> ask from the top" once made "the" the author,
+    // and that watch could never fire.
+    const mention = /^<@([UW][A-Z0-9]+)(?:\|[^>]*)?>$/.exec(words[i + 1] ?? "");
+    if (kind === "reply" && from === undefined && kept.length === 0 && w === "from" && mention) {
+      from = mention[1];
+      i++;
       continue;
     }
     if (w === "--to") {
