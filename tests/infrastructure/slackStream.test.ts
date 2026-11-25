@@ -1,5 +1,24 @@
 import { describe, expect, test } from "bun:test";
-import { VISIBLE_STEP_SLOTS, createSlackStream, rolloverCut, type Streamer } from "../../src/infrastructure/slack/stream.ts";
+import { createSlackStream, rolloverCut, type Streamer } from "../../src/infrastructure/slack/stream.ts";
+import type { StatusMessage } from "../../src/infrastructure/slack/statusMessage.ts";
+import type { StatusStep } from "../../src/domain/statusSteps.ts";
+
+type StatusEvent = { kind: "step"; step: StatusStep } | { kind: "thinking"; label: string | undefined } | { kind: "end"; discard: boolean };
+
+/** A status message that only records what the stream told it. */
+const stubStatus = () => {
+  const events: StatusEvent[] = [];
+  const status: StatusMessage = {
+    step: (step) => void events.push({ kind: "step", step }),
+    thinking: (label) => void events.push({ kind: "thinking", label }),
+    steps: [],
+    posted: false,
+    end: async (o) => void events.push({ kind: "end", discard: o?.discard === true }),
+    idle: async () => {},
+  };
+  const steps = () => events.flatMap((e) => (e.kind === "step" ? [e.step] : []));
+  return { status, events, steps };
+};
 
 type Call = { markdown_text?: string; chunks?: unknown[] };
 
@@ -43,9 +62,10 @@ describe("createSlackStream", () => {
     expect(s.parts.map((p) => p.text).join("")).not.toContain("KEEP_REPLY");
   });
 
-  test("streams text and tool cards, then stops", async () => {
+  test("streams the text; the tool steps go to the status message, never into the stream", async () => {
     const f = fakeStreamer();
-    const s = createSlackStream(f.make);
+    const st = stubStatus();
+    const s = createSlackStream(f.make, () => {}, { status: st.status });
     s.sink({ type: "text", delta: "Hello " });
     s.sink({ type: "tool", id: "t1", title: "Run: 🏃 Listing files", details: "log at: l.jsonl - line 4", status: "in_progress" });
     s.sink({ type: "tool", id: "t1", title: "Run: 🏃 Listing files", status: "complete" });
@@ -54,32 +74,60 @@ describe("createSlackStream", () => {
     expect(ok).toBe(true);
     expect(s.started).toBe(true);
     expect(f.stopped()).toBe(1);
-    expect(f.appends[0]).toEqual({ markdown_text: "Hello " });
-    const toolCall = f.appends[1] as { chunks: Array<Record<string, unknown>> };
-    expect(toolCall.chunks[0]).toMatchObject({
-      type: "task_update",
-      id: "t1",
-      title: "Run: 🏃 Listing files · log line 4",
-      status: "in_progress",
-      details: "log at: l.jsonl",
-    });
-    expect(f.appends[3]).toEqual({ markdown_text: "world" });
+    // no task_update card (or any chunk) in the answer's stream
+    expect(f.appends).toEqual([{ markdown_text: "Hello " }, { markdown_text: "world" }]);
+    expect(st.steps()).toEqual([
+      { id: "t1", title: "Run: 🏃 Listing files", state: "in_progress", logLine: "4" },
+      { id: "t1", title: "Run: 🏃 Listing files", state: "complete" },
+    ]);
   });
 
-  test("a repeated step with a different log line per call still shares one card", async () => {
+  test("a turn that only ran tools opens no stream, so the caller posts its reply", async () => {
+    const f = fakeStreamer();
+    const st = stubStatus();
+    const s = createSlackStream(f.make, () => {}, { status: st.status });
+    s.sink({ type: "tool", id: "t1", title: "Reading a file", status: "in_progress" });
+    s.sink({ type: "tool", id: "t1", title: "Reading a file", status: "complete" });
+    expect(await s.finish()).toBe(false);
+    expect(f.made()).toBe(0);
+    expect(s.started).toBe(false);
+    expect(st.steps()).toHaveLength(2);
+  });
+
+  test("finish leaves the status message to the caller, which knows whether the reply is kept", async () => {
+    const f = fakeStreamer();
+    const st = stubStatus();
+    const s = createSlackStream(f.make, () => {}, { status: st.status });
+    s.sink({ type: "tool", id: "t1", title: "Reading a file", status: "complete" });
+    s.sink({ type: "text", delta: "hi" });
+    await s.finish();
+    expect(st.events.map((e) => e.kind)).toEqual(["step"]);
+  });
+
+  test("without a status message the steps are simply not shown, and the answer streams on", async () => {
     const f = fakeStreamer();
     const s = createSlackStream(f.make);
+    s.sink({ type: "tool", id: "t1", title: "Reading a file", status: "in_progress" });
+    s.sink({ type: "text", delta: "hi" });
+    expect(await s.finish()).toBe(true);
+    expect(f.appends).toEqual([{ markdown_text: "hi" }]);
+  });
+
+  test("a repeated step with a different log line per call still shares one line", async () => {
+    const f = fakeStreamer();
+    const st = stubStatus();
+    const s = createSlackStream(f.make, () => {}, { status: st.status });
     s.sink({ type: "tool", id: "t1", title: "Tool: 📖 Reading a file", details: "log at: l.jsonl - line 3", status: "in_progress" });
     s.sink({ type: "tool", id: "t2", title: "Tool: 📖 Reading a file", details: "log at: l.jsonl - line 9", status: "in_progress" });
     await s.finish();
-    const calls = f.appends.flatMap((a) => (a as { chunks?: Array<Record<string, unknown>> }).chunks ?? []);
-    expect(calls.map((c) => c.id)).toEqual(["t1", "t1"]);
-    expect(calls[1]).toMatchObject({ title: "Tool: 📖 Reading a file (2 runs) · log line 3" });
+    expect(st.steps().map((x) => x.id)).toEqual(["t1", "t1"]);
+    expect(st.steps()[1]).toMatchObject({ title: "Tool: 📖 Reading a file (2 runs)", logLine: "3" });
   });
 
-  test("repeats of the same step share one card that counts the runs", async () => {
+  test("repeats of the same step share one line that counts the runs", async () => {
     const f = fakeStreamer();
-    const s = createSlackStream(f.make);
+    const st = stubStatus();
+    const s = createSlackStream(f.make, () => {}, { status: st.status });
     s.sink({ type: "tool", id: "t1", title: "Querying a database", status: "in_progress" });
     s.sink({ type: "tool", id: "t1", title: "Querying a database", status: "complete" });
     s.sink({ type: "tool", id: "t2", title: "Querying a database", status: "in_progress" });
@@ -88,8 +136,7 @@ describe("createSlackStream", () => {
     s.sink({ type: "tool", id: "t3", title: "Querying a database", status: "error" });
     s.sink({ type: "tool", id: "t4", title: "Run: 🏃 Listing files", status: "in_progress" });
     await s.finish();
-    const cards = f.appends.flatMap((a) => (a.chunks ?? []) as Array<Record<string, unknown>>);
-    expect(cards.map((c) => [c.id, c.title, c.status])).toEqual([
+    expect(st.steps().map((c) => [c.id, c.title, c.state])).toEqual([
       ["t1", "Querying a database", "in_progress"],
       ["t1", "Querying a database", "complete"],
       ["t1", "Querying a database (2 runs)", "in_progress"],
@@ -101,18 +148,17 @@ describe("createSlackStream", () => {
 
   test("different titles are different steps, whatever log line they point at", async () => {
     const f = fakeStreamer();
-    const s = createSlackStream(f.make);
+    const st = stubStatus();
+    const s = createSlackStream(f.make, () => {}, { status: st.status });
     const sql = "MCP: 🔌 acme-pg-prod execute_sql";
     s.sink({ type: "tool", id: "q1", title: sql, details: "log at: l.jsonl - line 1", status: "in_progress" });
     s.sink({ type: "tool", id: "q2", title: "Tool: 📖 Reading a file", details: "log at: l.jsonl - line 5", status: "in_progress" });
     s.sink({ type: "tool", id: "q3", title: sql, details: "log at: l.jsonl - line 9", status: "in_progress" });
     await s.finish();
-    const cards = f.appends.flatMap((a) => (a.chunks ?? []) as Array<Record<string, unknown>>);
-    expect(cards.map((c) => [c.id, c.title, c.details])).toEqual([
-      ["q1", `${sql} · log line 1`, "log at: l.jsonl"],
-      ["q2", "Tool: 📖 Reading a file · log line 5", "log at: l.jsonl"],
-      // the pointer is on the card already: Slack appends details, so it is not sent again
-      ["q1", `${sql} (2 runs) · log line 1`, undefined],
+    expect(st.steps().map((c) => [c.id, c.title, c.logLine])).toEqual([
+      ["q1", sql, "1"],
+      ["q2", "Tool: 📖 Reading a file", "5"],
+      ["q1", `${sql} (2 runs)`, "1"],
     ]);
   });
 
@@ -181,47 +227,37 @@ describe("createSlackStream", () => {
     expect(await s.finish()).toBe(false);
   });
 
-  test("shows a thinking step first and completes it on the first content", async () => {
+  test("shows a thinking line first and takes it away on the first content", async () => {
     const f = fakeStreamer();
-    const s = createSlackStream(f.make);
+    const st = stubStatus();
+    const s = createSlackStream(f.make, () => {}, { status: st.status });
     s.showThinking("☄️ burning acme token..");
     s.sink({ type: "text", delta: "Hi" });
     const ok = await s.finish();
     expect(ok).toBe(true);
-
-    const chunks = f.appends
-      .filter((c) => "chunks" in c)
-      .map((c) => (c as { chunks: Array<Record<string, unknown>> }).chunks[0]!);
-    // thinking in_progress, then thinking complete, before the text append
-    expect(chunks[0]).toMatchObject({ id: "__thinking__", status: "in_progress" });
-    expect(chunks[0]!.title).toContain("burning acme token");
-    expect(chunks[1]).toMatchObject({ id: "__thinking__", status: "complete" });
-    const textIdx = f.appends.findIndex((c) => "markdown_text" in c);
-    const thinkingDoneIdx = f.appends.findIndex(
-      (c) => "chunks" in c && (c as { chunks: Array<{ status: string }> }).chunks[0]!.status === "complete",
-    );
-    expect(thinkingDoneIdx).toBeLessThan(textIdx);
+    expect(st.events.slice(0, 2)).toEqual([
+      { kind: "thinking", label: "☄️ burning acme token.." },
+      { kind: "thinking", label: undefined },
+    ]);
+    // it lives in the status message: the answer's stream carries only the text
+    expect(f.appends).toEqual([{ markdown_text: "Hi" }]);
   });
 
-  test("showThinking without any content finishes as not-shown", async () => {
+  test("showThinking without any content finishes as not-shown, and the line is taken away", async () => {
     const f = fakeStreamer();
-    const s = createSlackStream(f.make);
+    const st = stubStatus();
+    const s = createSlackStream(f.make, () => {}, { status: st.status });
     s.showThinking("☄️ burning acme token..");
     expect(await s.finish()).toBe(false);
+    expect(st.events.map((e) => e.kind)).toEqual(["thinking", "thinking"]);
   });
 });
 
 describe("hidden actions", () => {
-  test("a reaction or a localhost call posts no card at all", async () => {
-    const rec: { appends: unknown[]; stops: number } = { appends: [], stops: 0 };
-    const stream = createSlackStream(() => ({
-      append: async (a) => {
-        rec.appends.push(a);
-      },
-      stop: async () => {
-        rec.stops += 1;
-      },
-    }));
+  test("a reaction or a localhost call shows no step at all", async () => {
+    const f = fakeStreamer();
+    const st = stubStatus();
+    const stream = createSlackStream(f.make, () => {}, { status: st.status });
 
     stream.sink({
       type: "tool",
@@ -239,18 +275,14 @@ describe("hidden actions", () => {
     });
 
     await stream.finish();
-    expect(rec.appends).toHaveLength(0);
+    expect(st.steps()).toHaveLength(0);
     expect(stream.started).toBe(false); // not even a stream opened for these
   });
 
-  test("a real tool call still shows", async () => {
-    const rec: { appends: unknown[] } = { appends: [] };
-    const stream = createSlackStream(() => ({
-      append: async (a) => {
-        rec.appends.push(a);
-      },
-      stop: async () => {},
-    }));
+  test("a real tool call still shows, in the status message", async () => {
+    const f = fakeStreamer();
+    const st = stubStatus();
+    const stream = createSlackStream(f.make, () => {}, { status: st.status });
     stream.sink({
       type: "tool",
       id: "t1",
@@ -258,41 +290,41 @@ describe("hidden actions", () => {
       command: "gh pr view https://github.com/o/r/pull/1",
       status: "complete",
     });
-    await stream.finish(); // appends are serialised on a promise chain
-    expect(rec.appends).toHaveLength(1);
+    await stream.finish();
+    expect(st.steps()).toEqual([{ id: "t1", title: "run: gh pr view", state: "complete" }]);
+    expect(f.appends).toHaveLength(0);
   });
 });
 
-describe("delayed thinking card", () => {
+describe("delayed thinking line", () => {
   const mk = () => {
-    const rec: { appends: unknown[] } = { appends: [] };
-    const stream = createSlackStream(() => ({
-      append: async (a) => {
-        rec.appends.push(a);
-      },
-      stop: async () => {},
-    }));
-    return { rec, stream };
+    const f = fakeStreamer();
+    const st = stubStatus();
+    const stream = createSlackStream(f.make, () => {}, { status: st.status });
+    return { f, st, stream };
   };
+  const shown = (st: ReturnType<typeof stubStatus>) => st.events.some((e) => e.kind === "thinking" && e.label !== undefined);
 
   test("stays hidden when content arrives before the delay is up", async () => {
-    const { rec, stream } = mk();
+    const { st, stream } = mk();
     stream.showThinkingAfter("thinking..", 50);
     stream.sink({ type: "text", delta: "immediate answer" });
     await new Promise((r) => setTimeout(r, 80)); // let the timer have its chance
     await stream.finish();
-    expect(rec.appends.some((a) => "chunks" in (a as object))).toBe(false);
+    expect(shown(st)).toBe(false);
   });
 
   test("appears once the turn has been silent for the delay", async () => {
-    const { rec, stream } = mk();
+    const { st, f, stream } = mk();
     stream.showThinkingAfter("thinking..", 5);
     await new Promise((r) => setTimeout(r, 30));
-    expect(rec.appends.some((a) => "chunks" in (a as object))).toBe(true);
+    expect(shown(st)).toBe(true);
+    // it is the status message's line: no stream opened for it
+    expect(f.made()).toBe(0);
   });
 
-  test("a hidden action does not count as content, so the card still comes", async () => {
-    const { rec, stream } = mk();
+  test("a hidden action does not count as content, so the line still comes", async () => {
+    const { st, stream } = mk();
     stream.showThinkingAfter("thinking..", 15);
     stream.sink({
       type: "tool",
@@ -302,18 +334,25 @@ describe("delayed thinking card", () => {
       status: "complete",
     });
     await new Promise((r) => setTimeout(r, 40));
-    expect(rec.appends.some((a) => "chunks" in (a as object))).toBe(true);
+    expect(shown(st)).toBe(true);
   });
 
-  test("finishing cancels a pending card", async () => {
-    const { rec, stream } = mk();
+  test("a visible tool ends the line, since it is content", async () => {
+    const { st, stream } = mk();
+    stream.showThinking("thinking..");
+    stream.sink({ type: "tool", id: "t1", title: "Reading a file", status: "in_progress" });
+    expect(st.events.map((e) => e.kind)).toEqual(["thinking", "thinking", "step"]);
+    await stream.finish();
+  });
+
+  test("finishing cancels a pending line", async () => {
+    const { st, stream } = mk();
     stream.showThinkingAfter("thinking..", 20);
     await stream.finish();
     await new Promise((r) => setTimeout(r, 40));
-    expect(rec.appends).toHaveLength(0);
+    expect(shown(st)).toBe(false);
   });
 });
-
 
 describe("the 12,000 character wall", () => {
   /** A streamer whose every `make` is a distinct message, so rollovers show up. */
@@ -411,8 +450,8 @@ describe("the 12,000 character wall", () => {
   });
 });
 
-describe("task cards against the wall", () => {
-  /** Slack counts cards toward the same 12,000 as text. */
+describe("Slack's own count of the 12,000", () => {
+  /** Slack counts blocks toward the same 12,000 as text. */
   const multi = (cap = 12_000) => {
     const messages: { size: number; stopped: boolean }[] = [];
     const make = (): Streamer => {
@@ -431,21 +470,6 @@ describe("task cards against the wall", () => {
     };
     return { make, messages };
   };
-
-  test("a tool-heavy turn rolls over instead of breaking the stream", async () => {
-    const f = multi();
-    const s = createSlackStream(f.make);
-    s.sink({ type: "text", delta: "digging in" });
-    for (let i = 0; i < 60; i++) {
-      s.sink({ type: "tool", id: `t${i}`, title: `Querying a database ${i}`, details: `log at: ${"q".repeat(400)} - line ${i}`, status: "in_progress" });
-    }
-    s.sink({ type: "text", delta: "the answer" });
-    const ok = await s.finish();
-
-    expect(ok).toBe(true);
-    expect(f.messages.length).toBeGreaterThan(1);
-    expect(f.messages.every((m) => m.stopped)).toBe(true);
-  });
 
   test("a msg_too_long Slack counts differently is retried in a fresh message", async () => {
     // a tighter cap than our budget: our arithmetic says it fits, Slack disagrees
@@ -469,26 +493,30 @@ describe("task cards against the wall", () => {
 describe("abandoning a turn", () => {
   test("an armed placeholder never fires once the turn is abandoned", async () => {
     // a queued or dropped message used to leave the timer running, and it
-    // posted a thinking card into a turn that no longer existed
+    // posted a thinking line into a turn that no longer existed
     const f = fakeStreamer();
-    const s = createSlackStream(f.make);
+    const st = stubStatus();
+    const s = createSlackStream(f.make, () => {}, { status: st.status });
     s.showThinkingAfter("thinking...", 10);
     await s.abandon();
     await Bun.sleep(40);
 
     expect(f.made()).toBe(0);
     expect(s.started).toBe(false);
+    expect(st.events.some((e) => e.kind === "thinking" && e.label !== undefined)).toBe(false);
   });
 
-  test("a placeholder that already showed is handed back for removal", async () => {
+  test("abandoning deletes the status message: a turn that said nothing keeps no failures", async () => {
     const f = fakeStreamer();
-    const s = createSlackStream(f.make);
+    const st = stubStatus();
+    const s = createSlackStream(f.make, () => {}, { status: st.status });
     s.showThinking("thinking...");
     const { emptyTs } = await s.abandon();
 
-    // nothing real was ever said in it, so the caller takes the message away
-    expect(f.stopped()).toBe(1);
-    expect("emptyTs" in { emptyTs }).toBe(true);
+    // the placeholder is not in a stream, so there is no empty message to hand back
+    expect(f.made()).toBe(0);
+    expect(emptyTs).toBeUndefined();
+    expect(st.events.at(-1)).toEqual({ kind: "end", discard: true });
   });
 
   test("a turn that said something is left alone", async () => {
@@ -516,7 +544,7 @@ describe("holding until the turn is working", () => {
 
   test("a short reply opens nothing, so the caller posts it or drops it", async () => {
     const f = fakeStreamer();
-    const s = createSlackStream(f.make, () => {}, "✅", hold);
+    const s = createSlackStream(f.make, () => {}, hold);
     s.sink({ type: "text", delta: "nothing to add" });
     expect(await s.finish()).toBe(false);
     expect(f.made()).toBe(0);
@@ -524,7 +552,7 @@ describe("holding until the turn is working", () => {
 
   test("a hidden action does not open it", async () => {
     const f = fakeStreamer();
-    const s = createSlackStream(f.make, () => {}, "✅", hold);
+    const s = createSlackStream(f.make, () => {}, hold);
     s.sink({
       type: "tool",
       id: "r",
@@ -536,20 +564,21 @@ describe("holding until the turn is working", () => {
     expect(f.made()).toBe(0);
   });
 
-  test("a visible tool opens it, with the held text first", async () => {
+  test("a visible tool releases the held text into a stream and shows the step in the status message", async () => {
     const f = fakeStreamer();
-    const s = createSlackStream(f.make, () => {}, "✅", hold);
+    const st = stubStatus();
+    const s = createSlackStream(f.make, () => {}, { ...hold, status: st.status });
     s.sink({ type: "text", delta: "on it" });
     expect(f.made()).toBe(0);
     s.sink({ type: "tool", id: "t1", title: "run: gh pr view", status: "in_progress" });
     expect(await s.finish()).toBe(true);
-    expect(f.appends[0]).toEqual({ markdown_text: "on it" });
-    expect(f.appends[1]?.chunks).toHaveLength(1);
+    expect(f.appends).toEqual([{ markdown_text: "on it" }]);
+    expect(st.steps()).toHaveLength(1);
   });
 
   test("text longer than a silence note opens it, all of it", async () => {
     const f = fakeStreamer();
-    const s = createSlackStream(f.make, () => {}, "✅", hold);
+    const s = createSlackStream(f.make, () => {}, hold);
     s.sink({ type: "text", delta: "a".repeat(50) });
     expect(f.made()).toBe(0);
     s.sink({ type: "text", delta: "b".repeat(50) });
@@ -682,293 +711,6 @@ describe("a blocks chunk Slack rejects does not kill the stream", () => {
     expect(await s.finish()).toBe(true);
     const chunk = f.appends.find((a) => a.chunks)?.chunks?.[0] as { blocks: { rows: { text: string }[][] }[] };
     expect(chunk.blocks[0]?.rows[0]?.map((c) => c.text)).toEqual(["-", "Qty"]);
-  });
-});
-
-describe("the steps a finished message showed", () => {
-  test("each card counts once, however often it is updated", () => {
-    const stream = createSlackStream(fakeStreamer().make);
-    stream.sink({ type: "tool", id: "a", title: "Run: 🏃 Listing files", status: "in_progress" });
-    stream.sink({ type: "tool", id: "a", title: "Run: 🏃 Listing files", status: "complete" });
-    stream.sink({ type: "tool", id: "b", title: "Run: 🏃 Reading x", status: "in_progress" });
-    stream.sink({ type: "tool", id: "b", title: "Run: 🏃 Reading x", status: "error" });
-
-    expect(stream.steps).toEqual([
-      { title: "Run: 🏃 Listing files", failed: false },
-      { title: "Run: 🏃 Reading x", failed: true },
-    ]);
-  });
-
-  test("the thinking placeholder is not a step anyone took", () => {
-    const stream = createSlackStream(fakeStreamer().make);
-    stream.showThinking("thinking…");
-    stream.sink({ type: "tool", id: "a", title: "Run: 🏃 Listing files", status: "complete" });
-    expect(stream.steps.map((s) => s.title)).toEqual(["Run: 🏃 Listing files"]);
-  });
-
-  test("a turn that only talked has no steps to collapse", () => {
-    const stream = createSlackStream(fakeStreamer().make);
-    stream.sink({ type: "text", delta: "just an answer" });
-    expect(stream.steps).toEqual([]);
-  });
-});
-
-describe("the cards a running message shows", () => {
-  type Card = { id: string; title: string; status: string; details?: string };
-  /**
-   * What Slack would show: a card per id in the order the ids first appeared,
-   * an update to a known id rewriting title and status in place, and APPENDING
-   * its details to the card's (measured against the real API).
-   */
-  const column = (appends: Call[]): Card[] => {
-    const cards = new Map<string, Card>();
-    for (const a of appends)
-      for (const c of (a.chunks ?? []) as Array<Card & { type: string }>) {
-        if (c.type !== "task_update" || c.id === "__thinking__") continue;
-        const was = cards.get(c.id);
-        cards.set(c.id, { id: c.id, title: c.title, status: c.status, details: c.details === undefined ? was?.details : (was?.details ?? "") + c.details });
-      }
-    return [...cards.values()];
-  };
-  const run = (s: ReturnType<typeof createSlackStream>, n: number, title = (i: number) => `Step ${i}`) => {
-    for (let i = 1; i <= n; i++) {
-      s.sink({ type: "tool", id: `t${i}`, title: title(i), details: `log at: l.jsonl - line ${i}`, status: "in_progress" });
-      s.sink({ type: "tool", id: `t${i}`, title: title(i), status: "complete" });
-    }
-  };
-
-  test("holds five cards and hides the older steps", async () => {
-    const f = fakeStreamer();
-    const s = createSlackStream(f.make);
-    run(s, 8);
-    await s.finish();
-    const cards = column(f.appends);
-    expect(cards).toHaveLength(VISIBLE_STEP_SLOTS);
-    expect(cards.map((c) => c.title).sort()).toEqual([4, 5, 6, 7, 8].map((n) => `Step ${n} · log line ${n}`));
-    expect(cards.every((c) => c.status === "complete")).toBe(true);
-  });
-
-  test("a turn of five steps or fewer gets one card per step, on its own id", async () => {
-    const f = fakeStreamer();
-    const s = createSlackStream(f.make);
-    run(s, 5);
-    await s.finish();
-    expect(column(f.appends).map((c) => c.id)).toEqual(["t1", "t2", "t3", "t4", "t5"]);
-  });
-
-  test("a running step shows next to the four latest finished ones", async () => {
-    const f = fakeStreamer();
-    const s = createSlackStream(f.make);
-    run(s, 7);
-    s.sink({ type: "tool", id: "now", title: "Running now", status: "in_progress" });
-    await s.finish();
-    const cards = column(f.appends);
-    expect(cards).toHaveLength(VISIBLE_STEP_SLOTS);
-    expect(cards.filter((c) => c.status === "in_progress").map((c) => c.title)).toEqual(["Running now"]);
-    expect(cards.filter((c) => c.status === "complete").map((c) => c.title).sort()).toEqual([4, 5, 6, 7].map((n) => `Step ${n} · log line ${n}`));
-  });
-
-  test("a step that takes a slot over shows its own log line in the title and adds no details", async () => {
-    const f = fakeStreamer();
-    const s = createSlackStream(f.make);
-    run(s, 6);
-    await s.finish();
-    const chunks = f.appends.flatMap((a) => (a.chunks ?? []) as Array<Record<string, unknown>>);
-    const six = chunks.filter((c) => String(c.title).startsWith("Step 6"));
-    // the finishing update carries no pointer, and a title replaces the last one: the line stays
-    expect(six.map((c) => c.title)).toEqual(["Step 6 · log line 6", "Step 6 · log line 6"]);
-    // Slack appends `details`, so the pointer goes out once per card and never again
-    expect(chunks.filter((c) => c.details !== undefined)).toHaveLength(VISIBLE_STEP_SLOTS);
-    expect(six.every((c) => c.details === undefined)).toBe(true);
-    expect(chunks.find((c) => c.id === "t1" && c.details)?.details).toBe("log at: l.jsonl");
-  });
-
-  test("a long title is clipped to leave room for the log line", async () => {
-    const f = fakeStreamer();
-    const s = createSlackStream(f.make);
-    s.sink({ type: "tool", id: "a", title: "x".repeat(200), details: "log at: l.jsonl - line 123", status: "in_progress" });
-    await s.finish();
-    const title = String(((f.appends[0]?.chunks ?? [])[0] as { title: string }).title);
-    expect(title.length).toBeLessThanOrEqual(200);
-    expect(title.endsWith(" · log line 123")).toBe(true);
-  });
-
-  test("a step that takes a slot over does not inherit the line of the one it replaced", async () => {
-    const f = fakeStreamer();
-    const s = createSlackStream(f.make);
-    run(s, 5);
-    s.sink({ type: "tool", id: "x", title: "No pointer", status: "in_progress" });
-    await s.finish();
-    const chunks = f.appends.flatMap((a) => (a.chunks ?? []) as Array<Record<string, unknown>>);
-    expect(chunks[chunks.length - 1]).toMatchObject({ id: "t1", title: "No pointer" });
-  });
-
-  test("a card with no log pointer shows no details", async () => {
-    const f = fakeStreamer();
-    const s = createSlackStream(f.make);
-    s.sink({ type: "tool", id: "a", title: "A", status: "in_progress" });
-    s.sink({ type: "tool", id: "a", title: "A", status: "complete" });
-    await s.finish();
-    expect(column(f.appends)[0]?.details).toBeUndefined();
-  });
-
-  test("every step in progress stays visible, however many", async () => {
-    const f = fakeStreamer();
-    const s = createSlackStream(f.make);
-    for (let i = 1; i <= 9; i++) s.sink({ type: "tool", id: `p${i}`, title: `Parallel ${i}`, status: "in_progress" });
-    run(s, 7);
-    await s.finish();
-    const cards = column(f.appends);
-    expect(cards.filter((c) => c.status === "in_progress")).toHaveLength(9);
-    // nothing finished can be kept beside them: a card cannot be removed, only reused
-    expect(cards.filter((c) => c.status === "complete")).toHaveLength(1);
-  });
-
-  test("a slow step is never taken over while it runs, and finishes on its own card", async () => {
-    const f = fakeStreamer();
-    const s = createSlackStream(f.make);
-    s.sink({ type: "tool", id: "slow", title: "Slow one", status: "in_progress" });
-    run(s, 9);
-    s.sink({ type: "tool", id: "slow", title: "Slow one", status: "complete" });
-    await s.finish();
-    const cards = column(f.appends);
-    expect(cards.filter((c) => c.title === "Slow one")).toHaveLength(1);
-    expect(cards.filter((c) => c.status === "in_progress")).toHaveLength(0);
-    expect(cards).toHaveLength(VISIBLE_STEP_SLOTS);
-  });
-
-  test("a step that fails counts as finished, and keeps its error when it is reused", async () => {
-    const f = fakeStreamer();
-    const s = createSlackStream(f.make);
-    for (let i = 1; i <= 7; i++) {
-      s.sink({ type: "tool", id: `t${i}`, title: `Step ${i}`, status: "in_progress" });
-      s.sink({ type: "tool", id: `t${i}`, title: `Step ${i}`, status: i % 2 ? "error" : "complete" });
-    }
-    await s.finish();
-    const cards = column(f.appends);
-    expect(cards).toHaveLength(VISIBLE_STEP_SLOTS);
-    expect(cards.map((c) => [c.title, c.status]).sort()).toEqual([
-      ["Step 3", "error"],
-      ["Step 4", "complete"],
-      ["Step 5", "error"],
-      ["Step 6", "complete"],
-      ["Step 7", "error"],
-    ]);
-    // steps 6 and 7 took over the slots of the two oldest finished steps
-    expect(cards.map((c) => c.id).sort()).toEqual(["t1", "t2", "t3", "t4", "t5"]);
-  });
-
-  test("a late finish for a step whose card was taken over adds no card", async () => {
-    const f = fakeStreamer();
-    const s = createSlackStream(f.make);
-    run(s, 7);
-    s.sink({ type: "tool", id: "t1", title: "Step 1", status: "error" });
-    s.sink({ type: "tool", id: "t2", title: "Step 2", status: "complete" });
-    await s.finish();
-    const cards = column(f.appends);
-    expect(cards).toHaveLength(VISIBLE_STEP_SLOTS);
-    expect(cards.map((c) => c.title).sort()).toEqual([3, 4, 5, 6, 7].map((n) => `Step ${n} · log line ${n}`));
-  });
-
-  test("a repeated step whose card scrolled away comes back as a fresh card with its count", async () => {
-    const f = fakeStreamer();
-    const s = createSlackStream(f.make);
-    s.sink({ type: "tool", id: "q1", title: "Query", command: "q", status: "in_progress" });
-    s.sink({ type: "tool", id: "q1", title: "Query", command: "q", status: "complete" });
-    run(s, 6);
-    s.sink({ type: "tool", id: "q2", title: "Query", command: "q", status: "in_progress" });
-    await s.finish();
-    const cards = column(f.appends);
-    expect(cards.filter((c) => c.title === "Query (2 runs)")).toHaveLength(1);
-    expect(cards.filter((c) => c.status === "in_progress")).toHaveLength(1);
-  });
-
-  test("a long grouped title keeps its run count beside the log line", async () => {
-    const f = fakeStreamer();
-    const s = createSlackStream(f.make);
-    const title = "Q".repeat(190);
-    s.sink({ type: "tool", id: "g1", title, command: "q", details: "log at: l.jsonl - line 12", status: "in_progress" });
-    s.sink({ type: "tool", id: "g2", title, command: "q", details: "log at: l.jsonl - line 40", status: "in_progress" });
-    await s.finish();
-    const chunks = f.appends.flatMap((a) => (a.chunks ?? []) as Array<{ title: string }>);
-    const last = chunks[chunks.length - 1]?.title ?? "";
-    expect(last.length).toBeLessThanOrEqual(200);
-    expect(last.endsWith(" (2 runs) · log line 12")).toBe(true);
-  });
-
-  test("the summary still counts every step, not the visible ones", async () => {
-    const f = fakeStreamer();
-    const s = createSlackStream(f.make);
-    run(s, 12);
-    await s.finish();
-    expect(s.steps).toHaveLength(12);
-    expect(s.steps.map((x) => x.title)[0]).toBe("Step 1");
-  });
-
-  test("the thinking card is not part of the limit", async () => {
-    const f = fakeStreamer();
-    const s = createSlackStream(f.make);
-    s.showThinking("thinking…");
-    run(s, 7);
-    await s.finish();
-    const all = f.appends.flatMap((a) => (a.chunks ?? []) as Array<{ id: string }>);
-    expect(all.some((c) => c.id === "__thinking__")).toBe(true);
-    expect(column(f.appends)).toHaveLength(VISIBLE_STEP_SLOTS);
-  });
-});
-
-describe("step cards across a rollover", () => {
-  /** A Slack that takes ~`cap` characters a message, with the cards each message holds. */
-  const rolling = (cap: number) => {
-    const messages: { size: number; cards: Array<{ id: string; title: string; details?: string }> }[] = [];
-    const make = (): Streamer => {
-      const m = { size: 0, cards: [] as Array<{ id: string; title: string; details?: string }> };
-      messages.push(m);
-      return {
-        append: async (a) => {
-          const add = (a.markdown_text?.length ?? 0) + (a.chunks ? JSON.stringify(a.chunks).length : 0);
-          if (m.size + add > cap) throw new Error("An API error occurred: msg_too_long");
-          m.size += add;
-          for (const c of (a.chunks ?? []) as Array<{ id: string; title: string; details?: string }>) {
-            const was = m.cards.find((x) => x.id === c.id);
-            if (was) {
-              was.title = c.title;
-              if (c.details !== undefined) was.details = (was.details ?? "") + c.details;
-            } else m.cards.push({ id: c.id, title: c.title, details: c.details });
-          }
-        },
-        stop: async () => {},
-      };
-    };
-    return { make, messages };
-  };
-
-  test("a card that first appears in the continuation message carries the log file there too", async () => {
-    const f = rolling(2_000);
-    const s = createSlackStream(f.make);
-    const long = "x".repeat(150);
-    for (let i = 1; i <= 12; i++) {
-      s.sink({ type: "tool", id: `t${i}`, title: `Step ${i} ${long}`, details: `log at: ${"f".repeat(80)} - line ${i}`, status: "in_progress" });
-      s.sink({ type: "tool", id: `t${i}`, title: `Step ${i} ${long}`, status: "complete" });
-    }
-    await s.finish();
-    expect(f.messages.length).toBeGreaterThan(1);
-    for (const m of f.messages) {
-      expect(m.cards.length).toBeGreaterThan(0);
-      for (const c of m.cards) expect(c.details).toBe(`log at: ${"f".repeat(80)}`);
-    }
-  });
-
-  test("no message ever holds more than five cards", async () => {
-    const f = rolling(2_000);
-    const s = createSlackStream(f.make);
-    const long = "x".repeat(150);
-    for (let i = 1; i <= 12; i++) {
-      s.sink({ type: "tool", id: `t${i}`, title: `Step ${i} ${long}`, details: `log at: ${"f".repeat(80)} - line ${i}`, status: "in_progress" });
-      s.sink({ type: "tool", id: `t${i}`, title: `Step ${i} ${long}`, status: "complete" });
-    }
-    await s.finish();
-    for (const m of f.messages) expect(m.cards.length).toBeLessThanOrEqual(VISIBLE_STEP_SLOTS);
   });
 });
 

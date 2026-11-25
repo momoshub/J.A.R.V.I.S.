@@ -52,6 +52,8 @@ import { createBugReportRepo } from "./infrastructure/db/bugReportRepo.ts";
 import { createLoopRepo } from "./infrastructure/db/loopRepo.ts";
 import { createFollowRepo } from "./infrastructure/db/followRepo.ts";
 import { createMuteRepo } from "./infrastructure/db/muteRepo.ts";
+import { createStatusMessageRepo } from "./infrastructure/db/statusMessageRepo.ts";
+import { sweepStatusMessages } from "./infrastructure/slack/statusMessage.ts";
 import { createKitViewRepo } from "./infrastructure/db/kitViewRepo.ts";
 import { createWatcher } from "./application/watcher.ts";
 import { createBackgroundWatch } from "./application/backgroundWatch.ts";
@@ -265,6 +267,7 @@ const main = async () => {
   const loops = createLoopRepo(db);
   const follows = createFollowRepo(db);
   const mutes = createMuteRepo(db);
+  const statusMessages = createStatusMessageRepo(db);
   const kitViews = createKitViewRepo(db);
   const adapterDeps = () => ({
     store: adapterStore,
@@ -1125,6 +1128,7 @@ const main = async () => {
     },
     {
       ...deps,
+      statusMessages,
       kitViews,
       log: activity.line,
       selfPosts,
@@ -1156,6 +1160,18 @@ const main = async () => {
   });
   deps.backgroundWatch = backgroundWatch;
   slackApp = slack;
+  // Status messages (a turn's tool steps) a dead process left up: delete them
+  // before the first turn of this one posts its own.
+  void sweepStatusMessages({
+    rows: () => statusMessages.list(),
+    remove: (channelId, ts) => slackWeb.chat.delete({ channel: channelId, ts }),
+    forget: (channelId, ts) => statusMessages.remove(channelId, ts),
+    log: (l) => activity.line(`status sweep: ${l}`),
+  })
+    .then((n) => {
+      if (n > 0) activity.line(`status sweep: removed ${n} status message(s) left by the last process`);
+    })
+    .catch(logAndIgnore("status message sweep"));
   await slack.start();
 
   // Said at boot, where someone will see it, and loudly when it is missing.

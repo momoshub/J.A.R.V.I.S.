@@ -394,7 +394,6 @@ describe("a reply cut off by a restart", () => {
         return { append: async () => undefined, stop: async () => undefined, ts };
       },
       () => undefined,
-      "done",
       { onOpen: (ts) => opened.push(ts) },
     );
     stream.sink({ type: "text", delta: "one" });

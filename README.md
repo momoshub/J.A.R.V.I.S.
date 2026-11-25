@@ -141,7 +141,7 @@ The **Console** tab additionally needs read scopes to list and open conversation
 ## Talking to the bot
 
 - DM it, or @-mention it in a channel it is in
-- It replies in-thread, streaming the answer live, with tool calls shown as a task timeline
+- It replies in-thread, streaming the answer live, with tool calls listed in a separate status message that goes away when the turn ends (kept, collapsed, if a step failed)
 - Long messages show a configurable "thinking" step first
 - It only answers allowlisted users; the owner is always allowed
 - Someone it does not know is not turned away: every holder of `access:decide` (the owner, and `admin` as seeded) gets a DM with who spoke and what they said, and whichever of them gets there first decides with a reaction - ✅ adds them under the default role (`role default`, `pal` as seeded), ❌ declines. Either way the person is answered where they asked, and the other copies settle so nobody decides twice. They are answered **once**: tagging again while the request is open says nothing, and someone who was declined cannot re-raise it by asking - there is a 24h cooldown before their asking counts again
@@ -1728,7 +1728,7 @@ Several worktrees (bot turns, workers, `bin/jarvis-restart.sh`) running the whol
 | File | What it proves |
 | --- | --- |
 | `slackBlockKit.e2e.ts` | Block Kit replies (below) |
-| `slackStream.e2e.ts` | the real `createSlackStream` over `chat.startStream`/`appendStream`/`stopStream`, text fed in small deltas, ends as ONE message with the full text, in the thread |
+| `slackStream.e2e.ts` | the real `createSlackStream` over `chat.startStream`/`appendStream`/`stopStream`, text fed in small deltas, ends as ONE message with the full text, in the thread; plus the status message (`chat.postMessage`/`update`/`delete`): tool steps listed apart from the answer, deleted after a clean turn, collapsed to the failure after a failed one |
 | `slackUpload.e2e.ts` | `bin/slack-upload.sh` (`files.getUploadURLExternal` + `files.completeUploadExternal` with `thread_ts`, through the real Slack proxy on a loopback port with a one-turn ticket, no token in the script's environment) lands the file in the thread, not at the channel root; the file is deleted afterwards |
 | `slackWatch.e2e.ts` | a real `createWatcher` + `createShellCheck` + `watchRepo`: a watch stays quiet while its shell check exits non-zero, then fires once on exit 0 and hands back into the watched thread |
 

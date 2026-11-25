@@ -42,7 +42,7 @@ const schema = z
   .object({
     SLACK_BOT_TOKEN: z.string().min(1, "SLACK_BOT_TOKEN is required"),
     SLACK_APP_TOKEN: z.string().min(1, "SLACK_APP_TOKEN is required"),
-    // Stream replies live via chat.startStream (tool calls shown as a timeline).
+    // Stream replies live via chat.startStream; tool calls are listed in a separate status message (deleted when the turn ends, kept collapsed if a step failed).
     SLACK_STREAM_UPDATES: boolFromString(true),
     // Where Slack traffic comes from. `socket` opens Socket Mode in this
     // process; `inbox` reads what the separate gateway (src/gateway.ts) wrote,

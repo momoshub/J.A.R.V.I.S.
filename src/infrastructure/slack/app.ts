@@ -94,7 +94,7 @@ import { createFollowGate } from "../../application/followGate.ts";
 import { createGateModel } from "../../application/followGateModel.ts";
 import type { ToolPolicy } from "../../domain/toolPolicy.ts";
 import { unfollowOnReaction } from "../../application/followReaction.ts";
-import { collapsedBlocks, collapseSteps } from "../../domain/collapseSteps.ts";
+import { collapsedBlocks } from "../../domain/collapseSteps.ts";
 import { usageFooter } from "../../domain/usageFooter.ts";
 import { footerLine, restamp, signedText, SIGNATURES, withFooter } from "../../domain/messageFooter.ts";
 import { isSilenceNote } from "../../domain/silence.ts";
@@ -136,6 +136,8 @@ import {
 import type { KitViewRepo } from "../db/kitViewRepo.ts";
 import type { MuteRepo } from "../db/muteRepo.ts";
 import { createSlackStream, STREAM_CHAR_BUDGET, type Streamer } from "./stream.ts";
+import { createStatusMessage, type StatusMessage } from "./statusMessage.ts";
+import type { StatusMessageRepo } from "../db/statusMessageRepo.ts";
 import type { InboxContext, InboxReceiver } from "./inboxReceiver.ts";
 import {
   CONNECTION_GRACE_MS,
@@ -157,10 +159,14 @@ export type SlackAppConfig = {
   botName: string;
   /** Live label for the "thinking" step (read per message so edits apply). */
   thinkingLabel: () => string;
-  /** Live label the thinking step flips to once content arrives. */
+  /** Not shown any more: the thinking line is part of the status message and goes away, it is no longer a card that flips to this label. Kept for the dashboard setting. */
   thinkingDoneLabel: () => string;
-  /** Silence before a thinking card appears; defaults to THINKING_AFTER_MS. */
+  /** Silence before a thinking line appears; defaults to THINKING_AFTER_MS. */
   thinkingAfterMs?: number;
+  /** How long a clean turn's status message stays after the turn ends; defaults to STATUS_DELETE_DELAY_MS. Tests shorten it. */
+  statusDeleteDelayMs?: number;
+  /** Least time between two edits of a status message; defaults to STATUS_MIN_INTERVAL_MS. Tests shorten it. */
+  statusMinIntervalMs?: number;
   /** Message command prefix (e.g. "X/jarvis") and the Slack slash command name. */
   commandPrefix: string;
   slashCommand: string;
@@ -199,6 +205,11 @@ type Deps = RespondDeps & {
    * they did before it existed.
    */
   gatePolicy?: () => ToolPolicy;
+  /**
+   * Where a turn's status message (its tool steps) is recorded while it is up,
+   * so a boot can sweep one a dead process left behind. Absent: not recorded.
+   */
+  statusMessages?: StatusMessageRepo;
 };
 
 /** The slice of the Slack WebClient the handler needs (kept minimal for testing). */
@@ -209,6 +220,8 @@ export type SlackClient = {
   apiCall?: (method: string, args: Record<string, unknown>) => Promise<unknown>;
   chat: {
     update: (a: Record<string, unknown>) => Promise<unknown>;
+    /** Optional so a test fake need not have it; the real client always does. Without it a turn shows no status message. */
+    postMessage?: (a: Record<string, unknown>) => Promise<unknown>;
     /** Optional so a test fake need not have it; the real client always does. */
     delete?: (a: Record<string, unknown>) => Promise<unknown>;
   };
@@ -480,6 +493,50 @@ export const createHandler =
     // True when the stream opened after this turn's run was already untracked,
     // so the registry never saw it and the finally below has to say so.
     let openedUntracked = false;
+    // The turn's tool steps: one message of their own in the thread, apart from
+    // the answer's stream. Posted when the first step is worth showing, deleted
+    // (or collapsed to its failures) when the turn ends.
+    // Set once the status message is up: the session is then `processing` (Slack draws its stop button),
+    // which a turn that only runs tools would otherwise never be, as no stream opens for it.
+    let statusBusy = false;
+    let statusBusyCall: Promise<unknown> | undefined;
+    const status: StatusMessage | undefined =
+      config.streamUpdates && msg.client.chat.postMessage
+        ? createStatusMessage({
+            api: {
+              post: async (view) => {
+                const res = (await msg.client.chat.postMessage?.({
+                  channel: msg.channelId,
+                  ...(msg.threadTs ? { thread_ts: msg.threadTs } : {}),
+                  text: view.text,
+                  blocks: view.blocks,
+                })) as { ts?: string } | undefined;
+                if (res?.ts && msg.threadTs && !statusBusy) {
+                  statusBusy = true;
+                  // Best effort: a workspace without the method simply has no button during tool-only phases.
+                  // Awaited in the `finally` before the session is idled, so it can never land after it.
+                  statusBusyCall = msg.client
+                    .apiCall?.(SET_SESSION_STATUS, { channel_id: msg.channelId, thread_ts: msg.threadTs, status: "processing" })
+                    .catch(ignoreQuietly("mark session processing"));
+                }
+                return res?.ts;
+              },
+              update: (ts, view) => msg.client.chat.update({ channel: msg.channelId, ts, text: view.text, blocks: view.blocks }),
+              remove: (ts) => msg.client.chat.delete?.({ channel: msg.channelId, ts }) ?? Promise.resolve(),
+            },
+            ...(deps.statusMessages
+              ? {
+                  store: {
+                    add: (ts: string, at: number) => deps.statusMessages?.add(msg.channelId, ts, at),
+                    remove: (ts: string) => deps.statusMessages?.remove(msg.channelId, ts),
+                  },
+                }
+              : {}),
+            ...(config.statusDeleteDelayMs !== undefined ? { deleteDelayMs: config.statusDeleteDelayMs } : {}),
+            ...(config.statusMinIntervalMs !== undefined ? { minIntervalMs: config.statusMinIntervalMs } : {}),
+            log,
+          })
+        : undefined;
     const stream = config.streamUpdates
       ? createSlackStream(
           () =>
@@ -488,17 +545,16 @@ export const createHandler =
               thread_ts: msg.threadTs,
               recipient_user_id: msg.userId,
               recipient_team_id: msg.teamId,
-              task_display_mode: "timeline",
             }) as Streamer,
           log,
-          config.thinkingDoneLabel(),
           {
+            ...(status ? { status } : {}),
             holdUntilWorking: msg.following === true,
             // Remember where the reply is being written, so a crash mid-stream
             // can be tidied up by the next process instead of left half done.
             // And which turn it belongs to, so a stop press closes only the
             // stream of the turn it stopped.
-            onOpen: (ts) => {
+            onOpen: (ts: string) => {
               streamOpened = true;
               if (msg.inbox && config.inbox) config.inbox.recordStream(msg.inbox.rowId, msg.channelId, ts);
               if (deps.runs && !deps.runs.streamOpened(msg.channelId, msg.messageTs, ts)) openedUntracked = true;
@@ -520,6 +576,8 @@ export const createHandler =
         : undefined;
 
     let turnTicket: string | undefined;
+    // Set when the turn's reply is dropped or empty: its steps (failures too) are then deleted, not collapsed.
+    let discardStatus = false;
     try {
       const result = await respond(
         deps,
@@ -553,8 +611,8 @@ export const createHandler =
         // placeholder cards that never completed.
         const { emptyTs } = (await stream?.abandon()) ?? {};
         if (emptyTs) await deps.slack?.remove(msg.channelId, emptyTs).catch(ignoreQuietly("remove empty placeholder"));
-        // A stopped turn that only got as far as its tool cards has no answer
-        // to keep, and a message of cards with no words reads as a blank reply.
+        // A stopped turn that said nothing has no answer to keep, and a
+        // message with no words reads as a blank reply.
         await dropQuiet(msg, stream?.parts.filter((p) => p.ts !== emptyTs && isQuiet(p.text)) ?? [], log);
         return;
       }
@@ -580,6 +638,7 @@ export const createHandler =
         if (closing.kind === "drop" && posted.length > 0 && !isQuiet(result.text)) {
           log(`closing reply dropped, the turn posted its own answer channel=${msg.channelId} thread=${msg.threadTs} length=${result.text.length}`);
         }
+        discardStatus = true;
         return dropQuiet(msg, parts, log);
       }
       if (closing.implicit) {
@@ -587,7 +646,6 @@ export const createHandler =
       }
       const replyText = closing.text;
       const fail = (e: unknown) => log(`collapse failed: ${e instanceof Error ? e.message : String(e)}`);
-      const collapsed = collapseSteps(stream?.steps ?? []);
       // Signed, not stamped: tidying the streamed reply is still its first
       // send, and "updated" is only for a later edit (restamp).
       const footer = footerLine(
@@ -601,17 +659,16 @@ export const createHandler =
       // whichever path (single message, merged or split rollover, dead stream) rebuilt it.
       const tidy = (raw: string, withTail: boolean, asWords = false) => {
         const text = stripKeepMarker(raw);
-        const tailCollapsed = withTail ? collapsed : undefined;
         const tailFooter = withTail ? footer : undefined;
         // `asWords`: Slack refused the blocks, so send what they said - never
         // the raw ```blockkit fence.
         const body = toMrkdwn(asWords ? readableText(text) : text);
         const rich = asWords ? undefined : toBlockMessage(text, toMrkdwn);
-        const tail = collapsedBlocks("", tailCollapsed, tailFooter);
+        const tail = collapsedBlocks("", undefined, tailFooter);
         // The fence may already hold Slack's 50; the tail must still fit.
         const blocks = rich?.blocks
           ? [...rich.blocks.slice(0, MAX_BLOCKS - tail.length), ...tail]
-          : collapsedBlocks(body, tailCollapsed, tailFooter);
+          : collapsedBlocks(body, undefined, tailFooter);
         return { text: rich?.text ?? body, blocks };
       };
       /**
@@ -657,29 +714,27 @@ export const createHandler =
           return dropQuiet(msg, parts, log);
         }
       }
-      // A stream that showed no words - only cards, or only a note about not
+      // A stream that showed no words - only blocks that came to nothing, or only a note about not
       // replying - must not stay behind as a blank or a "No response
       // requested" message. With nothing worth saying it is taken back, and
       // a real answer that never streamed as text is written onto it instead.
       if (parts.length > 0 && isQuiet(parts.map((p) => p.text).join(""))) {
-        if (isQuiet(replyText)) return dropQuiet(msg, parts, log);
+        if (isQuiet(replyText)) {
+          discardStatus = true;
+          return dropQuiet(msg, parts, log);
+        }
         if (await rewriteDeadStream()) return;
       }
       if (streamed) {
-        // The work is done, so the column of tool cards above the answer is
-        // just something to scroll past. Replace it with one line, keeping any
-        // step that FAILED - that is the part somebody may have to act on.
-        // Watching the cards arrive is how anyone knows the turn is alive, so
-        // this only ever happens after it has finished.
-        // A reply that rolled over is several messages, and `stream.ts` is
-        // only the last. Each one is rebuilt from the part IT showed, minus
-        // its cards; the summary and footer go on the last one with content.
+        // The tool steps are not in these messages (they have a status message
+        // of their own, ended with the stream), so each message is rebuilt from
+        // the part IT showed, and the footer goes on the last one with content.
         // Rewriting the last with the whole answer posted the reply twice.
-        // A message left holding nothing but cards is deleted.
-        // Most rollovers are cards, not text: a dozen steps fill the
-        // allowance and a short answer spills into a second message. With the
-        // cards gone the text fits in one again, so it is put back together on
-        // the first message and the continuations are deleted.
+        // A message left holding nothing is deleted.
+        // A reply that rolled over is several messages, and `stream.ts` is
+        // only the last. When the whole text fits in one again (a rollover
+        // Slack forced early), it is put back together on the first message
+        // and the continuations are deleted.
         const joined = parts.map((p) => p.text).join("");
         const [first, ...rest] = parts;
         const merged =
@@ -739,6 +794,9 @@ export const createHandler =
         const plain = () => msg.say({ ...signedText(words, footer), ...extra }).catch(bare);
         if (rich) await msg.say({ text: rich.text, blocks: withFooter(rich.blocks, footer), ...extra }).catch(plain);
         else await plain();
+      } else {
+        // Nothing to say and nothing streamed: no reply, so no steps to explain either.
+        discardStatus = true;
       }
     } catch (err) {
       log(`respond failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -763,10 +821,14 @@ export const createHandler =
       // `onSessionIdle`), which this turn's own `done()` already did unless its
       // stream opened after that.
       if (turnTicket) deps.selfPosts?.clear(turnTicket);
+      // The one place the status message ends (`abandon` already discarded it on an ignored turn, and
+      // ending twice does nothing): by now it is known whether the reply is kept.
+      await status?.end({ discard: discardStatus });
+      await statusBusyCall;
       // A stream whose first append failed never reported `onOpen`, yet Slack may
       // already have put the session in `processing` (startStream) and keeps the
       // stop button up: `started` covers that, so a broken stream cannot stick the thread.
-      const touched = streamOpened || stream?.started === true;
+      const touched = streamOpened || stream?.started === true || statusBusy;
       if (touched && !deps.runs) await idleSession(msg.client, msg.channelId, msg.threadTs, log);
       else if (openedUntracked || (touched && !streamOpened)) deps.runs?.sessionMayIdle(msg.channelId, msg.threadTs ?? msg.messageTs);
     }

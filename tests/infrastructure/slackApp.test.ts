@@ -126,12 +126,18 @@ const build = (opts: {
     commandPrefix: "//bot",
     slashCommand: "/bot",
     thinkingAfterMs: opts.thinkingAfterMs ?? 5,
+    statusDeleteDelayMs: 5,
+    statusMinIntervalMs: 5,
   };
   const said: { text: string; reply_broadcast?: boolean }[] = [];
   /** Every post as it was sent, thread included. */
   const posts: { text: string; thread_ts?: string }[] = [];
   const updates: Record<string, unknown>[] = [];
   const deletes: string[] = [];
+  /** The status message (the turn's tool steps) is a message of its own: its posts, edits and deletes are kept apart from the answer's. */
+  const status = { posts: [] as Record<string, unknown>[], updates: [] as Record<string, unknown>[], deletes: [] as string[] };
+  let statusPosts = 0;
+  const isStatus = (ts: unknown): boolean => String(ts).startsWith("444.");
   const apiCalls: { method: string; args: Record<string, unknown> }[] = [];
   const rec = opts.rec ?? { appends: [], stops: 0, stopThrows: false, appendThrows: false };
   // The first message keeps the old fixed ts; a rollover gets its own.
@@ -145,7 +151,15 @@ const build = (opts: {
       return {};
     },
     chat: {
+      postMessage: async (a) => {
+        status.posts.push(a);
+        return { ts: `444.${++statusPosts}` };
+      },
       update: async (a) => {
+        if (isStatus(a.ts)) {
+          status.updates.push(a);
+          return {};
+        }
         if (opts.updateThrows) throw new Error("message_not_in_streaming_state");
         // Slack caps all markdown blocks of one message at 12,000 characters.
         const markdown = (a.blocks as { type: string; text?: string }[] | undefined)?.reduce((n, b) => n + (b.type === "markdown" ? (b.text?.length ?? 0) : 0), 0) ?? 0;
@@ -156,7 +170,7 @@ const build = (opts: {
         return {};
       },
       delete: async (a) => {
-        deletes.push(String(a.ts));
+        (isStatus(a.ts) ? status.deletes : deletes).push(String(a.ts));
         return {};
       },
     },
@@ -177,13 +191,23 @@ const build = (opts: {
       posts.push({ text: m.text, ...(m.thread_ts ? { thread_ts: m.thread_ts } : {}) });
     },
   });
-  return { handle, msg, said, posts, updates, deletes, apiCalls, rec, messages, logs, opened: () => streams, briefs: deps.briefs };
+  return { handle, msg, said, posts, updates, deletes, status, apiCalls, rec, messages, logs, opened: () => streams, briefs: deps.briefs };
 };
 
 const streamingLlm = (final: string, events: LlmStreamEvent[] = []): LlmPort => ({
   complete: async () => final,
   stream: async (_p, sink) => {
     for (const e of events) sink(e);
+    return final;
+  },
+});
+
+/** Like `streamingLlm`, but the turn takes a moment after its events, as a real one does: a status message is posted on a timer, not on the event. */
+const lingeringLlm = (final: string, events: LlmStreamEvent[] = [], lingerMs = 25): LlmPort => ({
+  complete: async () => final,
+  stream: async (_p, sink) => {
+    for (const e of events) sink(e);
+    await new Promise((r) => setTimeout(r, lingerMs));
     return final;
   },
 });
@@ -512,53 +536,44 @@ describe("createHandler streaming truth table", () => {
     expect(two.deletes).toHaveLength(0);
   });
 
-  test("a rolled-over message that only held cards is deleted", async () => {
-    const big = (id: string): LlmStreamEvent => ({
+  test("tool steps are not part of the answer's stream: no cards, one status message of their own", async () => {
+    const cards = Array.from({ length: 40 }, (_, i): LlmStreamEvent => ({
       type: "tool",
-      id,
-      title: `run: ${id}`,
+      id: `t${i}`,
+      title: `run: step ${i}`,
       status: "in_progress",
       details: `log at: ${"d".repeat(250)} - line 1`,
-    });
-    // enough cards to push the allowance over, then a short answer. They are all
-    // in progress at once: a card finished is reused, only a running one takes room.
-    const cards = Array.from({ length: 40 }, (_, i) => big(`t${i}`));
+    }));
     const r = build({
-      llm: streamingLlm("done", [{ type: "text", delta: "done" }, ...cards]),
+      llm: lingeringLlm("done", [{ type: "text", delta: "done" }, ...cards]),
       streamUpdates: true,
     });
     await r.handle(r.msg("hi", "000.9"));
     expect(r.said).toHaveLength(0);
+    // the answer streamed alone: one message, no task_update chunk in it, no rollover
+    expect(r.opened()).toBe(1);
+    expect(r.rec.appends.every((a) => !("chunks" in (a as object)))).toBe(true);
     expect(r.updates.map((u) => String(u.text))).toEqual(["done"]);
-    expect(r.deletes.length).toBeGreaterThan(0);
-    expect(r.deletes).not.toContain("222.2");
+    expect(r.deletes).toHaveLength(0);
+    // the 40 steps are in ONE status message in the same thread, capped
+    expect(r.status.posts).toHaveLength(1);
+    expect(r.status.posts[0]).toMatchObject({ channel: "C1", thread_ts: "000.9" });
+    const lastText = JSON.stringify((r.status.updates.at(-1) ?? r.status.posts[0])?.blocks);
+    expect(lastText).toContain("more steps");
   });
-
-  test("a short answer that rolled over behind its cards is put back on one message", async () => {
-    const big = (id: string): LlmStreamEvent => ({
-      type: "tool",
-      id,
-      title: `run: ${id}`,
-      status: "in_progress",
-      details: `log at: ${"d".repeat(250)} - line 1`,
-    });
-    const cards = Array.from({ length: 40 }, (_, i) => big(`t${i}`));
-    const head = "first half of the answer ";
-    const tail = "and the rest of it";
+  test("a long answer still rolls over, and the steps take no room from it", async () => {
+    const head = "a".repeat(10_000);
+    const tail = "b".repeat(3_000);
+    const steps = Array.from({ length: 30 }, (_, i): LlmStreamEvent => ({ type: "tool", id: `t${i}`, title: `run: ${i}`, status: "complete" }));
     const r = build({
-      llm: streamingLlm(head + tail, [{ type: "text", delta: head }, ...cards, { type: "text", delta: tail }]),
+      llm: streamingLlm(head + tail, [...steps, { type: "text", delta: head }, { type: "text", delta: tail }]),
       streamUpdates: true,
     });
     await r.handle(r.msg("hi", "000.9"));
-    expect(r.said).toHaveLength(0);
-    // one message carries the whole answer and the summary, the continuation is gone
-    expect(r.updates).toHaveLength(1);
-    expect(r.updates[0]).toMatchObject({ ts: "222.2", text: head + tail });
-    expect((r.updates[0]?.blocks as { type: string }[]).some((b) => b.type === "context")).toBe(true);
-    expect(r.deletes.length).toBeGreaterThan(0);
-    expect(r.deletes).not.toContain("222.2");
+    // 13,000 characters of text: two messages, rolled over for the text alone
+    expect(r.opened()).toBe(2);
+    expect(r.updates.map((u) => String(u.text)).join("")).toBe(head + tail);
   });
-
   test("posts once when streaming is disabled", async () => {
     const { handle, msg, said, rec } = build({
       llm: streamingLlm("plain post"),
@@ -788,6 +803,8 @@ describe("createHandler streaming truth table", () => {
     expect(said).toEqual([{ text: "plain post" }]);
   });
 
+  const thinkingLine = (posts: Record<string, unknown>[]) => posts.some((p) => JSON.stringify(p.blocks).includes("thinking.."));
+
   const thinkingCard = (appends: unknown[]) =>
     appends.some(
       (a) => "chunks" in (a as object) && (a as { chunks: Array<{ id: string }> }).chunks[0]?.id === "__thinking__",
@@ -814,9 +831,12 @@ describe("createHandler streaming truth table", () => {
     };
     const b = build({ llm: slow, streamUpdates: true, thinkingAfterMs: 1 });
     await b.handle(b.msg("hi"));
-    expect(thinkingCard(b.rec.appends)).toBe(true);
+    // a line in the status message, not a card in the answer, and gone again with the answer
+    expect(thinkingLine(b.status.posts)).toBe(true);
+    expect(thinkingCard(b.rec.appends)).toBe(false);
+    await new Promise((r) => setTimeout(r, 40));
+    expect(b.status.deletes).toEqual(["444.1"]);
   });
-
   test("a message queued behind a running turn opens no reply until its own turn starts", async () => {
     // Opened on arrival, the queued turn's reply sat above the running turn's
     // answer, and the thread read out of order.
@@ -833,11 +853,12 @@ describe("createHandler streaming truth table", () => {
     };
     const b = build({ llm, streamUpdates: true, thinkingAfterMs: 1, threadQueue: createThreadQueue() });
     const first = b.handle(b.msg("set it up"));
-    await new Promise((r) => setTimeout(r, 10));
-    expect(b.opened()).toBe(1); // the first turn's thinking card
+    await new Promise((r) => setTimeout(r, 40));
+    expect(b.status.posts).toHaveLength(1); // the first turn's thinking line
     const second = b.handle(b.msg("and a table please"));
     await new Promise((r) => setTimeout(r, 25));
-    expect(b.opened()).toBe(1);
+    expect(b.status.posts).toHaveLength(1); // the queued one has shown nothing
+    expect(b.opened()).toBe(0);
     release();
     await Promise.all([first, second]);
     expect(b.opened()).toBe(2);
@@ -869,19 +890,64 @@ describe("createHandler streaming truth table", () => {
     expect(said).toHaveLength(0);
   });
 
-  test("a turn that showed only cards and wrote nothing never leaves an empty message", async () => {
-    const { handle, msg, said, updates, deletes } = build({
-      llm: streamingLlm("", [card]),
+  test("a turn that showed only steps and wrote nothing leaves no stream message at all", async () => {
+    const { handle, msg, said, updates, deletes, status } = build({
+      llm: lingeringLlm("", [card]),
       streamUpdates: true,
     });
     await handle(msg("ok", "000.9"));
+    // the tool step has its own message, which a clean turn takes down again; no stream was opened,
+    // so nothing was rewritten or deleted, and the turn's (fallback) words are one plain post
+    expect(updates).toHaveLength(0);
     expect(deletes).toHaveLength(0);
-    expect(updates).toHaveLength(1);
-    expect(updates[0]).toMatchObject({ ts: "222.2" });
-    expect(String(updates[0]?.text).trim()).not.toBe("");
-    expect(said).toHaveLength(0);
+    expect(said).toHaveLength(1);
+    expect(said[0]?.text.trim()).not.toBe("");
+    expect(status.posts).toHaveLength(1);
+    await new Promise((r) => setTimeout(r, 30));
+    expect(status.deletes).toEqual(["444.1"]);
   });
 
+  test("steps that all finish before the first edit never show a message at all", async () => {
+    const { handle, msg, status } = build({ llm: streamingLlm("", [card]), streamUpdates: true });
+    await handle(msg("ok", "000.9"));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(status.posts).toHaveLength(0);
+    expect(status.deletes).toHaveLength(0);
+  });
+
+  test("a turn whose reply is dropped (NO_REPLY) leaves no status message, failures included", async () => {
+    const failed: LlmStreamEvent = { type: "tool", id: "t9", title: "run: gh pr view", status: "error" };
+    const r = build({ llm: lingeringLlm("NO_REPLY", [card, failed]), streamUpdates: true });
+    await r.handle(r.msg("ok", "000.9"));
+    await new Promise((res) => setTimeout(res, 40));
+    expect(r.said).toHaveLength(0);
+    expect(r.status.posts).toHaveLength(1);
+    expect(r.status.deletes).toEqual(["444.1"]);
+    expect(r.status.updates.some((u) => JSON.stringify(u.blocks).includes("failed"))).toBe(false);
+  });
+
+  test("a turn that only runs tools puts the session in processing, and idles it at the end", async () => {
+    const r = build({ llm: lingeringLlm("done", [card], 40), streamUpdates: true });
+    await r.handle(r.msg("ok", "000.9"));
+    const statuses = r.apiCalls.filter((c) => c.method === "agents.sessions.setStatus").map((c) => c.args.status);
+    expect(statuses).toEqual(["processing", "active"]);
+  });
+
+  test("a turn with a failed step leaves its status message collapsed to the failure", async () => {
+    const failed: LlmStreamEvent = { type: "tool", id: "t9", title: "run: gh pr view", status: "error" };
+    const { handle, msg, status, updates } = build({
+      llm: streamingLlm("done", [card, failed, { type: "text", delta: "done" }]),
+      streamUpdates: true,
+    });
+    await handle(msg("ok", "000.9"));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(status.deletes).toHaveLength(0);
+    const last = JSON.stringify(status.updates.at(-1)?.blocks ?? status.posts.at(-1)?.blocks);
+    expect(last).toContain("2 steps, 1 failed");
+    expect(last).toContain("run: gh pr view");
+    // the answer message carries only its footer, not the step summary
+    expect(JSON.stringify(updates.at(-1)?.blocks)).not.toContain("steps");
+  });
   describe("a turn that posted its answer itself", () => {
     const ANSWER =
       "The checkout latency came from the orders query: it scanned four million rows because the created_at index was dropped in the last migration. I re-added the index and p95 went from 1.8s to 120ms.";
@@ -1259,31 +1325,32 @@ describe("createHandler streaming truth table", () => {
     expect(said).toHaveLength(0);
   });
 
-  test("an answer that never streamed as text lands on the card message", async () => {
+  test("an answer that never streamed as text is posted whole, next to the steps' own message", async () => {
     const big = (id: string): LlmStreamEvent => ({ ...card, id, title: `run: ${id}`, status: "in_progress", details: `log at: ${"d".repeat(250)} - line 1` });
     const cards = Array.from({ length: 40 }, (_, i) => big(`t${i}`));
-    const r = build({ llm: streamingLlm("the answer", cards), streamUpdates: true });
+    const r = build({ llm: lingeringLlm("the answer", cards), streamUpdates: true });
     await r.handle(r.msg("hi", "000.9"));
-    expect(r.updates.map((u) => [u.ts, String(u.text)])).toEqual([["222.2", "the answer"]]);
-    expect(r.deletes.length).toBeGreaterThan(0);
-    expect(r.deletes).not.toContain("222.2");
-    expect(r.said).toHaveLength(0);
+    // no stream was ever opened for the answer, so it is a plain post
+    expect(r.opened()).toBe(0);
+    expect(r.updates).toHaveLength(0);
+    expect(r.said.map((m) => m.text)).toEqual(["the answer"]);
+    expect(r.status.posts).toHaveLength(1);
   });
-
-  test("a turn that fails after showing cards takes the card message back", async () => {
+  test("a turn that fails after showing steps ends its status message and says so", async () => {
     const failing: LlmPort = {
       complete: async () => "x",
       stream: async (_p, sink) => {
         sink(card);
+        await new Promise((r) => setTimeout(r, 25));
         throw new Error("llm down");
       },
     };
-    const { handle, msg, said, deletes } = build({ llm: failing, streamUpdates: true });
+    const { handle, msg, said, status } = build({ llm: failing, streamUpdates: true });
     await handle(msg("hi", "000.9"));
-    expect(deletes).toEqual(["222.2"]);
+    await new Promise((r) => setTimeout(r, 30));
     expect(said[0]?.text).toContain("error");
-  });
-});
+    expect(status.deletes).toEqual(["444.1"]);
+  });});
 
 describe("Block Kit the brain built", () => {
   const rig = (views: Record<string, Record<string, unknown>> = {}, refuse?: string) => {

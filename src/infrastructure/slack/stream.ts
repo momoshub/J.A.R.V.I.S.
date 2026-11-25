@@ -2,29 +2,34 @@
  * Slack streaming renderer.
  *
  * Bridges the bot's `LlmStreamSink` onto Slack's native text-streaming API. Slack
- * owns the message: we `append` text deltas and `task_update` chunks (tool
- * cards) and `stop` at the end - no manual edits, so no edit rate limiting. The
- * stream is started lazily on the first event, so non-streaming replies (e.g.
- * `!commands`) never open one. Appends are serialised on a promise chain so they
+ * owns the message: we `append` text deltas and `stop` at the end - no manual
+ * edits, so no edit rate limiting. The stream is started lazily on the first
+ * TEXT, so non-streaming replies (e.g. `!commands`) never open one, and a turn
+ * that only ran tools opens none.
+ *
+ * Tool steps are not part of that message. They go to a status message of their
+ * own (see `statusMessage.ts`), so they neither share the answer's character
+ * budget nor stay in it once the turn is over. Appends are serialised on a promise chain so they
  * never overlap; if any step fails (an append, a rollover's stop, the final
  * stop) `finish` answers false and the caller falls back to a plain post.
  *
- * The caller can arm a "thinking" step (`showThinkingAfter`), which appears only
- * if the turn is still silent when the delay is up and auto-completes as soon as
- * real content arrives - so a quick answer never flashes a placeholder.
+ * The caller can arm a "thinking" line (`showThinkingAfter`), which appears in
+ * the status message only if the turn is still silent when the delay is up and
+ * goes as soon as real content arrives - so a quick answer never flashes a
+ * placeholder.
  *
  * A ```blockkit fence in the text is lifted out and sent as a `blocks` chunk in
  * its place (see `domain/blockKit.ts`), so tables, alerts and cards stream
  * inline with the prose around them.
  */
-import type { AnyChunk, TaskUpdateChunk } from "@slack/types";
+import type { AnyChunk } from "@slack/types";
 import { isHiddenAction } from "../../domain/toolVisibility.ts";
 import { MAX_SILENCE_NOTE } from "../../domain/silence.ts";
 import { toSlackMarkdown } from "../../domain/slackFormat.ts";
 import { createEmphasisNormalizer } from "./emphasis.ts";
 import { createKeepMarkerFilter } from "../../domain/selfPost.ts";
 import { createFenceNormalizer } from "../../domain/fences.ts";
-import type { FinishedStep } from "../../domain/collapseSteps.ts";
+import type { StatusMessage } from "./statusMessage.ts";
 import type { LlmUsage } from "../../application/ports.ts";
 import { blocksToText, createBlockKitExtractor, type Block, type Segment } from "../../domain/blockKit.ts";
 import type { LlmStreamEvent, LlmStreamSink } from "../../application/ports.ts";
@@ -40,7 +45,7 @@ export type Streamer = {
   readonly ts?: string;
 };
 
-/** How long a turn may stay silent before a "thinking" card is worth showing. */
+/** How long a turn may stay silent before a "thinking" line is worth showing. */
 export const THINKING_AFTER_MS = 5_000;
 
 /**
@@ -54,10 +59,9 @@ export const THINKING_AFTER_MS = 5_000;
  * minutes to produce never arrives at all. `msg_too_long` appears dozens of
  * times in this instance's log.
  *
- * So a long reply continues in a second message instead. Task cards share the
- * same allowance, so they are counted too: a tool-heavy turn with a one-line
- * status hit the wall on cards alone, froze the status line, and the answer
- * never came.
+ * So a long reply continues in a second message instead. Tool steps used to be
+ * cards in the same message and ate the same allowance; they now have a
+ * message of their own, so the allowance is the answer's alone.
  */
 export const STREAM_CHAR_BUDGET = 11_000;
 
@@ -65,8 +69,7 @@ export const STREAM_CHAR_BUDGET = 11_000;
  * Where to cut `text` so the piece fits in `room`: all of it when it fits,
  * else just after the last line break, else after the last space. A cut in
  * the middle of a word showed up as "I restart o" / "nce idle" across two
- * messages - and since task cards eat the same allowance, a short reply in a
- * tool-heavy turn is exactly where it happens. With no break in reach it
+ * messages. With no break in reach it
  * answers 0 (roll over first, the whole room is then free), unless the
  * message is already fresh, where only a hard cut can make progress.
  */
@@ -82,10 +85,10 @@ export const rolloverCut = (text: string, room: number, fresh: boolean): number 
 
 export type SlackStream = {
   sink: LlmStreamSink;
-  /** Show a leading "thinking" task card now (id is reserved, auto-completes). */
+  /** Show a "thinking" line in the status message now; it goes with the first content. */
   showThinking: (title: string) => void;
   /**
-   * Show that card only if nothing has arrived yet after `delayMs`. A turn that
+   * Show that line only if nothing has arrived yet after `delayMs`. A turn that
    * answers quickly never shows one at all.
    */
   showThinkingAfter: (title: string, delayMs?: number) => void;
@@ -93,11 +96,6 @@ export type SlackStream = {
   readonly started: boolean;
   /** ts of the streamed message, once Slack has assigned one. */
   readonly ts: string | undefined;
-  /**
-   * The tool steps this message showed, with how each ended. Read after
-   * `finish` to collapse the column of cards into one line.
-   */
-  readonly steps: readonly FinishedStep[];
   /** What the run cost, once the CLI has reported it. Undefined until then. */
   readonly usage: LlmUsage | undefined;
   /**
@@ -115,59 +113,41 @@ export type SlackStream = {
    * the thread does not keep an empty message next to the answer.
    */
   readonly orphans: readonly string[];
-  /** Await pending appends and close the stream. False if it broke or showed no content. */
+  /**
+   * Await pending appends and close the stream. The status message is left to
+   * the caller, which ends it once it knows whether the reply is kept. False if the stream
+   * broke or showed no content - which a turn that only ran tools never does:
+   * it has no stream, and the caller posts its reply.
+   */
   finish: () => Promise<boolean>;
   /**
-   * Give up on this turn: cancel an armed placeholder and close anything that
-   * was already opened. Returns the ts of a message left behind that holds no
+   * Give up on this turn: cancel an armed placeholder, delete the status message
+   * and close anything that was already opened. Returns the ts of a message left behind that holds no
    * real content, so the caller can take it away again.
    *
    * A turn that is queued or dropped used to return without touching the
    * stream at all, leaving the armed timer to fire a few seconds later into a
-   * turn that no longer existed - which is where the stray "thinking" cards in
+   * turn that no longer existed - which is where the stray "thinking" lines in
    * a busy thread came from.
    */
   abandon: () => Promise<{ emptyTs?: string }>;
 };
 
-const THINKING_ID = "__thinking__";
-
-/**
- * Step cards one streamed message holds while it runs. Slack has no way to
- * take a card away (`task_update` has only pending / in_progress / complete /
- * error), so the message gets a fixed set of this many slots, reused by the
- * newest steps; see `slots` in `createSlackStream`. It only holds more when
- * more steps than this are running at once - every step in progress is shown.
- */
-export const VISIBLE_STEP_SLOTS = 5;
-
 /**
  * The log pointer a tool event carries in `details`: `log at: <file> - line <n>`.
- * Slack APPENDS a card's `details` on every update instead of replacing them
- * (measured: `XX` then `YY` shows `XXYY`, and the same text twice shows it
- * twice), so a card taken over by another step cannot be given that step's
- * pointer. The file is the same for the whole thread, so it is sent once per
- * card per message, where it stays true for whichever step holds it, and the line number -
- * the part that differs - goes in the title, which an update does replace.
+ * The status line shows the line number; the file is the same for the whole
+ * thread and is not repeated on every line.
  */
-const LOG_POINTER = /^(log at: .+?) - line (\d+)$/;
-
-/**
- * A card title with the step's log line on the end, clipped to 200. A grouped
- * card's title already ends in ` (N runs)`: that stays whole and the head of the
- * title gives way, or a long one would lose the count.
- */
-const withLogLine = (title: string, line: string): string => {
-  const suffix = ` · log line ${line}`;
-  if (title.length + suffix.length <= 200) return title + suffix;
-  const runs = /( \(\d+ runs\))$/.exec(title)?.[1] ?? "";
-  const head = title.slice(0, title.length - runs.length);
-  return `${head.slice(0, Math.max(0, 197 - suffix.length - runs.length))}...${runs}${suffix}`;
-};
+const LOG_POINTER = /^log at: .+? - line (\d+)$/;
 
 const errMsg = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 export type SlackStreamOptions = {
+  /**
+   * Where the turn's tool steps are shown. Without one they are not shown
+   * anywhere: the answer streams on its own either way.
+   */
+  status?: StatusMessage;
   /**
    * Open nothing until the turn is plainly doing something: a visible tool
    * call, or more text than a silence note could be. Text before that is held
@@ -192,8 +172,6 @@ export type SlackStreamOptions = {
 export const createSlackStream = (
   makeStreamer: () => Streamer,
   log: (msg: string) => void = () => {},
-  /** Title the thinking card flips to once real content arrives. */
-  thinkingDoneLabel = "✅",
   options: SlackStreamOptions = {},
 ): SlackStream => {
   let streamer: Streamer | undefined;
@@ -207,6 +185,7 @@ export const createSlackStream = (
   let thinkingShown = false;
   let thinkingDone = false;
   let contentShown = false;
+  const status = options.status;
   /** Characters appended to the CURRENT message, for the rollover. */
   let used = 0;
   let pending: ReturnType<typeof setTimeout> | undefined;
@@ -244,13 +223,9 @@ export const createSlackStream = (
     return streamer;
   };
 
-  /** Slots whose log file already went out as `details` in the CURRENT message. */
-  const detailsIn = new Set<string>();
-
   /** Close the current message so the next append opens a fresh one. */
   const rollover = async (): Promise<void> => {
     if (!streamer) return;
-    detailsIn.clear();
     try {
       await streamer.stop();
     } catch (e) {
@@ -291,7 +266,7 @@ export const createSlackStream = (
     }
   };
 
-  /** Note what the current message now shows, so it can be rebuilt without its cards. */
+  /** Note what the current message now shows, so it can be rebuilt from its parts. */
   const record = (args: Parameters<Streamer["append"]>[0]): void => {
     const current = opened[opened.length - 1];
     if (!current) return;
@@ -301,31 +276,6 @@ export const createSlackStream = (
       const blocks = (c as { type?: string; blocks?: unknown }).type === "blocks" ? (c as { blocks: unknown }).blocks : undefined;
       if (blocks) current.text += `\n\`\`\`blockkit\n${JSON.stringify(blocks)}\n\`\`\`\n`;
     }
-  };
-
-  /** What a card costs against the allowance: its serialised size, a safe overestimate. */
-  const cardCost = (chunk: TaskUpdateChunk): number => JSON.stringify(chunk).length;
-
-  const task = (chunk: TaskUpdateChunk) => {
-    ensure();
-    enqueue(() => send({ chunks: [chunk] }, cardCost(chunk)));
-  };
-
-  /**
-   * A step card. `file` is the log file to show as its `details`, sent once per
-   * message: Slack appends details, and a continuation message starts without
-   * the cards of the one before, so the choice is made here, in order with the
-   * appends, after any rollover this card causes.
-   */
-  const stepCard = (chunk: TaskUpdateChunk, file: string | undefined) => {
-    ensure();
-    enqueue(async () => {
-      const build = (): TaskUpdateChunk => (file && !detailsIn.has(chunk.id) ? { ...chunk, details: file } : chunk);
-      if (used > 0 && used + cardCost(build()) > STREAM_CHAR_BUDGET) await rollover();
-      const card = build();
-      if (card.details) detailsIn.add(chunk.id);
-      await send({ chunks: [card] }, cardCost(card));
-    });
   };
 
   /**
@@ -403,13 +353,13 @@ export const createSlackStream = (
   const completeThinking = () => {
     if (!thinkingShown || thinkingDone) return;
     thinkingDone = true;
-    task({ type: "task_update", id: THINKING_ID, title: thinkingDoneLabel, status: "complete" });
+    status?.thinking(undefined);
   };
 
   const showThinking = (title: string) => {
     if (thinkingShown) return;
     thinkingShown = true;
-    task({ type: "task_update", id: THINKING_ID, title, status: "in_progress" });
+    status?.thinking(title);
   };
 
   const showThinkingAfter = (title: string, delayMs = THINKING_AFTER_MS) => {
@@ -423,57 +373,9 @@ export const createSlackStream = (
     (pending as { unref?: () => void }).unref?.();
   };
 
-  /**
-   * The cards on screen, as reusable slots. Slack cannot remove a card, but a
-   * `task_update` with an id it already has rewrites that card in place (title,
-   * status, details; measured: it keeps its position). So the message holds
-   * `VISIBLE_STEP_SLOTS` cards, and once they all exist a step that starts
-   * takes over the slot of the oldest FINISHED one, under that slot's id: the
-   * older step is gone from the message, the newest five stay. A step in
-   * progress is never taken over, so every running step stays visible, and
-   * the slots grow past the limit only when more are running than there are
-   * slots. A slot keeps the id of the card that first opened it, so a turn
-   * with five steps or fewer is sent exactly as it was.
-   *
-   * It cannot also hold five FINISHED steps next to a running one: that is six
-   * cards, and with no way to remove the sixth the message would keep six once
-   * the step ends.
-   */
-  type Slot = { id: string; card: string; line: string | undefined; doneAt: number | undefined };
-  const slots: Slot[] = [];
-  const slotOf = new Map<string, Slot>();
-  /** Cards whose slot was taken over. A late finish for one must not show up as a card of its own. */
-  const evicted = new Set<string>();
-  let finishedCount = 0;
-
-  /** Where a tool card goes in the message: its slot, taking one over when all the slots are in use. */
-  const placeCard = (event: Extract<LlmStreamEvent, { type: "tool" }>): Slot => {
-    let slot = slotOf.get(event.id);
-    if (!slot) {
-      const finished = slots.filter((x) => x.doneAt !== undefined);
-      if (slots.length >= VISIBLE_STEP_SLOTS && finished.length > 0) {
-        const oldest = finished.reduce((a, b) => ((a.doneAt as number) <= (b.doneAt as number) ? a : b));
-        slotOf.delete(oldest.card);
-        evicted.add(oldest.card);
-        oldest.card = event.id;
-        oldest.line = undefined;
-        oldest.doneAt = undefined;
-        slot = oldest;
-      } else {
-        slot = { id: event.id, card: event.id, line: undefined, doneAt: undefined };
-        slots.push(slot);
-      }
-      slotOf.set(event.id, slot);
-      evicted.delete(event.id);
-    }
-    const done = event.status === "complete" || event.status === "error";
-    slot.doneAt = done ? (slot.doneAt ?? ++finishedCount) : undefined;
-    return slot;
-  };
-
   const forward = (event: LlmStreamEvent): void => {
     cancelPending(); // something arrived, so no placeholder is needed
-    completeThinking(); // first real content ends the thinking step
+    completeThinking(); // first real content ends the thinking line
     if (event.type === "text") {
       // The marker line the turn may end with is for the bot, not the reader.
       const delta = markerFilter.push(event.delta);
@@ -484,73 +386,48 @@ export const createSlackStream = (
       return;
     }
     // An aborted run is the caller's to narrate (it knows what was at stake);
-    // there is no card to draw for it.
+    // there is no step to draw for it.
     if (event.type === "aborted") return;
     if (event.type === "usage") return;
     contentShown = true;
-    // What the column showed, so it can be collapsed once the turn is done.
-    // The thinking card is the bot's own placeholder, not a step anyone did.
-    if (event.id !== THINKING_ID) {
-      shown.set(event.id, { title: event.title, failed: event.status === "error" });
-    }
-    if (event.id === THINKING_ID) {
-      task({ type: "task_update", id: event.id, title: event.title, status: event.status });
-      return;
-    }
-    // A step whose card was taken over is over: a second finish for it is not a new card.
-    if (evicted.has(event.id) && event.status !== "in_progress") return;
-    const slot = placeCard(event);
     const pointer = event.details ? LOG_POINTER.exec(event.details) : null;
-    // The finishing update has no pointer, and a title update replaces the old one.
-    if (pointer?.[2]) slot.line = pointer[2];
-    stepCard(
-      {
-        type: "task_update",
-        id: slot.id,
-        title: slot.line ? withLogLine(event.title, slot.line) : event.title,
-        status: event.status,
-      },
-      pointer?.[1],
-    );
+    // The status message, not the answer's stream: steps never open it.
+    status?.step({
+      id: event.id,
+      title: event.title,
+      state: event.status,
+      ...(pointer?.[1] ? { logLine: pointer[1] } : {}),
+    });
   };
 
   /**
-   * Repeats of the same step share one card. A turn that runs the same query
-   * five times showed five identical cards; now it shows one, titled
+   * Repeats of the same step share one line. A turn that runs the same query
+   * five times showed five identical lines; now it shows one, titled
    * "... (5 runs)", that completes when the last of them does.
    *
-   * "The same" means the whole input, not the card title: titles are clipped,
+   * "The same" means the whole input, not the title: titles are clipped,
    * and an MCP call's title is only the tool name, so grouping on it merged
-   * five different SQL queries into one card that showed just the first.
+   * five different SQL queries into one line that showed just the first.
    */
   type Group = { id: string; title: string; details?: string; count: number; open: number; failed: boolean };
   const groups = new Map<string, Group>();
   const groupOf = new Map<string, Group>();
-  /**
-   * Every step that got a card, by card id, with how it ended. Keyed so a
-   * step that is drawn in progress and then completed counts once - the
-   * column has one card for it, so the summary must count one.
-   */
-  const shown = new Map<string, FinishedStep>();
   /**
    * What the run cost. It arrives once, at the very end, and is NOT content:
    * it must never open a stream, end the thinking step, or count as something
    * to show - it is written into the footer after the turn is over.
    */
   let usage: LlmUsage | undefined;
-  const runsLabel = (title: string, count: number): string => {
-    const suffix = ` (${count} runs)`;
-    return title.length + suffix.length > 200 ? `${title.slice(0, 197 - suffix.length)}...${suffix}` : title + suffix;
-  };
-  const groupCard = (g: Group, status: "in_progress" | "complete" | "error"): LlmStreamEvent => ({
+  const runsLabel = (title: string, count: number): string => `${title} (${count} runs)`;
+  const groupStep = (g: Group, state: "in_progress" | "complete" | "error"): LlmStreamEvent => ({
     type: "tool",
     id: g.id,
     title: runsLabel(g.title, g.count),
-    status,
+    status: state,
     ...(g.details ? { details: g.details } : {}),
   });
 
-  /** The event to show for a tool step, or undefined when its group's card already covers it. */
+  /** The event to show for a tool step, or undefined when its group's line already covers it. */
   const grouped = (event: Extract<LlmStreamEvent, { type: "tool" }>): LlmStreamEvent | undefined => {
     if (event.status === "in_progress") {
       if (groupOf.has(event.id)) return event;
@@ -566,7 +443,7 @@ export const createSlackStream = (
       groupOf.set(event.id, g);
       g.count += 1;
       g.open += 1;
-      return groupCard(g, "in_progress");
+      return groupStep(g, "in_progress");
     }
     const g = groupOf.get(event.id);
     if (!g) return event;
@@ -574,7 +451,7 @@ export const createSlackStream = (
     g.failed ||= event.status === "error";
     if (g.count === 1) return event;
     if (g.open > 0) return undefined;
-    return groupCard(g, g.failed ? "error" : "complete");
+    return groupStep(g, g.failed ? "error" : "complete");
   };
 
   let holding = options.holdUntilWorking === true;
@@ -582,13 +459,13 @@ export const createSlackStream = (
 
   const sink: LlmStreamSink = (event: LlmStreamEvent) => {
     // Kept for the footer and nothing else: it must not open a stream, end the
-    // thinking step, or count as content, all of which `forward` would do.
+    // thinking line, or count as content, all of which `forward` would do.
     if (event.type === "usage") {
       usage = event.usage;
       return;
     }
     // Hidden actions (reacting, remembering, anything on the local host) leave no
-    // trace here: no card, and they do not count as content or end the thinking step.
+    // trace here: no line, and they do not count as content or end the thinking line.
     if (event.type === "tool" && isHiddenAction(event.command)) return;
     if (event.type === "tool") {
       const shown = grouped(event);
@@ -623,9 +500,6 @@ export const createSlackStream = (
     get ts() {
       return streamer?.ts;
     },
-    get steps() {
-      return [...shown.values()];
-    },
     get usage() {
       return usage;
     },
@@ -638,8 +512,10 @@ export const createSlackStream = (
     },
     abandon: async () => {
       cancelPending();
-      if (!streamer) return {};
       completeThinking();
+      // A queued, dropped or stopped turn says nothing, so its steps go with it, failures too.
+      await status?.end({ discard: true });
+      if (!streamer) return {};
       try {
         await chain;
       } catch {
@@ -656,6 +532,8 @@ export const createSlackStream = (
     finish: async () => {
       cancelPending();
       completeThinking();
+      // The status message is NOT ended here: whether a failed step is worth keeping depends on
+      // whether the reply survives, which the caller decides (see `app.ts`).
       const rest = markerFilter.flush();
       if (rest) emitSegments(kit.push(rest));
       emitSegments(kit.flush());

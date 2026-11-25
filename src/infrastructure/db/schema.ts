@@ -122,6 +122,7 @@ export const migrate = (db: Database): void => {
   migrateWatchWriteTargets(db);
   migrateMutedThreads(db);
   migrateWatchParent(db);
+  migrateStatusMessages(db);
 };
 
 /**
@@ -1496,4 +1497,28 @@ const migrateWatchParent = (db: Database): void => {
     user_version: 0,
   };
   if (user_version < 50) db.exec("PRAGMA user_version = 50;");
+};
+
+/**
+ * Migration v51: the status messages a turn has posted and not yet taken down.
+ *
+ * A turn shows its tool steps in one message of their own, deleted (or
+ * collapsed to its failures) when the turn ends. A process that dies in
+ * between leaves that message behind for good, so each one is written here
+ * when it is posted and removed when it is finished; whatever a boot finds
+ * here belongs to a process that no longer exists and is swept.
+ */
+const migrateStatusMessages = (db: Database): void => {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS status_messages (
+      channel_id TEXT NOT NULL,
+      ts         TEXT NOT NULL,
+      created_at INTEGER NOT NULL,
+      PRIMARY KEY (channel_id, ts)
+    );
+  `);
+  const { user_version } = db.query<{ user_version: number }, []>("PRAGMA user_version").get() ?? {
+    user_version: 0,
+  };
+  if (user_version < 51) db.exec("PRAGMA user_version = 51;");
 };
