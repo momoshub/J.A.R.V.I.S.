@@ -246,6 +246,41 @@ describe("the status message when the turn ends", () => {
     expect(f.store.removed).toEqual(["100.1"]);
   });
 
+  test("discard: a turn whose reply was dropped deletes the message at once, failures included", async () => {
+    const f = fake();
+    const m = createStatusMessage({ api: f.api, store: f.storeApi, minIntervalMs: 30, deleteDelayMs: 5_000 });
+    m.step({ id: "a", title: "A", state: "error" });
+    await Bun.sleep(15);
+    await m.end({ discard: true });
+    await m.idle();
+    expect(f.calls.map((c) => c.op)).toEqual(["post", "remove"]);
+    expect(f.store.removed).toEqual(["100.1"]);
+  });
+
+  test("a collapse Slack refuses is replaced by a delete, never left as the running view", async () => {
+    const f = fake({ failures: (_n, op) => (op === "update" ? new Error("invalid_blocks") : undefined) });
+    const m = createStatusMessage({ api: f.api, store: f.storeApi, ...FAST });
+    m.step({ id: "a", title: "A", state: "error" });
+    await Bun.sleep(15);
+    await m.end();
+    await m.idle();
+    expect(f.calls.at(-1)?.op).toBe("remove");
+    expect(f.store.removed).toEqual(["100.1"]);
+  }, 10_000);
+
+  test("a thinking line taken away while its post is in flight is still removed", async () => {
+    const f = fake();
+    const slow: typeof f.api = { ...f.api, post: async (v) => (await Bun.sleep(30), f.api.post(v)) };
+    const m = createStatusMessage({ api: slow, store: f.storeApi, ...FAST });
+    m.thinking("working...");
+    await Bun.sleep(10); // the post is out
+    m.thinking(undefined);
+    await Bun.sleep(200);
+    expect(f.calls.map((c) => c.op)).toEqual(["post", "remove"]);
+    await m.end();
+    await m.idle();
+  });
+
   test("ending twice does nothing the second time, and later steps are ignored", async () => {
     const f = fake();
     const m = createStatusMessage({ api: f.api, ...FAST });

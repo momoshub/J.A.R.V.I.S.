@@ -3,7 +3,7 @@ import { createSlackStream, rolloverCut, type Streamer } from "../../src/infrast
 import type { StatusMessage } from "../../src/infrastructure/slack/statusMessage.ts";
 import type { StatusStep } from "../../src/domain/statusSteps.ts";
 
-type StatusEvent = { kind: "step"; step: StatusStep } | { kind: "thinking"; label: string | undefined } | { kind: "end" };
+type StatusEvent = { kind: "step"; step: StatusStep } | { kind: "thinking"; label: string | undefined } | { kind: "end"; discard: boolean };
 
 /** A status message that only records what the stream told it. */
 const stubStatus = () => {
@@ -13,7 +13,7 @@ const stubStatus = () => {
     thinking: (label) => void events.push({ kind: "thinking", label }),
     steps: [],
     posted: false,
-    end: async () => void events.push({ kind: "end" }),
+    end: async (o) => void events.push({ kind: "end", discard: o?.discard === true }),
     idle: async () => {},
   };
   const steps = () => events.flatMap((e) => (e.kind === "step" ? [e.step] : []));
@@ -94,14 +94,14 @@ describe("createSlackStream", () => {
     expect(st.steps()).toHaveLength(2);
   });
 
-  test("finish ends the status message once, after the steps", async () => {
+  test("finish leaves the status message to the caller, which knows whether the reply is kept", async () => {
     const f = fakeStreamer();
     const st = stubStatus();
     const s = createSlackStream(f.make, () => {}, { status: st.status });
     s.sink({ type: "tool", id: "t1", title: "Reading a file", status: "complete" });
     s.sink({ type: "text", delta: "hi" });
     await s.finish();
-    expect(st.events.map((e) => e.kind)).toEqual(["step", "end"]);
+    expect(st.events.map((e) => e.kind)).toEqual(["step"]);
   });
 
   test("without a status message the steps are simply not shown, and the answer streams on", async () => {
@@ -249,7 +249,7 @@ describe("createSlackStream", () => {
     const s = createSlackStream(f.make, () => {}, { status: st.status });
     s.showThinking("☄️ burning acme token..");
     expect(await s.finish()).toBe(false);
-    expect(st.events.map((e) => e.kind)).toEqual(["thinking", "thinking", "end"]);
+    expect(st.events.map((e) => e.kind)).toEqual(["thinking", "thinking"]);
   });
 });
 
@@ -506,7 +506,7 @@ describe("abandoning a turn", () => {
     expect(st.events.some((e) => e.kind === "thinking" && e.label !== undefined)).toBe(false);
   });
 
-  test("abandoning ends the status message, so a placeholder or a failed step is dealt with", async () => {
+  test("abandoning deletes the status message: a turn that said nothing keeps no failures", async () => {
     const f = fakeStreamer();
     const st = stubStatus();
     const s = createSlackStream(f.make, () => {}, { status: st.status });
@@ -516,7 +516,7 @@ describe("abandoning a turn", () => {
     // the placeholder is not in a stream, so there is no empty message to hand back
     expect(f.made()).toBe(0);
     expect(emptyTs).toBeUndefined();
-    expect(st.events.at(-1)).toEqual({ kind: "end" });
+    expect(st.events.at(-1)).toEqual({ kind: "end", discard: true });
   });
 
   test("a turn that said something is left alone", async () => {

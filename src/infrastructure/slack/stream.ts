@@ -114,14 +114,14 @@ export type SlackStream = {
    */
   readonly orphans: readonly string[];
   /**
-   * Await pending appends and close the stream, and end the status message
-   * (deleted shortly after, or collapsed to its failures). False if the stream
+   * Await pending appends and close the stream. The status message is left to
+   * the caller, which ends it once it knows whether the reply is kept. False if the stream
    * broke or showed no content - which a turn that only ran tools never does:
    * it has no stream, and the caller posts its reply.
    */
   finish: () => Promise<boolean>;
   /**
-   * Give up on this turn: cancel an armed placeholder, end the status message
+   * Give up on this turn: cancel an armed placeholder, delete the status message
    * and close anything that was already opened. Returns the ts of a message left behind that holds no
    * real content, so the caller can take it away again.
    *
@@ -513,8 +513,8 @@ export const createSlackStream = (
     abandon: async () => {
       cancelPending();
       completeThinking();
-      // A stopped turn may have run steps, and one that failed is worth keeping.
-      await status?.end();
+      // A queued, dropped or stopped turn says nothing, so its steps go with it, failures too.
+      await status?.end({ discard: true });
       if (!streamer) return {};
       try {
         await chain;
@@ -532,9 +532,8 @@ export const createSlackStream = (
     finish: async () => {
       cancelPending();
       completeThinking();
-      // Not awaited: a clean turn's message waits a few seconds before it goes,
-      // and the answer must not wait with it. `end` lands its own failures.
-      void status?.end();
+      // The status message is NOT ended here: whether a failed step is worth keeping depends on
+      // whether the reply survives, which the caller decides (see `app.ts`).
       const rest = markerFilter.flush();
       if (rest) emitSegments(kit.push(rest));
       emitSegments(kit.flush());

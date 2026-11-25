@@ -112,6 +112,15 @@ describe("what is left when the turn ends", () => {
     expect(finalStatus([step("a"), step("b", "in_progress")])).toBeUndefined();
   });
 
+  test("many long, escape-heavy failures stay under the block limit, the rest counted", () => {
+    const steps = Array.from({ length: 60 }, (_, i) => step(String(i), "error", `Run: a && b & <c> ${"&".repeat(120)}`));
+    const view = finalStatus(steps);
+    const text = (view?.blocks[0] as unknown as { elements: { text: string }[] }).elements[0]?.text ?? "";
+    expect(text.length).toBeLessThan(3_000);
+    expect(text.startsWith("🔧 60 steps, 60 failed")).toBe(true);
+    expect(text).toMatch(/_…and \d+ more failed_$/);
+  });
+
   test("failure text is escaped", () => {
     const view = finalStatus([step("a"), step("b", "error", "Run: <!channel>")]);
     expect(JSON.stringify(view?.blocks)).not.toContain("<!channel>");

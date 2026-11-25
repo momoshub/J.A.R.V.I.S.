@@ -88,10 +88,11 @@ export type StatusMessage = {
   readonly posted: boolean;
   /**
    * The turn is over: land the final state (collapse to failures, or delete
-   * after a short wait). Resolves once the final state is out; a delete that
+   * after a short wait; `discard` for a turn whose reply was dropped: deleted at
+   * once, failures included). Resolves once the final state is out; a delete that
    * is waiting for its delay is not awaited, see `idle`. Idempotent.
    */
-  end: () => Promise<void>;
+  end: (opts?: { discard?: boolean }) => Promise<void>;
   /** Resolves when nothing is pending any more, a delayed delete included. For tests. */
   idle: () => Promise<void>;
 };
@@ -162,8 +163,8 @@ export const createStatusMessage = (opts: StatusMessageOptions): StatusMessage =
       if (ts) {
         const was = ts;
         // A delete that did not land keeps its row for the boot sweep.
+        // The handle is kept when it fails, so a later step reuses the message and `end` can still delete it.
         if (await attempt("delete", () => opts.api.remove(was), retries)) forget();
-        else ts = undefined;
         lastSentAt = now();
       }
       return;
@@ -220,11 +221,7 @@ export const createStatusMessage = (opts: StatusMessageOptions): StatusMessage =
   const thinking = (label: string | undefined): void => {
     if (ended) return;
     if (label === thinkingLabel) return;
-    // A placeholder is only worth a message while it is the only thing to say.
-    if (!label && steps.size === 0 && ts === undefined && timer === undefined) {
-      thinkingLabel = undefined;
-      return;
-    }
+    // A placeholder is only worth a message while it is the only thing to say: taken away, the next send deletes it.
     thinkingLabel = label;
     schedule();
   };
@@ -238,16 +235,17 @@ export const createStatusMessage = (opts: StatusMessageOptions): StatusMessage =
     await chain.catch(() => {});
   };
 
-  const end = (): Promise<void> => {
+  const end = (endOpts: { discard?: boolean } = {}): Promise<void> => {
     endPromise ??= (async () => {
       await settleChain();
-      const final = finalStatus([...steps.values()]);
+      // A turn whose reply was dropped has nothing to explain its failures: they go too.
+      const final = endOpts.discard ? undefined : finalStatus([...steps.values()]);
       if (!final) {
         // Nothing failed. If it was ever posted it goes after a short wait.
         const at = ts;
         if (!at) return;
         // A placeholder that never became a step has nothing to read: no wait.
-        const wait = steps.size === 0 ? 0 : deleteDelay;
+        const wait = steps.size === 0 || endOpts.discard ? 0 : deleteDelay;
         pendingDelete = (async () => {
           if (wait > 0) await sleep(wait);
           // A delete that could not land keeps its row: the boot sweep retries it.
@@ -268,7 +266,12 @@ export const createStatusMessage = (opts: StatusMessageOptions): StatusMessage =
         return;
       }
       const at = ts;
-      if (await attempt("collapse", () => opts.api.update(at, final), FINAL_RETRIES)) forget();
+      if (await attempt("collapse", () => opts.api.update(at, final), FINAL_RETRIES)) {
+        forget();
+        return;
+      }
+      // A collapse Slack refuses must not leave the running view ("⏳ ...") up for good.
+      if (await attempt("delete", () => opts.api.remove(at), FINAL_RETRIES)) forget();
     })();
     return endPromise;
   };

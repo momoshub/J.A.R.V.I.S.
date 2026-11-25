@@ -98,11 +98,22 @@ export const finalStatus = (steps: readonly StatusStep[]): StatusView | undefine
   // A lone failed step is kept too, unlike the answer's old one-card rule.
   const collapsed = collapseSteps(finished, 1);
   if (!collapsed) return undefined;
+  // Measured after escaping (`&` grows to five characters), so the element stays under Slack's limit
+  // however many steps failed: the first ones are kept in full and the rest are counted.
+  const summary = escapeMrkdwn(collapsed.summary);
+  const kept: string[] = [];
+  let size = summary.length;
+  for (const f of collapsed.failures.map(escapeMrkdwn)) {
+    if (size + f.length + 3 > STATUS_TEXT_BUDGET) break;
+    kept.push(f);
+    size += f.length + 3;
+  }
+  const more = collapsed.failures.length - kept.length;
   return {
     text: collapsed.summary,
     blocks: collapsedBlocks("", {
-      summary: escapeMrkdwn(collapsed.summary),
-      failures: collapsed.failures.map(escapeMrkdwn),
+      summary,
+      failures: more > 0 ? [...kept, `_…and ${more} more failed_`] : kept,
     }),
   };
 };

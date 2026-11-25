@@ -915,6 +915,24 @@ describe("createHandler streaming truth table", () => {
     expect(status.deletes).toHaveLength(0);
   });
 
+  test("a turn whose reply is dropped (NO_REPLY) leaves no status message, failures included", async () => {
+    const failed: LlmStreamEvent = { type: "tool", id: "t9", title: "run: gh pr view", status: "error" };
+    const r = build({ llm: lingeringLlm("NO_REPLY", [card, failed]), streamUpdates: true });
+    await r.handle(r.msg("ok", "000.9"));
+    await new Promise((res) => setTimeout(res, 40));
+    expect(r.said).toHaveLength(0);
+    expect(r.status.posts).toHaveLength(1);
+    expect(r.status.deletes).toEqual(["444.1"]);
+    expect(r.status.updates.some((u) => JSON.stringify(u.blocks).includes("failed"))).toBe(false);
+  });
+
+  test("a turn that only runs tools puts the session in processing, and idles it at the end", async () => {
+    const r = build({ llm: lingeringLlm("done", [card], 40), streamUpdates: true });
+    await r.handle(r.msg("ok", "000.9"));
+    const statuses = r.apiCalls.filter((c) => c.method === "agents.sessions.setStatus").map((c) => c.args.status);
+    expect(statuses).toEqual(["processing", "active"]);
+  });
+
   test("a turn with a failed step leaves its status message collapsed to the failure", async () => {
     const failed: LlmStreamEvent = { type: "tool", id: "t9", title: "run: gh pr view", status: "error" };
     const { handle, msg, status, updates } = build({

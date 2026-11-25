@@ -159,7 +159,6 @@ export type SlackAppConfig = {
   botName: string;
   /** Live label for the "thinking" step (read per message so edits apply). */
   thinkingLabel: () => string;
-  /** Live label the thinking step flips to once content arrives. */
   /** Not shown any more: the thinking line is part of the status message and goes away, it is no longer a card that flips to this label. Kept for the dashboard setting. */
   thinkingDoneLabel: () => string;
   /** Silence before a thinking line appears; defaults to THINKING_AFTER_MS. */
@@ -497,6 +496,9 @@ export const createHandler =
     // The turn's tool steps: one message of their own in the thread, apart from
     // the answer's stream. Posted when the first step is worth showing, deleted
     // (or collapsed to its failures) when the turn ends.
+    // Set once the status message is up: the session is then `processing` (Slack draws its stop button),
+    // which a turn that only runs tools would otherwise never be, as no stream opens for it.
+    let statusBusy = false;
     const status: StatusMessage | undefined =
       config.streamUpdates && msg.client.chat.postMessage
         ? createStatusMessage({
@@ -508,6 +510,13 @@ export const createHandler =
                   text: view.text,
                   blocks: view.blocks,
                 })) as { ts?: string } | undefined;
+                if (res?.ts && msg.threadTs && !statusBusy) {
+                  statusBusy = true;
+                  // Best effort: a workspace without the method simply has no button during tool-only phases.
+                  void msg.client
+                    .apiCall?.(SET_SESSION_STATUS, { channel_id: msg.channelId, thread_ts: msg.threadTs, status: "processing" })
+                    .catch(ignoreQuietly("mark session processing"));
+                }
                 return res?.ts;
               },
               update: (ts, view) => msg.client.chat.update({ channel: msg.channelId, ts, text: view.text, blocks: view.blocks }),
@@ -565,6 +574,8 @@ export const createHandler =
         : undefined;
 
     let turnTicket: string | undefined;
+    // Set when the turn's reply is dropped or empty: its steps (failures too) are then deleted, not collapsed.
+    let discardStatus = false;
     try {
       const result = await respond(
         deps,
@@ -624,6 +635,7 @@ export const createHandler =
         if (closing.kind === "drop" && posted.length > 0 && !isQuiet(result.text)) {
           log(`closing reply dropped, the turn posted its own answer channel=${msg.channelId} thread=${msg.threadTs} length=${result.text.length}`);
         }
+        discardStatus = true;
         return dropQuiet(msg, parts, log);
       }
       const replyText = closing.text;
@@ -701,7 +713,10 @@ export const createHandler =
       // requested" message. With nothing worth saying it is taken back, and
       // a real answer that never streamed as text is written onto it instead.
       if (parts.length > 0 && isQuiet(parts.map((p) => p.text).join(""))) {
-        if (isQuiet(replyText)) return dropQuiet(msg, parts, log);
+        if (isQuiet(replyText)) {
+          discardStatus = true;
+          return dropQuiet(msg, parts, log);
+        }
         if (await rewriteDeadStream()) return;
       }
       if (streamed) {
@@ -773,6 +788,9 @@ export const createHandler =
         const plain = () => msg.say({ ...signedText(words, footer), ...extra }).catch(bare);
         if (rich) await msg.say({ text: rich.text, blocks: withFooter(rich.blocks, footer), ...extra }).catch(plain);
         else await plain();
+      } else {
+        // Nothing to say and nothing streamed: no reply, so no steps to explain either.
+        discardStatus = true;
       }
     } catch (err) {
       log(`respond failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -799,11 +817,11 @@ export const createHandler =
       if (turnTicket) deps.selfPosts?.clear(turnTicket);
       // The status message is ended by the stream's finish or abandon already;
       // this is for a path that left without either, and does nothing twice.
-      await status?.end();
+      await status?.end({ discard: discardStatus });
       // A stream whose first append failed never reported `onOpen`, yet Slack may
       // already have put the session in `processing` (startStream) and keeps the
       // stop button up: `started` covers that, so a broken stream cannot stick the thread.
-      const touched = streamOpened || stream?.started === true;
+      const touched = streamOpened || stream?.started === true || statusBusy;
       if (touched && !deps.runs) await idleSession(msg.client, msg.channelId, msg.threadTs, log);
       else if (openedUntracked || (touched && !streamOpened)) deps.runs?.sessionMayIdle(msg.channelId, msg.threadTs ?? msg.messageTs);
     }
