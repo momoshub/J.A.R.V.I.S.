@@ -230,6 +230,21 @@ describe("parsing a named wait", () => {
     expect(a.ok && a.note).toBe("use what they say");
   });
 
+  test("\"from\" inside the note is not an author filter", () => {
+    const a = parseWatchArgs("reply https://x.slack.com/archives/C1/p1 pick it up from the top");
+    expect(a.ok && a.from).toBeUndefined();
+    expect(a.ok && a.note).toBe("pick it up from the top");
+  });
+
+  test("an author filter needs a real mention", () => {
+    const a = parseWatchArgs("reply https://x.slack.com/archives/C1/p1 from the top, then report");
+    expect(a.ok && a.from).toBeUndefined();
+    expect(a.ok && a.note).toBe("from the top, then report");
+    const b = parseWatchArgs("reply https://x.slack.com/archives/C1/p1 from <@U2|kai> answer them");
+    expect(b.ok && b.from).toBe("U2");
+    expect(b.ok && b.note).toBe("answer them");
+  });
+
   test("a kind word in the middle of a sentence is just a word", () => {
     // "watch the pr" must not silently become a pull request watch
     const a = parseWatchArgs("tell me when the pr lands -- true");
