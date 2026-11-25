@@ -104,6 +104,8 @@ describe.skipIf(!enabled)("streaming a reply into a thread against real Slack", 
     stream.sink({ type: "tool", id: "b", title: "Tool: Reading a file", status: "complete" });
     expect(await stream.finish()).toBe(true);
     t.track(stream.ts);
+    // The handler ends the status message once it knows the reply is kept; `finish` leaves it to the caller.
+    await status.end();
     await status.idle();
 
     // The answer stays, carries no task cards, and the status message is gone.
