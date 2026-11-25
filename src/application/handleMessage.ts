@@ -460,6 +460,8 @@ export const handleMessage = async (
   sink?: LlmStreamSink,
   /** Ends the turn when aborted, so a long one can be stopped. */
   signal?: AbortSignal,
+  /** Told the turn's run ticket once it is minted (before the model runs). */
+  onRunTicket?: (ticket: string) => void,
 ): Promise<HandleResult> => {
   const text = cleanInboundText(inbound.text);
   if (!hasContent(text)) return { kind: "ignored" };
@@ -525,6 +527,7 @@ export const handleMessage = async (
     // Its grant rides along (from the watch row, via the watcher) so a watch it re-arms can inherit it, never widen it.
     ...(inbound.trigger === "watch" ? { watch: true as const, ...(inbound.watchGrant ? { watchGrant: inbound.watchGrant } : {}) } : {}),
   });
+  if (runTicket) onRunTicket?.(runTicket);
   const window = deps.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
   // The thread itself is the context, read from Slack: the whole of this thread
   // and nothing from the ones beside it. Stored memory is only the fallback -

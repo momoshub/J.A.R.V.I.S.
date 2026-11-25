@@ -547,6 +547,8 @@ export const createHandler =
             log,
           })
         : undefined;
+    // The run ticket of this turn, known once it starts: what the turn posted into its thread is keyed by it.
+    let runTicketOfTurn: string | undefined;
     const stream = config.streamUpdates
       ? createSlackStream(
           () =>
@@ -559,6 +561,9 @@ export const createHandler =
           log,
           {
             ...(status ? { status } : {}),
+            // A turn that has posted into its own thread no longer streams its answer live: its closing reply
+            // is dropped unless it keeps it, which only the end of the turn tells (see the decision below).
+            bufferText: () => runTicketOfTurn !== undefined && (deps.selfPosts?.posts(runTicketOfTurn).length ?? 0) > 0,
             holdUntilWorking: msg.following === true,
             // Remember where the reply is being written, so a crash mid-stream
             // can be tidied up by the next process instead of left half done.
@@ -612,6 +617,9 @@ export const createHandler =
         },
         stream?.sink,
         armThinking,
+        (ticket) => {
+          runTicketOfTurn = ticket;
+        },
       );
       log(`handled user=${msg.userId} channel=${msg.channelId} kind=${result.kind}`);
       if (result.kind === "reply") turnTicket = result.turn;
@@ -638,8 +646,10 @@ export const createHandler =
       // A stream that broke may have opened a message it never wrote into. That
       // one is blank, so it goes before the reply is rewritten or posted whole.
       if (!streamed) await dropQuiet(msg, (stream?.orphans ?? []).map((ts) => ({ ts })), log);
-      // A turn that posted its answer into this thread itself does not stream a closing reply: every
-      // stream message goes, the messages the turn posted are never touched. Only the posts of THIS turn
+      // A turn that posted its answer into this thread itself does not stream a closing reply: the stream stops
+      // at its first post (`bufferText`, so nothing of the closing reply is ever shown only to be deleted), and
+      // every stream message goes - the narration that streamed before the post - while the messages the turn
+      // posted are never touched. Only the posts of THIS turn
       // count (keyed by its run ticket). The turn keeps its reply by putting KEEP_REPLY on a line of it, or
       // implicitly when every post of the turn was only a short progress line (the answer is never swallowed by one).
       // A turn that closed with NO_REPLY is dropped too, even when its stream already shows some narration.
