@@ -17,6 +17,8 @@
  * the transport and handed in.
  */
 
+import { isAcceptedBot } from "./acceptedBots.ts";
+
 /** The slice of a Slack message this decision needs. */
 export type FollowCandidate = {
   readonly subtype?: string;
@@ -38,8 +40,11 @@ export const mentionsBot = (text: string, botUserId?: string): boolean =>
  * Everything here is cheap and local. The expensive part - who wrote the
  * thread's parent - is only worth asking once this says yes.
  */
-export const couldFollowThread = (m: FollowCandidate, botUserId?: string): boolean =>
-  followSkipReason(m, botUserId) === undefined;
+export const couldFollowThread = (
+  m: FollowCandidate,
+  botUserId?: string,
+  acceptedBotIds: readonly string[] = [],
+): boolean => followSkipReason(m, botUserId, acceptedBotIds) === undefined;
 
 /**
  * Whether a message subtype is still a person talking. A message with files
@@ -54,11 +59,18 @@ export const isSpeech = (subtype?: string): boolean => !subtype || subtype === "
  * The same checks as `couldFollowThread`, named, so a skip can be logged with
  * its reason instead of vanishing. A silent skip and an event Slack never
  * delivered look identical in the logs otherwise.
+ *
+ * A bot's message is dropped ("bot") unless its id is in `acceptedBotIds` and
+ * it carries a user other than the bot itself: then it is that user talking.
  */
-export const followSkipReason = (m: FollowCandidate, botUserId?: string): string | undefined => {
+export const followSkipReason = (
+  m: FollowCandidate,
+  botUserId?: string,
+  acceptedBotIds: readonly string[] = [],
+): string | undefined => {
   // Edits, joins, deletions and other subtypes are not somebody talking.
   if (!isSpeech(m.subtype)) return `subtype:${m.subtype}`;
-  if (m.bot_id) return "bot";
+  if (m.bot_id && !isAcceptedBot(m, acceptedBotIds, botUserId)) return "bot";
   if (!m.user || !m.text?.trim()) return "empty";
   // DMs already get answered; this is for channels.
   if (m.channel_type === "im") return "dm";

@@ -14,10 +14,11 @@ export const DEFAULT_CONTEXT_WINDOW = 20;
  * them and to make sure they survive the window. */
 export const ATTACHMENT_MARKER = "[attached]";
 
-const toPrompt = ({ role, content, slackUserId }: StoredMessage): PromptMessage => ({
+const toPrompt = ({ role, content, slackUserId, viaBot }: StoredMessage): PromptMessage => ({
   role,
   content,
   speakerId: slackUserId,
+  ...(viaBot ? { viaBot: true } : {}),
 });
 
 /**
@@ -76,6 +77,7 @@ export const reactableMessages = (
       ts: m.slackTs as string,
       speakerId: m.slackUserId,
       excerpt: m.content.length > EXCERPT_CHARS ? `${m.content.slice(0, EXCERPT_CHARS)}...` : m.content,
+      ...(m.viaBot ? { viaBot: true } : {}),
     }));
 
 /**

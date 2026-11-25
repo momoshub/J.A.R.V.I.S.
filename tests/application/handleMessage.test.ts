@@ -444,6 +444,33 @@ describe("handleMessage", () => {
     expect(seen.map((m) => m.content)).toEqual(["first", "the new one"]);
   });
 
+  test("a bot post that carries a person is marked via bot in the history and the reactable list, the person's own is not", async () => {
+    let seen: readonly PromptMessage[] = [];
+    let raw: readonly PromptMessage[] = [];
+    const deps = build(fakeLlm("ok", (m) => (seen = m), (m) => (raw = m)));
+    deps.reactScript = "/bin/react.sh";
+    deps.slack = {
+      ...noopSlack,
+      replies: async () => [
+        slackMsg({ ts: "100.1", userId: OWNER, text: "by the person" }),
+        slackMsg({ ts: "100.2", userId: OWNER, text: "by a bot for them", bot: true }),
+        slackMsg({ ts: "100.3", userId: "", text: "a webhook, nobody", bot: true }),
+      ],
+    };
+    await handleMessage(deps, {
+      channelId: "C1",
+      slackUserId: OWNER,
+      text: "the new one",
+      threadTs: "100.1",
+      messageTs: "100.4",
+      viaBot: true,
+    });
+    expect(seen.map((m) => !!m.viaBot)).toEqual([false, true, false, true]);
+    const context = raw[raw.length - 1]!.content;
+    expect(context).toContain(`- ts 100.2 - from <@${OWNER}> (via bot): "by a bot for them"`);
+    expect(context).toContain(`- ts 100.1 - from <@${OWNER}>: "by the person"`);
+  });
+
   test("a turn nobody's message triggered reads the WHOLE thread and still gets its instruction", async () => {
     // `reply` / `mindful` start a turn with no message of their own. Using the
     // root's ts as the trigger cut the thread at the root and lost the ask.

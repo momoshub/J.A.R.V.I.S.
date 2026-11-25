@@ -37,6 +37,8 @@ export type StoredMessage = {
   readonly slackTs?: string;
   /** Thread the turn belongs to; the brain's memory window is scoped to it. */
   readonly threadTs?: string;
+  /** Posted by an allowlisted bot on behalf of `slackUserId` (`ACCEPTED_BOT_IDS`). */
+  readonly viaBot?: boolean;
 };
 
 /** A turn to be persisted (no id/timestamp yet). */
@@ -48,6 +50,8 @@ export type PromptMessage = {
   readonly content: string;
   /** Slack id of who sent a user turn, so transcripts can attribute + tag them. */
   readonly speakerId?: string;
+  /** The turn came from an allowlisted bot posting for `speakerId` (a person's user token), not from the person. */
+  readonly viaBot?: boolean;
 };
 
 /** An earlier message the bot can act on, e.g. react to. */
@@ -57,6 +61,8 @@ export type Reactable = {
   readonly speakerId: string;
   /** Short excerpt, so the model can tell the messages apart. */
   readonly excerpt: string;
+  /** Posted by an allowlisted bot on that person's behalf. */
+  readonly viaBot?: boolean;
 };
 
 /** A person present in the conversation that the bot may mention with a Slack tag. */

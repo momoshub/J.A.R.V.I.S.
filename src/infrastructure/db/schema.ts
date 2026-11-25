@@ -123,6 +123,7 @@ export const migrate = (db: Database): void => {
   migrateMutedThreads(db);
   migrateWatchParent(db);
   migrateStatusMessages(db);
+  migrateMessageViaBot(db);
 };
 
 /**
@@ -1521,4 +1522,23 @@ const migrateStatusMessages = (db: Database): void => {
     user_version: 0,
   };
   if (user_version < 51) db.exec("PRAGMA user_version = 51;");
+};
+
+/**
+ * Migration v52: which stored turns came from an allowlisted bot.
+ *
+ * A bot that posts with a person's user token arrives as that person
+ * (`ACCEPTED_BOT_IDS`). The turn's context marks it "via bot" so the model
+ * can tell the post from the person themself, and history is rebuilt from
+ * this table on every turn, so the mark is stored with the message.
+ */
+const migrateMessageViaBot = (db: Database): void => {
+  const cols = db.query<{ name: string }, []>("PRAGMA table_info(messages)").all();
+  if (!cols.some((c) => c.name === "via_bot")) {
+    db.exec("ALTER TABLE messages ADD COLUMN via_bot INTEGER NOT NULL DEFAULT 0;");
+  }
+  const { user_version } = db.query<{ user_version: number }, []>("PRAGMA user_version").get() ?? {
+    user_version: 0,
+  };
+  if (user_version < 52) db.exec("PRAGMA user_version = 52;");
 };

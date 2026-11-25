@@ -20,6 +20,13 @@ describe("envelopeThread", () => {
     expect(envelopeThread(msg({ subtype: "bot_message" }))).toBeUndefined();
   });
 
+  test("an allowlisted bot posting for a person is that person asking", () => {
+    expect(envelopeThread(msg({ bot_id: "BFRIEND" }), ["BFRIEND"])).toEqual({ channel: "D1", threadTs: "1.1" });
+    expect(envelopeThread(msg({ bot_id: "BFRIEND" }), ["BOTHER"])).toBeUndefined();
+    expect(envelopeThread(msg({ bot_id: "BFRIEND", user: undefined }), ["BFRIEND"])).toBeUndefined();
+    expect(envelopeThread(msg({ bot_id: "BFRIEND", subtype: "bot_message" }), ["BFRIEND"])).toBeUndefined();
+  });
+
   test("an edit or a delete is nobody asking", () => {
     const edited = { type: "message", bot_id: "B1", text: "edited", ts: "5.5", thread_ts: "4.4" };
     expect(envelopeThread(msg({ subtype: "message_changed", user: undefined, message: edited }))).toBeUndefined();

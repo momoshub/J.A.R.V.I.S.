@@ -199,6 +199,14 @@ const schema = z
     // Label that calls the app when added to an issue or PR.
     GITHUB_APP_LABEL: z.string().default("jarvis"),
 
+    // Slack bot ids (comma separated) whose messages are answered as the person
+    // they post for. Such a bot posts with a person's user token, so its messages
+    // carry a `bot_id` AND that person's `user`; the message is then treated as
+    // that user speaking, authorized by the user id like any other, so the bot
+    // gets exactly that person's role. A bot message with no user is still
+    // dropped. Empty (the default): every bot message is ignored, as before.
+    ACCEPTED_BOT_IDS: z.string().default(""),
+
     // GitHub accounts for the bot's own PRs (gh CLI logins on this host): the
     // author opens the PR and answers reviews, the reviewer posts the review
     // comments, approves and merges. Both or neither; unset keeps whatever gh is active.
@@ -311,6 +319,8 @@ export type AppConfig = {
   };
   /** Who opens the bot's own PRs and who reviews and merges them; unset is one account. */
   selfPrAccounts?: SelfPrAccounts;
+  /** Slack bot ids whose messages are answered as the person they post for; empty ignores every bot. */
+  acceptedBotIds: string[];
   /** GitHub owners whose PRs get non-blocking review findings too; empty is none. */
   reviewExtendedOwners: string[];
   /** Local database MCP servers denied by name to roles that may not use databases; empty denies none. */
@@ -405,6 +415,7 @@ export const loadConfig = (source: Record<string, string | undefined> = process.
     ...((accounts) => (accounts ? { selfPrAccounts: accounts } : {}))(
       parseSelfPrAccounts(env.SELF_PR_AUTHOR, env.SELF_PR_REVIEWER),
     ),
+    acceptedBotIds: parseList(env.ACCEPTED_BOT_IDS),
     reviewExtendedOwners: parseList(env.REVIEW_EXTENDED_OWNERS),
     dbMcpServers: parseList(env.DB_MCP_SERVERS),
     turnEnvPassthrough: parseList(env.TURN_ENV_PASSTHROUGH),

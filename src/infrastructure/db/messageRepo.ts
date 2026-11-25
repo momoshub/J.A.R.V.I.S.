@@ -17,6 +17,7 @@ type Row = {
   created_at: number;
   slack_ts: string;
   thread_ts: string;
+  via_bot: number;
 };
 
 const toMessage = (row: Row): StoredMessage => ({
@@ -28,6 +29,7 @@ const toMessage = (row: Row): StoredMessage => ({
   createdAt: row.created_at,
   ...(row.slack_ts ? { slackTs: row.slack_ts } : {}),
   ...(row.thread_ts ? { threadTs: row.thread_ts } : {}),
+  ...(row.via_bot ? { viaBot: true } : {}),
 });
 
 /** A channel summary for the console's "in DB" badges. */
@@ -101,8 +103,8 @@ export const createMessageRepo = (db: DbClient): MessageRepo => {
      ORDER BY m.created_at DESC LIMIT ?`,
   );
   const insertStmt = db.query(
-    `INSERT INTO messages (channel_id, slack_user_id, role, content, created_at, slack_ts, thread_ts)
-     VALUES ($channelId, $slackUserId, $role, $content, $createdAt, $slackTs, $threadTs)
+    `INSERT INTO messages (channel_id, slack_user_id, role, content, created_at, slack_ts, thread_ts, via_bot)
+     VALUES ($channelId, $slackUserId, $role, $content, $createdAt, $slackTs, $threadTs, $viaBot)
      RETURNING *`,
   );
   const recentStmt = db.query<Row, [string, number]>(
@@ -151,6 +153,7 @@ export const createMessageRepo = (db: DbClient): MessageRepo => {
         $createdAt: createdAt,
         $slackTs: message.slackTs ?? "",
         $threadTs: message.threadTs ?? "",
+        $viaBot: message.viaBot ? 1 : 0,
       }) as Row;
       return toMessage(row);
     },
