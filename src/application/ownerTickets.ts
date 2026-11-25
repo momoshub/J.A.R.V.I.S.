@@ -6,7 +6,7 @@
  * role. It cannot run a command, call Slack or act on GitHub; all it grants is connector access, which a child process of the
  * turn (the `mcp` code-mode CLI) redeems against the bot's own API. What decides who gets one is the bot's own record of who
  * sent the message (`ownerTicketWanted`), never anything the brain says: `ownMessage` comes from a person typing only
- * (`typedByPerson` in `handleMessage`, `ask`/`btw` when not `fromBrainRun`). That mint decision is the gate - the redeem
+ * (`typedByActor` in `handleMessage`: the person's own tagged or DM message, or an untagged one in a followed thread that only they wrote; `ask`/`btw` when not `fromBrainRun`). That mint decision is the gate - the redeem
  * refuses a dead ticket, but the host login it unlocks sits in the keychain for any full-access process.
  *
  * A ticket belongs to ONE spawned process: minted when the turn starts, put in that process's environment, revoked when it

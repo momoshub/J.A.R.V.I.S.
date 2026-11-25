@@ -380,6 +380,17 @@ export type InboundMessage = {
 export const typedByPerson = (m: InboundMessage): boolean => !m.trigger && !m.unprompted && !m.autoContinue && !m.following && !m.batched;
 
 /**
+ * The turn runs on words that `actor` typed themselves, followed thread or not. `typedByPerson` is false for a followed thread's
+ * untagged message and for its buffered batch (somebody else's chatter may ride in), which is what kept the owner's own untagged
+ * reply in a followed thread from being an owner's turn. Here such a turn still counts when the Slack intake recorded every
+ * human message it stands for (`humanMessages`, never set by the bot's own senders) and each one is the actor's. A bot-started
+ * turn (`trigger`, `unprompted`, `autoContinue`) or composed text never counts, and one other author in the batch ends it.
+ */
+export const typedByActor = (m: InboundMessage, actor: string): boolean =>
+  typedByPerson(m) ||
+  (!m.trigger && !m.unprompted && !m.autoContinue && !m.composed && !!m.humanMessages?.length && m.humanMessages.every((h) => h.userId === actor));
+
+/**
  * A person wrote this message's text: the bot did not start the turn itself (`trigger`, `unprompted`, `autoContinue`) and did not compose the text (`composed`).
  * Looser than `typedByPerson`: a followed thread's chatter and a queued batch are still people's words. Recorded on the turn log,
  * because the text alone cannot say (a hand-back the bot wrote to itself reads like any message).
@@ -504,7 +515,7 @@ export const handleMessage = async (
     threadTs: inbound.threadTs,
     messageTs: inbound.messageTs,
     // The owner's own message: what `watch` may later let a watch write to. Same decision as the Slack ticket's owner bit.
-    ...(!!deps.ownerSlackId && typedByPerson(inbound) && decision.user.slackId === deps.ownerSlackId
+    ...(!!deps.ownerSlackId && typedByActor(inbound, decision.user.slackId) && decision.user.slackId === deps.ownerSlackId
       ? { owner: true as const, named: targetsNamedIn(inbound.text) }
       : {}),
     // A turn a watch fired runs as whoever set it (the owner, say), but it read untrusted content: no owner-only command from it.
@@ -694,8 +705,9 @@ export const handleMessage = async (
       channel: inbound.channelId,
       threadTs: inbound.threadTs ?? inbound.messageTs,
       // Typed by the person themselves: not a bot-started turn (watch, loop, tell, nudge, a queued step), not a followed
-      // thread's buffered chatter, and not the bot's own continuation of a workflow.
-      ...(typedByPerson(inbound) ? { ownMessage: true as const } : {}),
+      // thread's chatter written by anyone else, and not the bot's own continuation of a workflow. A followed thread's
+      // untagged message (or buffered batch) that only this actor wrote counts (`typedByActor`).
+      ...(typedByActor(inbound, decision.user.slackId) ? { ownMessage: true as const } : {}),
       // A watch the owner created fires with a grant to the places it named, not with the owner bit.
       ...(inbound.watchGrant ? { watchGrant: inbound.watchGrant } : {}),
     },

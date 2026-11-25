@@ -3,7 +3,7 @@ import { SANDBOX_SHELL_NOTE, TURN_CONTEXT_OPEN, turnContextClose, turnContextOpe
 import { openDatabase, type DbClient } from "../../src/infrastructure/db/client.ts";
 import { createUserRepo } from "../../src/infrastructure/db/userRepo.ts";
 import { createMessageRepo } from "../../src/infrastructure/db/messageRepo.ts";
-import { handleMessage, typedByPerson, type HandleMessageDeps } from "../../src/application/handleMessage.ts";
+import { handleMessage, typedByActor, typedByPerson, type HandleMessageDeps } from "../../src/application/handleMessage.ts";
 import type { LlmPort } from "../../src/application/ports.ts";
 import type { PromptMessage } from "../../src/domain/types.ts";
 import type { SlackAdminPort, SlackMessage } from "../../src/application/slackAdmin.ts";
@@ -1051,5 +1051,33 @@ describe("typedByPerson", () => {
     expect(typedByPerson({ ...typed, autoContinue: true })).toBe(false);
     expect(typedByPerson({ ...typed, following: true })).toBe(false);
     expect(typedByPerson({ ...typed, batched: true })).toBe(false);
+  });
+});
+
+describe("typedByActor", () => {
+  const OWNER_ID = "U0OWNER0001";
+  const followed = { channelId: "C0TEST00001", slackUserId: OWNER_ID, text: "hi", following: true };
+  const said = (...userIds: string[]) => userIds.map((userId, i) => ({ userId, text: "t", messageTs: `1.${i}` }));
+
+  test("everything typedByPerson accepts still counts", () => {
+    expect(typedByActor({ channelId: "C0TEST00001", slackUserId: OWNER_ID, text: "hi" }, OWNER_ID)).toBe(true);
+  });
+
+  test("a followed thread's message counts when only the actor wrote it, alone or buffered", () => {
+    expect(typedByActor({ ...followed, humanMessages: said(OWNER_ID) }, OWNER_ID)).toBe(true);
+    expect(typedByActor({ ...followed, batched: true, humanMessages: said(OWNER_ID, OWNER_ID) }, OWNER_ID)).toBe(true);
+  });
+
+  test("not when anyone else is in it, when nothing says who typed it, or for another actor", () => {
+    expect(typedByActor({ ...followed, batched: true, humanMessages: said(OWNER_ID, "U0PAL0001") }, OWNER_ID)).toBe(false);
+    expect(typedByActor({ ...followed, humanMessages: said("U0PAL0001") }, OWNER_ID)).toBe(false);
+    expect(typedByActor(followed, OWNER_ID)).toBe(false);
+    expect(typedByActor({ ...followed, humanMessages: [] }, OWNER_ID)).toBe(false);
+  });
+
+  test("never for a turn the bot started or composed, whatever humanMessages says", () => {
+    for (const flag of [{ trigger: "watch" as const }, { unprompted: true }, { autoContinue: true }, { composed: true }]) {
+      expect(typedByActor({ ...followed, ...flag, humanMessages: said(OWNER_ID) }, OWNER_ID)).toBe(false);
+    }
   });
 });

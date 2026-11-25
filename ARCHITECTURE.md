@@ -91,7 +91,7 @@ no classes.
   turn's Bash is driven by a model that reads untrusted text. What a turn needs
   from Slack goes through `bin/slack-api.sh`: it presents the turn's
   `JARVIS_SLACK_TICKET` (`slackTickets`, minted when the process starts and
-  revoked when it exits, no actor and no role, only an owner bit, set when the owner's own message started the turn, never for a run merely billed to them such as the dashboard draft) to `POST /api/slack/proxy`, where
+  revoked when it exits, no actor and no role, only an owner bit, set when the owner's own message started the turn (a tagged or DM message, or an untagged one in a followed thread that only the owner wrote, `typedByActor`), never for a run merely billed to them such as the dashboard draft) to `POST /api/slack/proxy`, where
   `slackProxy` checks the ticket, applies the method allowlist
   (`domain/slackProxy.ts`: a fixed set of reads, and writes only into the
   turn's own channel, plus the methods the owner added with `slack-methods`,
