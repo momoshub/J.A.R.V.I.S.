@@ -71,6 +71,8 @@ export type InboxReceiverOptions = {
    * work that cannot be cut at a budget and picked up again).
    */
   readonly waitsForRestart?: (row: InboxRow) => boolean;
+  /** Bot ids whose messages count as a person asking (`ACCEPTED_BOT_IDS`), so they earn a restart notice too. */
+  readonly acceptedBotIds?: readonly string[];
 };
 
 export const INBOX_POLL_MS = 100;
@@ -151,7 +153,7 @@ export const createInboxReceiver = (opts: InboxReceiverOptions) => {
     const batch = opts.batch ?? 20;
     const rows = only ? opts.inbox.peek(batch + HELD_LOOKAHEAD, now()).filter(only) : opts.inbox.peek(batch, now());
     const targets = rows
-      .map((row) => envelopeThread(row.body))
+      .map((row) => envelopeThread(row.body, opts.acceptedBotIds))
       .filter((t): t is { channel: string; threadTs?: string } => !!t);
     const fresh = unnotified(targets, told);
     if (fresh.length === 0) return;

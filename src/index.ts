@@ -1074,6 +1074,7 @@ const main = async () => {
       inbox: inbox
         ? createInboxReceiver({
             inbox,
+            acceptedBotIds: config.acceptedBotIds,
             log: (l) => activity.line(`inbox: ${l}`),
             // A turn that started while a restart waits ran past its budget:
             // cut it and tell its thread once; the next process picks it up.
@@ -1123,6 +1124,7 @@ const main = async () => {
       thinkingLabel: () => profile().thinkingLabel,
       commandPrefix: config.commandPrefix,
       slashCommand: config.slashCommand,
+      acceptedBotIds: config.acceptedBotIds,
     },
     {
       ...deps,

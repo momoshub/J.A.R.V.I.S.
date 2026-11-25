@@ -28,6 +28,21 @@ describe("renderPrompt", () => {
     expect(out).toContain("(from <@U1>)");
   });
 
+  test("a turn an allowlisted bot posted for a person is marked via bot, in the transcript and as the newest", () => {
+    const out = renderPrompt(
+      [
+        { role: "user", content: "from the bot", speakerId: "U1", viaBot: true },
+        { role: "user", content: "from the person", speakerId: "U1" },
+        { role: "user", content: "newest, bot again", speakerId: "U1", viaBot: true },
+      ],
+      "Jarvis",
+    );
+    expect(out).toContain("<@U1> (via bot): from the bot");
+    expect(out).toContain("<@U1>: from the person");
+    expect(out).toContain("(from <@U1>, via bot)");
+    expect(renderPrompt([{ role: "user", content: "hi", speakerId: "U1", viaBot: true }])).toContain("(from <@U1>, via bot)");
+  });
+
   test("multi-turn attributes speakers by tag and labels the bot's turns", () => {
     const msgs: PromptMessage[] = [
       { role: "user", content: "hi", speakerId: "U1" },

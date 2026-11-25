@@ -13,6 +13,7 @@
  * everyone else in it). It lists every thread that is waiting and is edited
  * as more queue up, once per thread, not once per message.
  */
+import { isAcceptedBot } from "./acceptedBots.ts";
 import { reviewRequestIn } from "./reviewRequest.ts";
 
 /** What the waiting thread is told about the restart itself. */
@@ -91,12 +92,21 @@ const couldBeForBot = (event: Record<string, unknown>): boolean => {
 
 export const envelopeThread = (
   body: Record<string, unknown>,
+  acceptedBotIds: readonly string[] = [],
 ): { channel: string; threadTs?: string } | undefined => {
   const event = body.event as Record<string, unknown> | undefined;
   if (!event || (event.type !== "message" && event.type !== "app_mention")) return undefined;
   if (!couldBeForBot(event)) return undefined;
   // The bot's own messages are not somebody waiting for an answer.
-  if (event.bot_id || event.subtype === "bot_message") return undefined;
+  // An allowlisted bot that speaks for a person is that person asking.
+  const speaksForPerson =
+    typeof event.bot_id === "string" &&
+    event.subtype !== "bot_message" &&
+    isAcceptedBot(
+      { bot_id: event.bot_id, ...(typeof event.user === "string" ? { user: event.user } : {}) },
+      acceptedBotIds,
+    );
+  if ((event.bot_id || event.subtype === "bot_message") && !speaksForPerson) return undefined;
   // An edit or a delete is not somebody asking either. A message_changed
   // carries the bot id inside `event.message` and no thread_ts at the top, so
   // the bot's own chat.update used to earn a notice at the channel root.

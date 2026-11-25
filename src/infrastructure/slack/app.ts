@@ -74,6 +74,7 @@ import { annotateMentions, extractMentionIds, hasContent } from "../../domain/me
 import { isTimeout } from "../../domain/threadSession.ts";
 import { toMrkdwn } from "../../domain/slackFormat.ts";
 import { MAX_BLOCKS, readableText, toBlockMessage, type Block } from "../../domain/blockKit.ts";
+import { createBotLoopGuard, isAcceptedBot, isPersonMessage } from "../../domain/acceptedBots.ts";
 import { couldFollowThread, followVerdict, isOneOnOneThread, isSpeech, startsAutoFollow } from "../../domain/threadFollow.ts";
 import {
   formatBatchInput,
@@ -168,6 +169,11 @@ export type SlackAppConfig = {
   /** Message command prefix (e.g. "X/jarvis") and the Slack slash command name. */
   commandPrefix: string;
   slashCommand: string;
+  /**
+   * Slack bot ids whose messages are answered as the person they post for
+   * (`ACCEPTED_BOT_IDS`). Absent or empty: every bot message is ignored.
+   */
+  acceptedBotIds?: readonly string[];
   /**
    * How long the socket may stay down before the process gives up on itself.
    * Exposed for tests; production wants the default.
@@ -275,9 +281,13 @@ export const mutedAway = (
   return line === undefined || !isKnownCommandLine(line);
 };
 
-/** Only plain human DMs: reject bot echoes, edits/joins (subtypes) and non-DM channels. */
-export const shouldHandleDm = (m: RawMessage): boolean =>
-  isSpeech(m.subtype) && !m.bot_id && !!m.user && !!m.text && m.channel_type === "im";
+/**
+ * Only plain human DMs: reject bot echoes, edits/joins (subtypes) and non-DM
+ * channels. An allowlisted bot posting for a person (`isPersonMessage`) is
+ * that person, so its DM passes.
+ */
+export const shouldHandleDm = (m: RawMessage, acceptedBotIds: readonly string[] = [], ownUserId?: string): boolean =>
+  isSpeech(m.subtype) && isPersonMessage(m, acceptedBotIds, ownUserId) && !!m.text && m.channel_type === "im";
 
 /** Best-effort display name lookup; never throws, worst case returns undefined. */
 const fetchDisplayName = async (client: SlackClient, userId: string): Promise<string | undefined> => {
@@ -424,6 +434,8 @@ export type Incoming = {
   client: SlackClient;
   /** An untagged reply under a thread this bot started. */
   following?: boolean;
+  /** Posted by an allowlisted bot with the person's user token: the turn's context marks it "via bot". */
+  viaBot?: boolean;
   /** A person tagged the bot in this message (`app_mention`). */
   mentioned?: boolean;
   /**
@@ -588,6 +600,7 @@ export const createHandler =
           messageTs: msg.messageTs,
           viaSlash: false,
           following: msg.following === true,
+          ...(msg.viaBot ? { viaBot: true } : {}),
           ...(msg.mentioned ? { mentioned: true } : {}),
           ...(batched ? { batched: true } : {}),
           // what people actually typed, for the linked-thread relay: the buffered batch item by item, else this message
@@ -876,6 +889,7 @@ export const createKitListeners = (
   inboxOf: (context: InboxContext) => Incoming["inbox"] = () => undefined,
   bugReportApproval?: BugReportApprovalDeps,
   reviewRunApproval?: ReviewRunApprovalDeps,
+  acceptedBotIds: readonly string[] = [],
 ) => {
   type Context = InboxContext & { teamId?: string };
   const kitTurn = async (client: unknown, context: Context | undefined, userId: string, thread: KitThread, text: string) => {
@@ -911,7 +925,7 @@ export const createKitListeners = (
     let allowed = new Set<string>();
     try {
       const res = await web.conversations?.replies({ channel, ts: threadTs, limit: 200 });
-      allowed = voteSubmitters(res?.messages ?? [], threadTs, voteTs);
+      allowed = voteSubmitters(res?.messages ?? [], threadTs, voteTs, acceptedBotIds);
     } catch (err) {
       log(`kit vote submit check on ${voteTs} failed: ${slackRefusal(err)}`);
     }
@@ -1292,6 +1306,15 @@ export const createSessionStopHandler =
 
 export const createSlackApp = (config: SlackAppConfig, deps: Deps) => {
   const log = deps.log ?? ((m: string) => console.log(`[slack] ${m}`));
+  const acceptedBotIds = config.acceptedBotIds ?? [];
+  // Caps how long two bots may answer each other in one thread; a person writing resets it.
+  const botLoops = createBotLoopGuard();
+  /** An accepted bot's message may be answered unless its thread already ran a full cap of bot turns. */
+  const admitBotTurn = (channel: string, threadTs: string, user: string | undefined): boolean => {
+    const verdict = botLoops.admit(threadTs);
+    if (!verdict.ok) log(`bot skip channel=${channel} thread=${threadTs} user=${user}: ${verdict.reason}`);
+    return verdict.ok;
+  };
   const app = config.inbox
     ? new App({ token: config.botToken, receiver: config.inbox as never })
     : new App({ token: config.botToken, appToken: config.appToken, socketMode: true });
@@ -1361,6 +1384,7 @@ export const createSlackApp = (config: SlackAppConfig, deps: Deps) => {
     say: Incoming["say"];
     teamId?: string;
     inbox?: Incoming["inbox"];
+    viaBot?: boolean;
   };
   const gateNames = new Map<string, string>();
   const gateNameOf = async (client: SlackClient, id: string): Promise<string> => {
@@ -1441,6 +1465,7 @@ export const createSlackApp = (config: SlackAppConfig, deps: Deps) => {
         messageTs: last.ts,
         client: last.client,
         following: true,
+        ...(items.some((i) => i.viaBot) ? { viaBot: true } : {}),
         typed: true,
         batch: items.map((i) => ({ userId: i.userId, text: i.text, messageTs: i.ts })),
         say: last.say,
@@ -1452,12 +1477,17 @@ export const createSlackApp = (config: SlackAppConfig, deps: Deps) => {
 
   // @-mentions in channels -> reply in the same thread.
   app.event("app_mention", async ({ event, client, say, context }) => {
-    const e = event as { channel: string; user?: string; text: string; ts: string; thread_ts?: string };
+    const e = event as { channel: string; user?: string; bot_id?: string; text: string; ts: string; thread_ts?: string };
     if (!e.user) return;
+    // A person writing starts the run of bot turns over, muted or not.
+    if (!e.bot_id) botLoops.human(threadKeyOf(e));
+    const ownId = e.bot_id && acceptedBotIds.length ? await deps.slack?.botUserId().catch(ignoreQuietly("bot user id lookup")) : undefined;
+    const mentionBot = !!ownId && isAcceptedBot(e, acceptedBotIds, ownId);
     if (mutedAway(deps.mutes, config.commandPrefix, e.channel, threadKeyOf(e), e.text)) {
       log(`mute drop channel=${e.channel} thread=${threadKeyOf(e)} user=${e.user}: tagged`);
       return;
     }
+    if (mentionBot && !admitBotTurn(e.channel, threadKeyOf(e), e.user)) return;
     // A tag that runs a chat turn for an allowed user takes the buffered batch
     // over (the turn reads it in the thread). A stranger's tag (an access
     // request) or a command line answers none of it: the batch fires on its own.
@@ -1479,6 +1509,7 @@ export const createSlackApp = (config: SlackAppConfig, deps: Deps) => {
       inbox: inboxOf(context as InboxContext),
       text: e.text,
       mentioned: true,
+      ...(mentionBot ? { viaBot: true } : {}),
       typed: true,
       threadTs: threadKeyOf(e),
       messageTs: e.ts,
@@ -1930,7 +1961,7 @@ export const createSlackApp = (config: SlackAppConfig, deps: Deps) => {
   }) as never);
 
 
-  const { onKitAction, onKitView, onBugReportPress, onReviewRunPress } = createKitListeners(deps.kitViews, handle, log, inboxOf, deps.bugReportApproval, deps.reviewRunApproval);
+  const { onKitAction, onKitView, onBugReportPress, onReviewRunPress } = createKitListeners(deps.kitViews, handle, log, inboxOf, deps.bugReportApproval, deps.reviewRunApproval, acceptedBotIds);
   app.action(new RegExp(`^${BUG_REPORT_ACTION_PREFIX}`), onBugReportPress as never);
   app.action(new RegExp(`^${REVIEW_RUN_ACTION_PREFIX}`), onReviewRunPress as never);
   app.action(KIT_PATTERN, onKitAction as never);
@@ -2111,23 +2142,31 @@ export const createSlackApp = (config: SlackAppConfig, deps: Deps) => {
 
   app.message(async ({ message, client, say, context }) => {
     const m = message as RawMessage & { channel: string; ts: string };
+    // A bot's message counts as a person's only when its id is allowlisted and
+    // it carries a user that is not the bot itself; the bot's own id is needed
+    // for that, so an unknown one leaves every bot message dropped.
+    const ownId = m.bot_id && acceptedBotIds.length ? await deps.slack?.botUserId().catch(ignoreQuietly("bot user id lookup")) : undefined;
+    const viaBot = !!ownId && isAcceptedBot(m, acceptedBotIds, ownId);
+    const asPerson = !m.bot_id || viaBot;
     // Muted: nothing from a person gets through, tagged, followed or a DM
     // reply - and nothing is touched on the way, not even a retired card.
-    if (m.user && !m.bot_id && isSpeech(m.subtype) && m.text && mutedAway(deps.mutes, config.commandPrefix, m.channel, threadKeyOf(m), m.text)) {
+    if (m.user && asPerson && isSpeech(m.subtype) && m.text && mutedAway(deps.mutes, config.commandPrefix, m.channel, threadKeyOf(m), m.text)) {
       log(`mute drop channel=${m.channel} thread=${threadKeyOf(m)} user=${m.user}`);
       return;
     }
     // Any human reply in a thread, handled or not: a typed answer settles a
     // question whoever it was asked of.
-    if (m.user && !m.bot_id && isSpeech(m.subtype)) void retireOnReply(client, m);
-    if (!shouldHandleDm(m)) {
+    if (m.user && asPerson && isSpeech(m.subtype)) void retireOnReply(client, m);
+    // Only an actual person ends a run of bot turns, not another bot's post.
+    if (m.user && !m.bot_id && isSpeech(m.subtype)) botLoops.human(threadKeyOf(m));
+    if (!shouldHandleDm(m, viaBot ? acceptedBotIds : [])) {
       // Three ways a thread is one it keeps up with, tag or no tag. It OPENED
       // this one - it started the conversation, so it is expected to follow
       // it. Or somebody ASKED it to, with `follow`, which is how a thread
       // started by a person gets the same treatment. Or it is just it and
       // one person talking, who should not have to tag it on every line.
       const me = await deps.slack?.botUserId().catch(ignoreQuietly("bot user id lookup"));
-      if (!couldFollowThread(m, me)) return;
+      if (!couldFollowThread(m, me, viaBot ? acceptedBotIds : [])) return;
       if (!me) {
         log(`follow skip channel=${m.channel} thread=${m.thread_ts} user=${m.user}: bot id unknown`);
         return;
@@ -2158,6 +2197,7 @@ export const createSlackApp = (config: SlackAppConfig, deps: Deps) => {
           (info ? ` author=${info.author ?? "?"} participants=${info.participants.join(",") || "none"}` : ""),
       );
       if (!verdict.follow) return;
+      if (viaBot && !admitBotTurn(m.channel, threadKeyOf(m), m.user)) return;
       // Tagged messages, DMs, one-on-one threads and command lines are never
       // held: they are answered at once, as before. Only the untagged routes
       // into a thread it is a guest in wait for a quiet moment and the gate.
@@ -2184,6 +2224,7 @@ export const createSlackApp = (config: SlackAppConfig, deps: Deps) => {
             say: say as Incoming["say"],
             teamId: context.teamId,
             inbox: inboxOf(context as InboxContext),
+            ...(viaBot ? { viaBot: true } : {}),
           },
         );
         return;
@@ -2211,11 +2252,13 @@ export const createSlackApp = (config: SlackAppConfig, deps: Deps) => {
         messageTs: m.ts,
         client: asClient(client),
         following: true,
+        ...(viaBot ? { viaBot: true } : {}),
         typed: true,
         say: say as Incoming["say"],
       });
       return;
     }
+    if (viaBot && !admitBotTurn(m.channel, threadKeyOf(m), m.user)) return;
     await handle({
       channelId: m.channel,
       userId: m.user!,
@@ -2225,6 +2268,7 @@ export const createSlackApp = (config: SlackAppConfig, deps: Deps) => {
       threadTs: threadKeyOf(m),
       messageTs: m.ts,
       typed: true,
+      ...(viaBot ? { viaBot: true } : {}),
       client: asClient(client),
       // Slack never sends `app_mention` for a DM, so a tag that opens the text
       // is the only sign the bot was addressed - which `respond` needs before a

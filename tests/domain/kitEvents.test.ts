@@ -382,6 +382,16 @@ describe("voteSubmitters", () => {
     expect([...voteSubmitters(msgs, "1.0", "3.0")]).toEqual(["UOWNER", "UASK"]);
   });
 
+  test("an allowlisted bot speaking for a person counts as that person", () => {
+    const msgs = [
+      { ts: "1.0", user: "UOWNER" },
+      { ts: "2.0", user: "UASK", bot_id: "BFRIEND" },
+      { ts: "2.5", user: "UOTHER", bot_id: "BNOPE" },
+    ];
+    expect([...voteSubmitters(msgs, "1.0", "3.0", ["BFRIEND"])]).toEqual(["UOWNER", "UASK"]);
+    expect([...voteSubmitters(msgs, "1.0", "3.0")]).toEqual(["UOWNER"]);
+  });
+
   test("a bot-opened thread leaves only the person asked", () => {
     const msgs = [{ ts: "1.0", user: "UBOT", bot_id: "B1" }, { ts: "2.0", user: "UASK" }];
     expect([...voteSubmitters(msgs, "1.0", "3.0")]).toEqual(["UASK"]);

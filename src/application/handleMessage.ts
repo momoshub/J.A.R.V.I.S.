@@ -301,6 +301,8 @@ export type InboundMessage = {
   viaSlash?: boolean;
   /** An untagged reply under a thread the bot started; nobody asked it. */
   following?: boolean;
+  /** An allowlisted bot posted this with `slackUserId`'s user token: it speaks for them, but is not them. */
+  viaBot?: boolean;
   /**
    * A person tagged the bot in this message (an `app_mention`). The only kind
    * of message a spoken `review <pr>` / `approve <pr>` may become a
@@ -488,6 +490,7 @@ export const handleMessage = async (
       content: text,
       ...(inbound.messageTs ? { slackTs: inbound.messageTs } : {}),
       threadTs: inbound.threadTs ?? "",
+      ...(inbound.viaBot ? { viaBot: true } : {}),
     },
     now,
   );

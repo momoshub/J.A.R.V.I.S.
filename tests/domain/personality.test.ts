@@ -117,6 +117,19 @@ describe("buildSystemPrompt", () => {
     expect(p).toContain("Several emoji on one message are good");
   });
 
+  test("a reactable message an allowlisted bot posted is marked via bot", () => {
+    const p = buildSystemPrompt({
+      channelId: "C1",
+      reactScript: "/bin/react.sh",
+      reactable: [
+        { ts: "1.1", speakerId: "U1", excerpt: "by the person" },
+        { ts: "2.2", speakerId: "U1", excerpt: "by the bot", viaBot: true },
+      ],
+    });
+    expect(p).toContain('- ts 1.1 - from <@U1>: "by the person"');
+    expect(p).toContain('- ts 2.2 - from <@U1> (via bot): "by the bot"');
+  });
+
   test("reactions are encouraged, silent, and never a substitute for replying", () => {
     const p = buildSystemPrompt({ channelId: "C1", reactScript: "/bin/react.sh", reactable: [{ ts: "1.1", speakerId: "U1", excerpt: "hi" }] });
     expect(p).toContain("React often");

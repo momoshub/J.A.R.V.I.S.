@@ -110,8 +110,15 @@ export const toolOutput = (content: unknown): string => {
     .join("\n");
 };
 
+/** Marks a turn an allowlisted bot posted on a person's behalf, so it is not mistaken for the person. */
+export const VIA_BOT_MARK = "via bot";
+
 const speakerLabel = (m: PromptMessage, assistantName: string): string =>
-  m.role === "assistant" ? assistantName : m.speakerId ? `<@${m.speakerId}>` : "User";
+  m.role === "assistant"
+    ? assistantName
+    : m.speakerId
+      ? `<@${m.speakerId}>${m.viaBot ? ` (${VIA_BOT_MARK})` : ""}`
+      : "User";
 
 /**
  * Render the conversation window into a single print-mode prompt.
@@ -128,7 +135,7 @@ export const renderPrompt = (
 
   const history = messages.slice(0, -1);
   const latest = messages[messages.length - 1]!;
-  const from = latest.speakerId ? ` (from <@${latest.speakerId}>)` : "";
+  const from = latest.speakerId ? ` (from <@${latest.speakerId}>${latest.viaBot ? `, ${VIA_BOT_MARK}` : ""})` : "";
 
   if (history.length === 0) {
     return `Respond to this message${from}:\n${latest.content}`;

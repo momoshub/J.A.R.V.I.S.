@@ -16,6 +16,7 @@
  * into `private_metadata` so the submission finds its way home.
  */
 
+import { isAcceptedBot } from "./acceptedBots.ts";
 import { CODE_ACTION_PREFIX } from "./cloudwatch.ts";
 import { BUG_REPORT_ACTION_PREFIX } from "./bugReport.ts";
 import { REVIEW_RUN_ACTION_PREFIX } from "./reviewIdentity.ts";
@@ -538,24 +539,31 @@ export const describeVote = (userId: string, actionId: string, lines: readonly s
 
 type ThreadMessage = { ts?: string; user?: string; bot_id?: string; subtype?: string };
 
-const isHuman = (m: ThreadMessage): m is ThreadMessage & { user: string } =>
-  !!m.user && !m.bot_id && m.subtype !== "bot_message";
+const isHuman = (
+  m: ThreadMessage,
+  acceptedBotIds: readonly string[] = [],
+): m is ThreadMessage & { user: string } =>
+  !!m.user && m.subtype !== "bot_message" && (!m.bot_id || isAcceptedBot(m, acceptedBotIds));
 
 /**
  * Who may close a vote: the person who opened the thread, and the person the
  * question was put to - the last human who wrote before the vote was posted.
  * Anyone else may pick, but a bystander pressing submit would end the vote
- * for everybody. Empty when the thread has no human in it to go by.
+ * for everybody. Empty when the thread has no human in it to go by. An
+ * allowlisted bot speaking for a person counts as that person.
  */
 export const voteSubmitters = (
   messages: readonly ThreadMessage[],
   threadTs: string,
   voteTs: string,
+  acceptedBotIds: readonly string[] = [],
 ): Set<string> => {
   const allowed = new Set<string>();
   const root = messages.find((m) => m.ts === threadTs);
-  if (root && isHuman(root)) allowed.add(root.user);
-  const asker = messages.filter((m) => m.ts && Number(m.ts) < Number(voteTs) && isHuman(m)).at(-1);
+  if (root && isHuman(root, acceptedBotIds)) allowed.add(root.user);
+  const asker = messages
+    .filter((m) => m.ts && Number(m.ts) < Number(voteTs) && isHuman(m, acceptedBotIds))
+    .at(-1);
   if (asker?.user) allowed.add(asker.user);
   return allowed;
 };

@@ -234,7 +234,7 @@ export const reactionRules = (
 ): string => {
   if (!channelId || reactable.length === 0 || !reactScript) return "";
   const lines = reactable
-    .map((r) => `- ts ${r.ts} - from <@${r.speakerId}>: "${r.excerpt}"`)
+    .map((r) => `- ts ${r.ts} - from <@${r.speakerId}>${r.viaBot ? " (via bot)" : ""}: "${r.excerpt}"`)
     .join("\n");
   return `
 

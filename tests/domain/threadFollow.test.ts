@@ -38,6 +38,18 @@ describe("couldFollowThread", () => {
     expect(couldFollowThread(reply({ bot_id: "B1", user: undefined }), BOT)).toBe(false);
   });
 
+  test("a bot's reply is dropped unless its id is allowlisted and it carries a user", () => {
+    expect(followSkipReason(reply({ bot_id: "BFRIEND" }), BOT)).toBe("bot");
+    expect(followSkipReason(reply({ bot_id: "BFRIEND" }), BOT, ["BOTHER"])).toBe("bot");
+    expect(followSkipReason(reply({ bot_id: "BFRIEND", user: undefined }), BOT, ["BFRIEND"])).toBe("bot");
+    expect(followSkipReason(reply({ bot_id: "BFRIEND", user: BOT }), BOT, ["BFRIEND"])).toBe("bot");
+    expect(couldFollowThread(reply({ bot_id: "BFRIEND" }), BOT, ["BFRIEND"])).toBe(true);
+  });
+
+  test("an accepted bot's tagged reply is still the mention handler's", () => {
+    expect(followSkipReason(reply({ bot_id: "BFRIEND", text: "<@UBOT> hi" }), BOT, ["BFRIEND"])).toBe("tagged");
+  });
+
   test("a top-level message is not a thread reply", () => {
     expect(couldFollowThread(reply({ thread_ts: undefined }), BOT)).toBe(false);
     expect(couldFollowThread(reply({ thread_ts: "200.0" }), BOT)).toBe(false);

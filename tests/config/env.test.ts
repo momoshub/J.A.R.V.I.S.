@@ -64,15 +64,18 @@ describe("loadConfig", () => {
     expect(c.reviewExtendedOwners).toEqual([]);
     expect(c.dbMcpServers).toEqual([]);
     expect(c.executerDbMcpServers).toEqual([]);
+    expect(c.acceptedBotIds).toEqual([]);
     const d = loadConfig({
       ...base,
       REVIEW_EXTENDED_OWNERS: " acme, other ,,",
       DB_MCP_SERVERS: "pg-prod, ch-ro",
       EXECUTER_DB_MCP_SERVERS: "ch-ro",
+      ACCEPTED_BOT_IDS: " BA, BB ,,",
     });
     expect(d.reviewExtendedOwners).toEqual(["acme", "other"]);
     expect(d.dbMcpServers).toEqual(["pg-prod", "ch-ro"]);
     expect(d.executerDbMcpServers).toEqual(["ch-ro"]);
+    expect(d.acceptedBotIds).toEqual(["BA", "BB"]);
   });
 
   test("the servers kept out of Orca workers are a comma list, empty (every server stays) by default", () => {

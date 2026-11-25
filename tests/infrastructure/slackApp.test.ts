@@ -51,6 +51,12 @@ describe("shouldHandleDm", () => {
     expect(shouldHandleDm({ ...base, bot_id: "B1" })).toBe(false);
     expect(shouldHandleDm({ ...base, subtype: "message_changed" })).toBe(false);
   });
+  test("accepts a DM from an allowlisted bot posting for a person, nobody else's", () => {
+    expect(shouldHandleDm({ ...base, bot_id: "BFRIEND" }, ["BFRIEND"], "UBOT")).toBe(true);
+    expect(shouldHandleDm({ ...base, bot_id: "BFRIEND" }, ["BOTHER"], "UBOT")).toBe(false);
+    expect(shouldHandleDm({ ...base, bot_id: "BFRIEND", user: undefined }, ["BFRIEND"], "UBOT")).toBe(false);
+    expect(shouldHandleDm({ ...base, bot_id: "BFRIEND", user: "UBOT" }, ["BFRIEND"], "UBOT")).toBe(false);
+  });
   test("handles a DM that carries files (file_share is still a message)", () => {
     expect(shouldHandleDm({ ...base, subtype: "file_share" })).toBe(true);
   });

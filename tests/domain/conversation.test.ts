@@ -123,6 +123,16 @@ describe("cleanInboundText", () => {
   });
 });
 
+const msg2 = (over: Partial<StoredMessage>): StoredMessage => ({
+  id: 1,
+  channelId: "C1",
+  slackUserId: "U1",
+  role: "user",
+  content: "hello",
+  createdAt: 0,
+  ...over,
+});
+
 describe("reactableMessages", () => {
   const msg = (over: Partial<StoredMessage> = {}): StoredMessage => ({
     id: 1,
@@ -143,6 +153,23 @@ describe("reactableMessages", () => {
       { ts: "1.1", speakerId: "U1", excerpt: "first" },
       { ts: "2.2", speakerId: "U2", excerpt: "second" },
     ]);
+  });
+
+  test("marks a message an allowlisted bot posted for a person", () => {
+    const out = reactableMessages([
+      msg({ id: 1, slackTs: "1.1", content: "mine" }),
+      msg({ id: 2, slackTs: "2.2", content: "theirs", viaBot: true }),
+    ]);
+    expect(out).toEqual([
+      { ts: "1.1", speakerId: "U1", excerpt: "mine" },
+      { ts: "2.2", speakerId: "U1", excerpt: "theirs", viaBot: true },
+    ]);
+  });
+
+  test("the via-bot mark reaches the prompt window", () => {
+    const [m] = buildContextWindow([msg2({ viaBot: true })]);
+    expect(m?.viaBot).toBe(true);
+    expect(buildContextWindow([msg2({})])[0]).not.toHaveProperty("viaBot");
   });
 
   test("skips the bot's own turns and anything stored without a ts", () => {

@@ -42,3 +42,14 @@ describe("reminders waitingAt", () => {
     expect(r.waitingAt("C1", "9.9")).toBe(0);
   });
 });
+
+describe("via bot mark", () => {
+  test("is stored with the turn and read back, absent when not set", () => {
+    const r = createMessageRepo(openDatabase(":memory:"));
+    r.append({ channelId: "C1", slackUserId: "U1", role: "user", content: "a", threadTs: "1.1", viaBot: true }, 1);
+    r.append({ channelId: "C1", slackUserId: "U1", role: "user", content: "b", threadTs: "1.1" }, 2);
+    const [a, b] = r.recentForThread("C1", "1.1", 10);
+    expect(a?.viaBot).toBe(true);
+    expect(b).not.toHaveProperty("viaBot");
+  });
+});
