@@ -112,7 +112,10 @@ no classes.
   later part in; a `KEEP_REPLY` line in the closing reply replaces the turn's single
   text post). The Slack handler then sends no closing reply for that turn unless it
   carries the marker (`domain/selfPost.ts`); the drop is logged with thread and
-  length. One exception keeps the answer from vanishing: when EVERY post of the turn is a
+  length. The closing reply is not streamed live either: once the turn has a post, the stream
+  (`bufferText` in `slack/stream.ts`, fed by the turn's run ticket through `onRunTicket`) stops
+  showing text and holds it back until the end-of-turn decision, so nothing is shown only to be
+  deleted; text that streamed before the first post stays until that tidy-up. One exception keeps the answer from vanishing: when EVERY post of the turn is a
   progress line (plain, at most `PROGRESS_POST_MAX_CHARS` = 280 chars, and under 1/`PROGRESS_REPLY_RATIO`
   = half of the closing reply's length, `isProgressPost`), the reply is kept as if it carried
   the marker (logged `closing reply kept, the turn's own posts were progress lines`). One

@@ -62,6 +62,33 @@ describe("createSlackStream", () => {
     expect(s.parts.map((p) => p.text).join("")).not.toContain("KEEP_REPLY");
   });
 
+  test("bufferText: text before it streams, text after it is held back, finish says the reply was not delivered", async () => {
+    const f = fakeStreamer();
+    const st = stubStatus();
+    let hold = false;
+    const s = createSlackStream(f.make, () => {}, { status: st.status, bufferText: () => hold });
+    s.sink({ type: "text", delta: "Looking.\n" });
+    hold = true;
+    s.sink({ type: "text", delta: "The answer." });
+    s.sink({ type: "tool", id: "t1", title: "Run: step", status: "in_progress" });
+    const ok = await s.finish();
+    expect(ok).toBe(false);
+    expect(f.appends.map((a) => a.markdown_text ?? "").join("")).toBe("Looking.\n");
+    expect(f.stopped()).toBe(1);
+    // tool steps still reach the status message
+    expect(st.steps().map((x) => x.id)).toEqual(["t1"]);
+  });
+
+  test("bufferText true from the start: no stream is ever opened", async () => {
+    const f = fakeStreamer();
+    const s = createSlackStream(f.make, () => {}, { bufferText: () => true });
+    s.sink({ type: "text", delta: "The whole answer.\n" });
+    expect(await s.finish()).toBe(false);
+    expect(f.made()).toBe(0);
+    expect(f.appends).toHaveLength(0);
+    expect(s.parts).toHaveLength(0);
+  });
+
   test("streams the text; the tool steps go to the status message, never into the stream", async () => {
     const f = fakeStreamer();
     const st = stubStatus();

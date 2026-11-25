@@ -51,6 +51,7 @@ type PendingTurn = {
   inbound: InboundMessage;
   sink?: LlmStreamSink;
   onTurnStart?: () => void;
+  onRunTicket?: (ticket: string) => void;
   tracked?: ReturnType<RunRegistry["track"]>;
   runId: string;
 };
@@ -70,6 +71,8 @@ export const respond = async (
    * out of order.
    */
   onTurnStart?: () => void,
+  /** Called with the turn's run ticket as soon as it is minted, so the Slack layer can ask what the turn has posted while it still runs. */
+  onRunTicket?: (ticket: string) => void,
 ): Promise<HandleResult> => {
   const line = commandLineOf(inbound.text, deps.commandPrefix);
   if (line === undefined) {
@@ -133,12 +136,12 @@ export const respond = async (
       ...(workflowThread ? { background: true } : {}),
       ...(inbound.inboxRowId !== undefined ? { inboxRowId: inbound.inboxRowId } : {}),
     });
-    const own: PendingTurn = { inbound, sink, onTurnStart, tracked, runId };
+    const own: PendingTurn = { inbound, sink, onTurnStart, onRunTicket, tracked, runId };
     // `lead` is the message whose caller answers (its stream, its thinking
     // card, its run), `inbound` is what the turn reads: the lead's own message,
     // or everything a person queued behind the turn before it, folded into one.
     const chatTurn = async (lead: PendingTurn, inbound: InboundMessage): Promise<HandleResult> => {
-      const { tracked, sink, onTurnStart, runId } = lead;
+      const { tracked, sink, onTurnStart, onRunTicket, runId } = lead;
       // Called off while it waited its turn, so it never spawns anything.
       if (tracked?.signal.aborted) {
         // Never reaches the `finally` below, so its run is closed here: a
@@ -231,7 +234,7 @@ export const respond = async (
         // A step the bot queued for a workflow that has since ended, or for
         // someone who may no longer steer it, is not a chat message.
         if (inbound.autoContinue) return { kind: "ignored" };
-        const result = await handleMessage(deps, inbound, sink, tracked?.signal);
+        const result = await handleMessage(deps, inbound, sink, tracked?.signal, onRunTicket);
         if (isRestartCut(tracked?.signal)) return restartCut();
         // "ignored" is not a turn that happened - it was not for us, or it was
         // dropped before it began - so there is nothing to record about it.

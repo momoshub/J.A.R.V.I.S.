@@ -991,12 +991,14 @@ describe("createHandler streaming truth table", () => {
     });
     const turnBuild = (selfPosts: SelfPosts, llm: LlmPort, streamUpdates = true) => build({ llm, streamUpdates, selfPosts });
 
-    test("the real Vietnamese reword is dropped: the stream message goes, the posted one stays, the drop is logged", async () => {
+    test("the real Vietnamese reword is dropped without ever streaming, the posted one stays, the drop is logged", async () => {
       const selfPosts = createSelfPosts();
       const r = turnBuild(selfPosts, postingLlm(selfPosts, VI_POST, VI_REPLY, [card, { type: "text", delta: VI_REPLY }]));
       await r.handle(r.msg("stuck chưa", "000.9"));
-      expect(r.deletes).toEqual(["222.2"]);
-      expect(r.deletes).not.toContain("333.3");
+      // the turn had posted before its closing reply: no stream message was ever opened for it
+      expect(r.opened()).toBe(0);
+      expect(r.rec.appends).toHaveLength(0);
+      expect(r.deletes).toHaveLength(0);
       expect(r.updates).toHaveLength(0);
       expect(r.said).toHaveLength(0);
       const line = r.logs.find((l) => l.includes("closing reply dropped"));
@@ -1009,20 +1011,55 @@ describe("createHandler streaming truth table", () => {
       // the post is answer-sized (over the progress cap): a short one would be a progress line, and the reply kept
       const r = turnBuild(selfPosts, postingLlm(selfPosts, ANSWER, CORRECTION, [card, { type: "text", delta: CORRECTION }]));
       await r.handle(r.msg("is staging green", "000.9"));
-      expect(r.deletes).toEqual(["222.2"]);
+      // the turn had posted before its closing reply: no stream message was ever opened for it
+      expect(r.opened()).toBe(0);
+      expect(r.rec.appends).toHaveLength(0);
+      expect(r.deletes).toHaveLength(0);
       expect(r.updates).toHaveLength(0);
       expect(r.said).toHaveLength(0);
     });
 
-    test("narration streamed before the post goes with the stream", async () => {
+    test("narration streamed before the post stays shown until the end, then goes; the closing reply after the post never streams", async () => {
       const selfPosts = createSelfPosts();
-      const r = turnBuild(
-        selfPosts,
-        postingLlm(selfPosts, ANSWER, REWORDED, [{ type: "text", delta: "Looking into the orders query.\n\n" }, card, { type: "text", delta: REWORDED }]),
-      );
+      const llm: LlmPort = {
+        complete: async () => REWORDED,
+        stream: async (p, sink) => {
+          sink({ type: "text", delta: "Looking into the orders query.\n\n" });
+          if (p.runTicket) selfPost(selfPosts, p.runTicket, ANSWER);
+          sink({ type: "text", delta: REWORDED });
+          return REWORDED;
+        },
+      };
+      const r = turnBuild(selfPosts, llm);
       await r.handle(r.msg("why is checkout slow", "000.9"));
+      // only the narration was ever written; the reworded answer was held back
+      expect(r.opened()).toBe(1);
+      expect(JSON.stringify(r.rec.appends)).toContain("Looking into");
+      expect(JSON.stringify(r.rec.appends)).not.toContain("scanned four million");
       expect(r.deletes).toContain("222.2");
       expect(r.updates).toHaveLength(0);
+      expect(r.said).toHaveLength(0);
+    });
+
+    test("narration, a post, then a KEEP_REPLY closing reply: it replaces the post and the narration stream goes", async () => {
+      const selfPosts = createSelfPosts();
+      const closing = `${CORRECTION}\nKEEP_REPLY`;
+      const llm: LlmPort = {
+        complete: async () => closing,
+        stream: async (p, sink) => {
+          sink({ type: "text", delta: "Checking staging.\n\n" });
+          if (p.runTicket) selfPost(selfPosts, p.runTicket, "Staging is green.");
+          sink({ type: "text", delta: closing });
+          return closing;
+        },
+      };
+      const r = turnBuild(selfPosts, llm);
+      await r.handle(r.msg("is staging green", "000.9"));
+      expect(JSON.stringify(r.rec.appends)).not.toContain("NOT green");
+      expect(r.updates).toHaveLength(1);
+      expect(r.updates[0]).toMatchObject({ ts: "333.3" });
+      expect(String(r.updates[0]?.text)).toContain("NOT green");
+      expect(r.deletes).toEqual(["222.2"]);
       expect(r.said).toHaveLength(0);
     });
 
@@ -1069,7 +1106,10 @@ describe("createHandler streaming truth table", () => {
       const PROGRESS = "đang đối chiếu root cause, tìm xem query tile nằm ở đâu";
       const r = turnBuild(selfPosts, postingLlm(selfPosts, PROGRESS, ANSWER, [card, { type: "text", delta: ANSWER }]));
       await r.handle(r.msg("why is checkout slow", "000.9"));
-      expect(r.deletes).toEqual(["222.2"]);
+      // the turn had posted before its closing reply: no stream message was ever opened for it
+      expect(r.opened()).toBe(0);
+      expect(r.rec.appends).toHaveLength(0);
+      expect(r.deletes).toHaveLength(0);
       expect(r.said).toHaveLength(0);
       expect(r.updates).toHaveLength(1);
       expect(r.updates[0]).toMatchObject({ ts: "333.3" });
@@ -1093,7 +1133,13 @@ describe("createHandler streaming truth table", () => {
       };
       const r = turnBuild(selfPosts, llm);
       await r.handle(r.msg("why is checkout slow", "000.9"));
-      expect(r.updates.map((u) => u.ts)).toEqual(["222.2"]);
+      // never streamed, so it is posted whole as a message of its own
+      // the turn had posted before its closing reply: no stream message was ever opened for it
+      expect(r.opened()).toBe(0);
+      expect(r.rec.appends).toHaveLength(0);
+      expect(r.updates).toHaveLength(0);
+      expect(r.said).toHaveLength(1);
+      expect(r.said[0]?.text).toContain("orders query");
       expect(r.deletes).toHaveLength(0);
       expect(r.logs.some((l) => l.includes("closing reply kept, the turn's own posts were progress lines"))).toBe(true);
     });
@@ -1103,8 +1149,11 @@ describe("createHandler streaming truth table", () => {
       const closing = `${CORRECTION}\nKEEP_REPLY`;
       const r = turnBuild(selfPosts, postingLlm(selfPosts, "Staging is green.", closing, [card, { type: "text", delta: closing }]));
       await r.handle(r.msg("is staging green", "000.9"));
-      // one ask, one message: the closing reply replaces the turn's own post, the stream message goes
-      expect(r.deletes).toEqual(["222.2"]);
+      // one ask, one message: the closing reply replaces the turn's own post, and was never streamed
+      // the turn had posted before its closing reply: no stream message was ever opened for it
+      expect(r.opened()).toBe(0);
+      expect(r.rec.appends).toHaveLength(0);
+      expect(r.deletes).toHaveLength(0);
       expect(r.said).toHaveLength(0);
       expect(r.updates).toHaveLength(1);
       expect(r.updates[0]).toMatchObject({ ts: "333.3" });
@@ -1130,7 +1179,10 @@ describe("createHandler streaming truth table", () => {
       };
       const r = turnBuild(selfPosts, llm);
       await r.handle(r.msg("is staging green", "000.9"));
-      expect(r.updates.map((u) => u.ts)).toEqual(["222.2"]);
+      expect(r.opened()).toBe(0);
+      expect(r.updates).toHaveLength(0);
+      expect(r.said).toHaveLength(1);
+      expect(r.said[0]?.text).toContain("NOT green");
       expect(r.deletes).toHaveLength(0);
     });
 
@@ -1152,7 +1204,10 @@ describe("createHandler streaming truth table", () => {
       };
       const rich = turnBuild(richSelfPosts, richLlm);
       await rich.handle(rich.msg("is staging green", "000.9"));
-      expect(rich.updates.map((u) => u.ts)).toEqual(["222.2"]);
+      expect(rich.opened()).toBe(0);
+      expect(rich.updates).toHaveLength(0);
+      expect(rich.said).toHaveLength(1);
+      expect(rich.said[0]?.text).toContain("NOT green");
       expect(rich.deletes).toHaveLength(0);
 
       const upSelfPosts = createSelfPosts();
@@ -1169,7 +1224,10 @@ describe("createHandler streaming truth table", () => {
       };
       const up = turnBuild(upSelfPosts, upLlm);
       await up.handle(up.msg("is staging green", "000.9"));
-      expect(up.updates.map((u) => u.ts)).toEqual(["222.2"]);
+      expect(up.opened()).toBe(0);
+      expect(up.updates).toHaveLength(0);
+      expect(up.said).toHaveLength(1);
+      expect(up.said[0]?.text).toContain("NOT green");
       expect(up.deletes).toHaveLength(0);
     });
 
@@ -1292,11 +1350,14 @@ describe("createHandler streaming truth table", () => {
       expect(r.said).toHaveLength(1);
     });
 
-    test("NO_REPLY after a self-post drops the stream even when it showed narration, without a drop log", async () => {
+    test("NO_REPLY after a self-post leaves nothing and never streams, without a drop log", async () => {
       const selfPosts = createSelfPosts();
       const r = turnBuild(selfPosts, postingLlm(selfPosts, ANSWER, "NO_REPLY", [card, { type: "text", delta: "Posting the answer now." }, { type: "text", delta: "NO_REPLY" }]));
       await r.handle(r.msg("why is checkout slow", "000.9"));
-      expect(r.deletes).toEqual(["222.2"]);
+      // the turn had posted before its closing reply: no stream message was ever opened for it
+      expect(r.opened()).toBe(0);
+      expect(r.rec.appends).toHaveLength(0);
+      expect(r.deletes).toHaveLength(0);
       expect(r.updates).toHaveLength(0);
       expect(r.said).toHaveLength(0);
       expect(r.logs.some((l) => l.includes("closing reply dropped"))).toBe(false);

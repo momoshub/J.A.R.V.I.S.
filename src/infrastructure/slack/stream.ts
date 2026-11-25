@@ -167,6 +167,16 @@ export type SlackStreamOptions = {
    * process dies before the stream is closed.
    */
   onOpen?: (ts: string) => void;
+  /**
+   * Asked before each piece of answer text. Once it says yes, the answer stops streaming: what the turn says
+   * from then on is only counted, never shown, and the caller decides at the end what becomes of it. For a turn
+   * that posted into its own thread (`domain/selfPost.ts`), whose closing reply is usually dropped - a stream
+   * that fills up and is then deleted is worse than no stream. Sticky: asked no more once it said yes.
+   * Text that streamed before that stays shown (the caller's tidy-up deletes or rewrites it), and `finish`
+   * then answers false, since the reply as a whole never reached Slack through the stream.
+   * Thinking and tool steps are not affected.
+   */
+  bufferText?: () => boolean;
 };
 
 export const createSlackStream = (
@@ -373,10 +383,32 @@ export const createSlackStream = (
     (pending as { unref?: () => void }).unref?.();
   };
 
+  /** Push out what the normalisers still hold, so the text shown so far is complete. */
+  const flushPipeline = (): void => {
+    const rest = markerFilter.flush();
+    if (rest) emitSegments(kit.push(rest));
+    emitSegments(kit.flush());
+    const tail = proseFlush(fences.flush());
+    if (tail) appendText(tail);
+  };
+
+  /** Set once the answer stopped streaming (`bufferText`): later text is not shown. */
+  let buffering = false;
+  let bufferedAny = false;
+
   const forward = (event: LlmStreamEvent): void => {
     cancelPending(); // something arrived, so no placeholder is needed
     completeThinking(); // first real content ends the thinking line
     if (event.type === "text") {
+      if (!buffering && options.bufferText?.()) {
+        buffering = true;
+        // whatever streamed so far ends cleanly where it is
+        flushPipeline();
+      }
+      if (buffering) {
+        if (event.delta) bufferedAny = true;
+        return;
+      }
       // The marker line the turn may end with is for the bot, not the reader.
       const delta = markerFilter.push(event.delta);
       if (delta) {
@@ -534,11 +566,7 @@ export const createSlackStream = (
       completeThinking();
       // The status message is NOT ended here: whether a failed step is worth keeping depends on
       // whether the reply survives, which the caller decides (see `app.ts`).
-      const rest = markerFilter.flush();
-      if (rest) emitSegments(kit.push(rest));
-      emitSegments(kit.flush());
-      const tail = proseFlush(fences.flush());
-      if (tail) appendText(tail);
+      if (!buffering) flushPipeline();
       try {
         await chain;
       } catch {
@@ -551,7 +579,8 @@ export const createSlackStream = (
         log(`stream stop failed: ${errMsg(e)}`);
         return false;
       }
-      return contentShown && !broke && !lost;
+      // text held back by `bufferText` never reached Slack, so the stream did not deliver the reply
+      return contentShown && !broke && !lost && !bufferedAny;
     },
   };
 };
