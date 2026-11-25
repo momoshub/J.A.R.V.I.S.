@@ -288,9 +288,9 @@ describe("Slack proxy notes what a turn posts into its own thread", () => {
     const { proxy, tickets, selfPosts } = withLog(() => Response.json({ ok: true, ts: "5.5" }));
     const ticket = tickets.issue({ channel: "C1", threadTs: "1.1", turn: "run-1" });
     await proxy.call({ ticket, method: "chat.postMessage", params: { channel: "C1", text: "first" } });
-    expect(selfPosts.posts("run-1")).toEqual([{ ts: "5.5" }]);
+    expect(selfPosts.posts("run-1")).toEqual([{ ts: "5.5", len: 5 }]);
     await proxy.call({ ticket, method: "chat.update", params: { channel: "C1", ts: "5.5", text: "final" } });
-    expect(selfPosts.posts("run-1")).toEqual([{ ts: "5.5" }]);
+    expect(selfPosts.posts("run-1")).toEqual([{ ts: "5.5", len: 5 }]);
   });
 
   test("an owner's post into another channel goes through and is not noted as the turn's own thread", async () => {
@@ -341,7 +341,7 @@ describe("Slack proxy notes what a turn posts into its own thread", () => {
     const { proxy, tickets, selfPosts } = withLog(() => Response.json({ ok: true, ts: "5.5" }));
     const ticket = tickets.issue({ channel: "C1", threadTs: "1.1", turn: "run-1" });
     await proxy.call({ ticket, method: "chat.postMessage", params: { channel: "C1", text: "board", blocks: JSON.stringify([{ type: "divider" }]) } });
-    expect(selfPosts.posts("run-1")).toEqual([{ ts: "5.5", rich: true }]);
+    expect(selfPosts.posts("run-1")).toEqual([{ ts: "5.5", len: 5, rich: true }]);
     expect(selfPosts.uploaded("run-1")).toBe(false);
     await proxy.call({ ticket, method: "files.completeUploadExternal", params: { files: JSON.stringify([{ id: "F1", title: "t" }]), channel_id: "C1", thread_ts: "1.1" } });
     expect(selfPosts.uploaded("run-1")).toBe(true);
@@ -363,6 +363,7 @@ describe("Slack proxy notes what a turn posts into its own thread", () => {
     expect(JSON.parse(posted.body)).toEqual({ ...slack, jarvis_note: SELF_POST_NOTE });
     expect(SELF_POST_NOTE).toContain("KEEP_REPLY");
     expect(SELF_POST_NOTE).toContain("dropped");
+    expect(SELF_POST_NOTE).toContain("progress line");
     expect(SELF_POST_NOTE).toContain("chat.update");
     const updated = await proxy.call({ ticket, method: "chat.update", params: { channel: "C1", ts: "5.5", text: "final" } });
     expect(JSON.parse(updated.body)).toEqual({ ...slack, jarvis_note: SELF_POST_NOTE });

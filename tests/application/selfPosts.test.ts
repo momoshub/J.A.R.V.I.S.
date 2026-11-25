@@ -11,7 +11,7 @@ describe("selfPosts", () => {
   test("keeps a turn's posts until it ends", () => {
     const log = createSelfPosts();
     log.record("turn-a", "1.1", post("5.5", "answer"));
-    expect(log.posts("turn-a")).toEqual([{ ts: "5.5" }]);
+    expect(log.posts("turn-a")).toEqual([{ ts: "5.5", len: 6 }]);
     log.clear("turn-a");
     expect(log.posts("turn-a")).toEqual([]);
   });
@@ -20,8 +20,8 @@ describe("selfPosts", () => {
     log.record("hand-back", "1.1", post("5.5", "answer"));
     expect(log.posts("turn-a")).toEqual([]);
     log.record("turn-a", "1.1", post("6.6", "mine"));
-    expect(log.posts("turn-a")).toEqual([{ ts: "6.6" }]);
-    expect(log.posts("hand-back")).toEqual([{ ts: "5.5" }]);
+    expect(log.posts("turn-a")).toEqual([{ ts: "6.6", len: 4 }]);
+    expect(log.posts("hand-back")).toEqual([{ ts: "5.5", len: 6 }]);
   });
   test("a post aimed at another thread is not kept under the turn's own", () => {
     const log = createSelfPosts();
