@@ -24,6 +24,9 @@ export const DEFAULT_SANDBOX_LIMITS: SandboxLimits = {
   maxResultBytes: 8 * 1024 * 1024,
 };
 
+/** `--memory` ceiling: the WebAssembly memory maximum is 4 GB, and the engine needs some of it. */
+export const MAX_SANDBOX_MEMORY_MB = 1024;
+
 export const HOST_CALL = "__hostCall";
 export const HOST_LOG = "__hostLog";
 

@@ -252,11 +252,11 @@ describe("mcp run", () => {
     expect(readFileSync(resultFile(r.out), "utf8")).not.toContain("secret\":\"\"");
   });
 
-  test("the sandbox has no network, no env, no node modules", async () => {
-    const r = await run(["run", "-"], {}, undefined, `console.log(typeof fetch, typeof process, typeof Bun);\ntry { require("node:fs"); } catch (e) { console.log((e as Error).name); }`);
+  test("the sandbox has no network, no env, no node modules (require() is refused at compile time, too)", async () => {
+    const r = await run(["run", "-"], {}, undefined, `console.log(typeof fetch, typeof process, typeof Bun);`);
     expect(r.code).toBe(0);
-    // (`typeof require` is folded to "function" by the transpiler, so the call is what shows it is not there)
-    expect(readFileSync(resultFile(r.out), "utf8")).toContain("undefined undefined undefined\nReferenceError");
+    expect(readFileSync(resultFile(r.out), "utf8")).toContain("undefined undefined undefined");
+    expect((await run(["run", "-"], {}, undefined, `require("node:fs");`)).err).toContain("imports are not available");
   });
 
   test("a script error is a clear error with the line, not a crash; the output so far is kept", async () => {
@@ -278,6 +278,23 @@ describe("mcp run", () => {
     expect(calls.err).toContain("call limit reached (1");
     expect((await run(["run", "-", "--timeout", "abc"], {}, undefined, "1")).err).toContain("--timeout");
     expect((await run(["run", "-", "--max-calls", "0"], {}, undefined, "1")).err).toContain("--max-calls");
+  });
+
+  test("a Bun macro import never runs on the host: the script is refused and its side effect does not happen", async () => {
+    const marker = join(dir, "escaped");
+    const script = `import { writeFileSync } from "node:fs" with { type: "macro" };\nexport default writeFileSync(${JSON.stringify(marker)}, "x");`;
+    const r = await run(["run", "-"], {}, undefined, script);
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("does not compile");
+    expect(existsSync(marker)).toBe(false);
+    // any import is refused, macro or not
+    expect((await run(["run", "-"], {}, undefined, `import { readFileSync } from "node:fs";\nreadFileSync("/etc/hosts");`)).err).toContain("imports are not available");
+  });
+
+  test("--memory has an upper bound and a clean error", async () => {
+    const r = await run(["run", "-", "--memory", "5000"], {}, undefined, "1");
+    expect(r.code).toBe(1);
+    expect(r.err).toContain("--memory is a number of megabytes, at most 1024");
   });
 
   test("a tool that reports an error throws inside the script and can be caught", async () => {

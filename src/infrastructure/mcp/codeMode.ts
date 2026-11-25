@@ -19,7 +19,7 @@ import {
 } from "../../domain/mcpCodeMode.ts";
 import { exposedTools } from "../../domain/mcpApproval.ts";
 import { renderMcpTypes } from "../../domain/mcpTypes.ts";
-import { DEFAULT_SANDBOX_LIMITS, positiveInt, secondsToMs } from "../../domain/mcpSandbox.ts";
+import { DEFAULT_SANDBOX_LIMITS, MAX_SANDBOX_MEMORY_MB, positiveInt, secondsToMs } from "../../domain/mcpSandbox.ts";
 import { runInSandbox, type ToolBridge } from "./sandbox.ts";
 import { approvalsPath, createFileApprovalStore } from "./approvals.ts";
 import { createFileSchemaCache, createLazyProxy, schemaCachePath, spawnStdioServer, type JsonRpc } from "./lazyProxy.ts";
@@ -241,7 +241,7 @@ export const runMcpCli = async (argv: readonly string[], io: CliIo): Promise<num
     const memoryMb = positiveInt(flags.memory, DEFAULT_SANDBOX_LIMITS.memoryBytes / (1024 * 1024));
     if (timeoutMs === undefined) return fail("--timeout is a number of seconds");
     if (maxCalls === undefined) return fail("--max-calls is a whole number");
-    if (memoryMb === undefined) return fail("--memory is a number of megabytes");
+    if (memoryMb === undefined || memoryMb > MAX_SANDBOX_MEMORY_MB) return fail(`--memory is a number of megabytes, at most ${MAX_SANDBOX_MEMORY_MB}`);
     // A script needs the same standing as `call` has, before anything of it runs; each bridged call is gated again.
     const early = mcpCallRefusal(io.env, "", "") ?? (await ownerTicketRefusal(io.env, io.fetchFn));
     if (early) return fail(`refused: ${early}`);
@@ -254,17 +254,26 @@ export const runMcpCli = async (argv: readonly string[], io: CliIo): Promise<num
     if (!source_text.trim()) return fail("the script is empty");
     let js: string;
     try {
-      js = new Bun.Transpiler({ loader: "ts", target: "bun", trimUnusedImports: false }).transformSync(source_text);
+      // Macros (`import ... with { type: "macro" }`) run in THIS process at transpile time, with its env, files and network,
+      // and their return value is inlined into the script: that would undo the isolate. They are switched off, and a script
+      // with any import is refused before it is transformed (`scanImports` does not run macros; `scan` does). The isolate
+      // has no module loader, so no legitimate script is lost.
+      const transpiler = new Bun.Transpiler({ loader: "ts", target: "bun", trimUnusedImports: false, macro: false } as unknown as ConstructorParameters<typeof Bun.Transpiler>[0]);
+      if (transpiler.scanImports(source_text).length > 0) return fail("the script does not compile: imports are not available in the sandbox (the only globals are `mcp` and `console`)");
+      js = transpiler.transformSync(source_text);
     } catch (e) {
       return fail(`the script does not compile: ${e instanceof Error ? e.message : String(e)}`);
     }
 
     const sessions = new Map<string, ReturnType<typeof openServer>>();
+    let finished = false;
     const bridge: ToolBridge = async (serverName, toolName, toolArgs) => {
       const server = servers.find((s) => s.name === serverName);
       if (!server) return { ok: false, error: `unknown server "${serverName}" (\`mcp list\` shows the ones this host has)` };
       const refusal = await callRefusal(io, server, toolName);
       if (refusal) return { ok: false, error: refusal };
+      // The script may be over (timeout) while the gate above was still awaiting the owner-ticket check: start nothing then.
+      if (finished) return { ok: false, error: "the script has ended" };
       let session = sessions.get(serverName);
       if (!session) sessions.set(serverName, (session = openServer(cacheDir, server, io.env, DEFAULT_CALL_TIMEOUT_S * 1000, (line) => io.err(line))));
       const reply = await session.call(toolName, toolArgs);
@@ -275,7 +284,10 @@ export const runMcpCli = async (argv: readonly string[], io: CliIo): Promise<num
       return { ok: true, value };
     };
     const limits = { ...DEFAULT_SANDBOX_LIMITS, timeoutMs, maxCalls, memoryBytes: memoryMb * 1024 * 1024 };
-    const outcome = await runInSandbox(js, limits, bridge).finally(() => sessions.forEach((s) => s.close()));
+    const outcome = await runInSandbox(js, limits, bridge).finally(() => {
+      finished = true;
+      sessions.forEach((s) => s.close());
+    });
 
     const logText = outcome.logs;
     const text = `${outcome.ok && outcome.value !== undefined ? `${outcome.value}\n` : ""}${logText ? `--- console ---\n${logText}` : ""}`;

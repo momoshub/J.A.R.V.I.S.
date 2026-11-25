@@ -160,14 +160,14 @@ export const MCP_CLI_HELP = `mcp - use MCP tools from the shell; the full result
                                              its path, size and row count and a short head. --fields keeps only those dotted
                                              paths of a JSON result (arrays are walked: rows.name = name of every row)
   mcp types [<server>...]                    TypeScript declarations of the tools a script may call: \`mcp.<server>.<tool>(args)\`
-  mcp run <file.ts | -> [--timeout <seconds>] [--max-calls <n>] [--memory <MB>] [--out <dir>]
+  mcp run <file.ts | -> [--timeout <seconds>] [--max-calls <n>] [--memory <MB, at most 1024>] [--out <dir>]
                                              "code mode": run ONE TypeScript script that chains many tool calls, loops and
                                              filters, in an isolate with no network, files, process or env (QuickJS/WASM).
                                              It sees only \`mcp.<server>.<tool>(args)\` (async, returns the tool's JSON; throws
                                              when the tool errors) and console.log. The default export is the final value.
                                              Defaults: 60s, 64 MB, 100 tool calls, 256 KB of logs. Only the value and the logs
                                              are written to a file; the rows the tools returned never reach your context.
-                                             Credentials stay on the host: the script cannot read them.
+                                             Credentials stay on the host: the script cannot read them. No imports or require (refused).
 
 Use \`call --fields\` for one lookup, \`types\` + \`run\` for many calls or a lot of data (write the script against the declarations).
 Then grep or jq the file instead of reading it whole. Tools the owner has not approved yet (mcp-tools pending) are not listed and cannot be called.
