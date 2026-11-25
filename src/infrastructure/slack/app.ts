@@ -499,6 +499,7 @@ export const createHandler =
     // Set once the status message is up: the session is then `processing` (Slack draws its stop button),
     // which a turn that only runs tools would otherwise never be, as no stream opens for it.
     let statusBusy = false;
+    let statusBusyCall: Promise<unknown> | undefined;
     const status: StatusMessage | undefined =
       config.streamUpdates && msg.client.chat.postMessage
         ? createStatusMessage({
@@ -513,7 +514,8 @@ export const createHandler =
                 if (res?.ts && msg.threadTs && !statusBusy) {
                   statusBusy = true;
                   // Best effort: a workspace without the method simply has no button during tool-only phases.
-                  void msg.client
+                  // Awaited in the `finally` before the session is idled, so it can never land after it.
+                  statusBusyCall = msg.client
                     .apiCall?.(SET_SESSION_STATUS, { channel_id: msg.channelId, thread_ts: msg.threadTs, status: "processing" })
                     .catch(ignoreQuietly("mark session processing"));
                 }
@@ -815,9 +817,10 @@ export const createHandler =
       // `onSessionIdle`), which this turn's own `done()` already did unless its
       // stream opened after that.
       if (turnTicket) deps.selfPosts?.clear(turnTicket);
-      // The status message is ended by the stream's finish or abandon already;
-      // this is for a path that left without either, and does nothing twice.
+      // The one place the status message ends (`abandon` already discarded it on an ignored turn, and
+      // ending twice does nothing): by now it is known whether the reply is kept.
       await status?.end({ discard: discardStatus });
+      await statusBusyCall;
       // A stream whose first append failed never reported `onOpen`, yet Slack may
       // already have put the session in `processing` (startStream) and keeps the
       // stop button up: `started` covers that, so a broken stream cannot stick the thread.
