@@ -91,3 +91,11 @@ describe("one grey line, not two", () => {
     expect(collapsedBlocks("the answer", undefined, "   ")).toHaveLength(1);
   });
 });
+
+describe("collapseSteps with a lower floor", () => {
+  test("a caller that wants a lone step kept can ask for it", () => {
+    const c = collapseSteps([step("run: ls", true)], 1);
+    expect(c?.summary).toBe("🔧 1 steps, 1 failed");
+    expect(c?.failures).toEqual(["run: ls"]);
+  });
+});

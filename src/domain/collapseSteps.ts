@@ -1,13 +1,14 @@
 /**
- * Tidying a finished turn's message.
+ * Tidying a finished turn's tool steps.
  *
- * A long turn leaves a column of tool cards above its answer - "Running a command",
- * "Reading a file", twenty of them - and once the work is done none of it is
- * worth the room. Reading the thread back a day later, the cards are what you
- * have to scroll past to find the sentence that mattered.
+ * A long turn lists its steps - "Running a command", "Reading a file", twenty
+ * of them - in the status message (see statusSteps.ts), and once the work is
+ * done none of it is worth the room.
  *
- * So when the turn ends the message is rewritten: the answer, then one line
- * saying how much work went into it, and the steps that FAILED kept in full.
+ * So when a turn ends with a failed step the status message is rewritten to one
+ * line saying how much work went into it, and the steps that FAILED kept in full
+ * (a turn with none deletes it). `collapsedBlocks` also builds the answer's
+ * closing blocks: the body, then the signed footer.
  * Failures stay because they are the part somebody may need to act on - a
  * refused permission, a command that did not exist - and summarising those
  * away would hide the one thing worth seeing.
@@ -43,12 +44,12 @@ export type Collapsed = {
  * What a finished turn's steps should collapse to, or undefined when there is
  * nothing worth collapsing.
  *
- * One step is left alone: replacing a single card with a line that says
- * "1 step" is not a tidy-up, it is a swap.
+ * One step is left alone by default (`minSteps` 2): replacing a single line
+ * with one that says "1 step" is not a tidy-up, it is a swap.
  */
-export const collapseSteps = (steps: readonly FinishedStep[]): Collapsed | undefined => {
+export const collapseSteps = (steps: readonly FinishedStep[], minSteps = 2): Collapsed | undefined => {
   const real = steps.filter((s) => s.title.trim());
-  if (real.length < 2) return undefined;
+  if (real.length < minSteps) return undefined;
   const failures = real.filter((s) => s.failed).map((s) => clip(s.title));
   const summary =
     failures.length > 0
