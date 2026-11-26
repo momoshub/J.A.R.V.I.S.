@@ -26,7 +26,7 @@ export type ReviewHolder = {
 
 export type ReviewGuard = {
   /** Claims the PR. Returns whoever already holds it, or undefined if this call got it. */
-  claim: (prUrl: string, where: { channelId: string; threadTs?: string }) => ReviewHolder | undefined;
+  claim: (prUrl: string, where: { channelId: string; threadTs?: string }, opts?: { ignoreCooldown?: boolean }) => ReviewHolder | undefined;
   /** Marks a claimed review as done; it stays held for the cooldown. */
   release: (prUrl: string) => void;
 };
@@ -40,11 +40,13 @@ export const prKey = (prUrl: string): string => {
 export const createReviewGuard = (clock: Clock, cooldownMs = REVIEW_COOLDOWN_MS): ReviewGuard => {
   const held = new Map<string, ReviewHolder>();
 
-  const claim: ReviewGuard["claim"] = (prUrl, where) => {
+  const claim: ReviewGuard["claim"] = (prUrl, where, opts) => {
     const key = prKey(prUrl);
     const now = clock();
     const holder = held.get(key);
-    if (holder && (holder.doneAt === undefined || now - holder.doneAt < cooldownMs)) return holder;
+    // A review still running always holds the PR; a finished one only for the cooldown, and not at all
+    // against a later round, which exists because new commits landed after it.
+    if (holder && (holder.doneAt === undefined || (!opts?.ignoreCooldown && now - holder.doneAt < cooldownMs))) return holder;
     held.set(key, { channelId: where.channelId, threadTs: where.threadTs });
     return undefined;
   };

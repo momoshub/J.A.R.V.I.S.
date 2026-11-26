@@ -175,7 +175,7 @@ describe("one review per PR head per identity", () => {
     expect(posts.at(-1)?.text).toContain("already has a review this way");
   });
 
-  test("a push is reviewed only when it is asked for again", async () => {
+  test("a new head that is asked for again is its own review, in the same thread (a push on its own is the rounds' job)", async () => {
     const review = make();
     await review.request(ask());
     await settle();

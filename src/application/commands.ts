@@ -45,6 +45,7 @@ import { BUG_REPORT_COMMANDS } from "./commands/bugReport.ts";
 import { ERRANDS_COMMANDS } from "./commands/errands.ts";
 import { REVIEW_COMMANDS, runReview } from "./commands/review.ts";
 import type { ReviewIdentity } from "../domain/reviewIdentity.ts";
+import type { ReviewRound } from "../domain/reviewRounds.ts";
 import type { WatchGrant, WriteTarget } from "../domain/writeTargets.ts";
 import { HARVEST_COMMANDS } from "./commands/harvest.ts";
 import { INNER_CHILD_COMMANDS } from "./commands/innerChild.ts";
@@ -405,6 +406,8 @@ export type ReviewStart = {
   identity: ReviewIdentity;
   /** The owner said yes to running without the actor's own token. */
   botCredentialOk?: boolean;
+  /** A later round of a PR already reviewed (application/reviewRounds.ts). */
+  round?: ReviewRound;
   /** Where progress and the result go. */
   reply: (text: string) => Promise<void>;
   prefix?: string;
@@ -450,7 +453,7 @@ export const startReview = async (deps: CommandDeps, start: ReviewStart): Promis
         threadTs: start.threadTs,
         can: (permission) => can(book, actor.role, permission),
       },
-      { identity: start.identity, botCredentialOk: start.botCredentialOk },
+      { identity: start.identity, botCredentialOk: start.botCredentialOk, ...(start.round ? { round: start.round } : {}) },
     );
     log(true, out);
     return out;

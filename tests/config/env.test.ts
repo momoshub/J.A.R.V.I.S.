@@ -59,20 +59,34 @@ describe("loadConfig", () => {
     ]);
   });
 
+  test("review rounds default to 5 rounds and a week, 0 turns them off, nonsense is refused", () => {
+    const c = loadConfig(base);
+    expect(c.reviewRoundsMax).toBe(5);
+    expect(c.reviewRoundsIdleDays).toBe(7);
+    const d = loadConfig({ ...base, REVIEW_ROUNDS_MAX: "3", REVIEW_ROUNDS_IDLE_DAYS: "2" });
+    expect(d.reviewRoundsMax).toBe(3);
+    expect(d.reviewRoundsIdleDays).toBe(2);
+    expect(loadConfig({ ...base, REVIEW_ROUNDS_MAX: "0" }).reviewRoundsMax).toBe(0);
+    expect(() => loadConfig({ ...base, REVIEW_ROUNDS_MAX: "-1" })).toThrow();
+    expect(() => loadConfig({ ...base, REVIEW_ROUNDS_IDLE_DAYS: "0" })).toThrow();
+  });
+
+  test("a leftover REVIEW_EXTENDED_OWNERS is ignored: every PR gets the non-blocking findings now", () => {
+    expect(() => loadConfig({ ...base, REVIEW_EXTENDED_OWNERS: "acme" })).not.toThrow();
+    expect("reviewExtendedOwners" in loadConfig(base)).toBe(false);
+  });
+
   test("owner and database-server lists are comma lists, empty by default", () => {
     const c = loadConfig(base);
-    expect(c.reviewExtendedOwners).toEqual([]);
     expect(c.dbMcpServers).toEqual([]);
     expect(c.executerDbMcpServers).toEqual([]);
     expect(c.acceptedBotIds).toEqual([]);
     const d = loadConfig({
       ...base,
-      REVIEW_EXTENDED_OWNERS: " acme, other ,,",
       DB_MCP_SERVERS: "pg-prod, ch-ro",
       EXECUTER_DB_MCP_SERVERS: "ch-ro",
       ACCEPTED_BOT_IDS: " BA, BB ,,",
     });
-    expect(d.reviewExtendedOwners).toEqual(["acme", "other"]);
     expect(d.dbMcpServers).toEqual(["pg-prod", "ch-ro"]);
     expect(d.executerDbMcpServers).toEqual(["ch-ro"]);
     expect(d.acceptedBotIds).toEqual(["BA", "BB"]);

@@ -65,6 +65,11 @@ export type GitHubPort = {
    * throws. What a review that starts by itself is deduped on: one per head.
    */
   headSha?: (prUrl: string) => Promise<string | undefined>;
+  /**
+   * The PR's state and head commit, or undefined when it cannot be read. Never throws. What the
+   * review rounds poll: a head nobody reviewed yet is a push.
+   */
+  prHead?: (prUrl: string) => Promise<{ state: "OPEN" | "MERGED" | "CLOSED"; headSha: string } | undefined>;
   /** The authenticated account, or undefined if it cannot be resolved. Never throws. */
   whoami: () => Promise<Reviewer | undefined>;
 };

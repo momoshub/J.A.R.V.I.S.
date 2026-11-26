@@ -7,16 +7,17 @@
  * (the review inbox poll) is answered as that account. The approval, when the
  * review comes back clean, is the host's account either way - never the app's.
  * Both doors run the very command a person types (`quick-review`, see
- * `startReview`), so the review policy, the CI gate and blockers-only all hold;
- * only the identity differs.
+ * `startReview`), so the review policy, the CI gate and the comment shape (blockers,
+ * then non-blocking findings) all hold; only the identity differs.
  *
  * What this module adds around that command:
  * - one Slack thread per PR, in the review inbox channel: the first event
  *   opens it, every later one (another request, a comment, a change request,
  *   an approval) goes into it, and the review itself runs in it;
  * - one review per PR head per identity: a redelivery, a second poll or a
- *   re-request on the same head never runs twice, and a push is not reviewed
- *   until it is asked for again;
+ *   re-request on the same head never runs twice. A push AFTER a review needs no
+ *   new request: the finished review leaves the PR in the rounds table and the
+ *   next round starts by itself (application/reviewRounds.ts);
  * - the requester's own Claude token pays. Nobody known, or no token on file:
  *   nothing runs, and the thread asks the owner - in code, only the owner's
  *   press counts (application/reviewRunApproval.ts) - whether to run it on the

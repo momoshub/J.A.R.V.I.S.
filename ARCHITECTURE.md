@@ -155,7 +155,12 @@ no classes.
   (a request to the GitHub App arrives on its webhook and takes the same road,
   answered as the app; the approval is always the host account's, see
   "Reviews that start by themselves" in CLAUDE.md; with `review_auto` off the
-  inbox only announces); `orcaQuestions` reads the Orca mailbox of every Run a thread
+  inbox only announces); `reviewRounds` follows every PR a quick review finished
+  on (a row per PR in `review_rounds`: reviewed head, round, asker, identity,
+  thread) and polls it once a minute: a new head that stays still for two minutes
+  gets the next round by itself, in the same thread on the same asker's token,
+  reviewing the delta since the last reviewed head; it stops on merge or close,
+  after the round cap and after an idle week (see "Review rounds" in CLAUDE.md); `orcaQuestions` reads the Orca mailbox of every Run a thread
   started a worker in (linked from the turn's tool trace as `worker-start`
   prints it) and hands each question a worker is still blocked on to that
   thread as a turn that answers it with `orca orchestration reply`, once per
@@ -346,7 +351,7 @@ Orchestrates the domain and depends on **ports**, not concrete adapters.
 - `threadQueue.ts`, `runRegistry.ts` - one turn per thread (what a person queues behind it is merged into one turn), and stopping the running one
 - `followGate.ts` (application), `followGateModel.ts` - the per-thread buffer for a followed thread (a quiet window, a hard cap, injectable timers) and the cheap pal-model call that says reply, skip or wait
 - `ciGate.ts` (application) - the CI gate of `quick-review`: idempotent request-changes and approve against GitHub's own state, the watcher row for a running CI, and its poll
-- `watcher.ts`, `reminders.ts`, `loops.ts`, `reviewInbox.ts`, `reviewGuard.ts`, `innerChild.ts`, `learningHarvest.ts`, `offlineAlarm.ts`, `orcaQuestions.ts`, `idleReaper.ts`, `stuckSweeper.ts`, `stalePromiseSweep.ts` - the timers (`orcaQuestions` also sits on the tool-trace sink, linking each Orca worker to the thread that started it)
+- `watcher.ts`, `reminders.ts`, `loops.ts`, `reviewInbox.ts`, `reviewRounds.ts`, `reviewGuard.ts`, `innerChild.ts`, `learningHarvest.ts`, `offlineAlarm.ts`, `orcaQuestions.ts`, `idleReaper.ts`, `stuckSweeper.ts`, `stalePromiseSweep.ts` - the timers (`orcaQuestions` also sits on the tool-trace sink, linking each Orca worker to the thread that started it)
 - `githubApp.ts` - calls from the GitHub App: dedupe/queue, identity mapping, the turn, the answer back
 - `workflow.ts`, `workflowFront.ts`, `workflowContinue.ts` - long tasks driven from one thread on a durable session
 - `accessRequests.ts` - unknown people ask the owner and admins, who decide with a reaction; on ✅ the person's original message (stored whole, with its Slack ts) is answered as a normal turn through the Slack intake, falling back to a short "you are in" line if the replay fails

@@ -27,6 +27,19 @@ describe("review guard", () => {
     expect(guard.claim(PR, { channelId: "C2" })).toBeUndefined();
   });
 
+  test("a later round is not held by the cooldown of the review before it, but never by one still running", () => {
+    let now = 0;
+    const guard = createReviewGuard(() => now);
+    guard.claim(PR, { channelId: "C1", threadTs: "1.1" });
+    expect(guard.claim(PR, { channelId: "C1" }, { ignoreCooldown: true })).toEqual({ channelId: "C1", threadTs: "1.1" });
+    now = 1000;
+    guard.release(PR);
+    now = 2000;
+    expect(guard.claim(PR, { channelId: "C1" })?.doneAt).toBe(1000);
+    expect(guard.claim(PR, { channelId: "C1", threadTs: "2.2" }, { ignoreCooldown: true })).toBeUndefined();
+    expect(guard.claim(PR, { channelId: "C9" }, { ignoreCooldown: true })).toEqual({ channelId: "C1", threadTs: "2.2" });
+  });
+
   test("other PRs are not held up", () => {
     const guard = createReviewGuard(() => 0);
     guard.claim(PR, { channelId: "C1" });

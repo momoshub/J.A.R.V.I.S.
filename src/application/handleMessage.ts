@@ -75,6 +75,7 @@ import type { SlackAdminPort, SlackMessage } from "./slackAdmin.ts";
 import type { GitHubPort } from "./github.ts";
 import type { ReviewApp } from "./commands/shared.ts";
 import type { CiGate } from "./ciGate.ts";
+import type { ReviewRounds } from "./reviewRounds.ts";
 import type { DraftReply } from "./draftReply.ts";
 import type { SelfPrAccounts } from "../domain/selfUpdate.ts";
 import { targetsNamedIn, type WatchGrant } from "../domain/writeTargets.ts";
@@ -196,8 +197,8 @@ export type HandleMessageDeps = {
   toolPolicy?: (role: UserRole, channelId?: string) => ToolPolicy;
   /** `--disallowedTools` for a no-tools turn (`noTools(DB_MCP_SERVERS)`), for `btw`. */
   noTools?: readonly string[];
-  /** GitHub owners whose PRs `quick-review` posts non-blocking findings for. */
-  reviewExtendedOwners?: readonly string[];
+  /** Review rounds a finished review reports to (see `CommandDeps`). */
+  reviewRounds?: Pick<ReviewRounds, "reviewed"> & { maxRounds?: () => number };
   /** Per-user Claude Code tokens: only `quick-review` runs on one, and `token` manages them. */
   claudeTokens?: ClaudeTokenPort;
   /** Shared 2FA setup keys, for the `2fa` command. */

@@ -1,6 +1,7 @@
 /** PR review and its settings: quick-review, logsource, review-inbox, github-app, review-policy. */
 
 import { reviewHelp, reviewPrompt } from "../../domain/reviewPrompt.ts";
+import { roundStartText, type ReviewRound } from "../../domain/reviewRounds.ts";
 import {
   DENIED_LOG_SOURCES,
   LOG_SOURCES,
@@ -100,6 +101,11 @@ export type ReviewRunOptions = {
    * the owner has said yes to exactly that.
    */
   botCredentialOk?: boolean;
+  /**
+   * Set by the round poll: a later round of a PR already reviewed. The review reads the delta since
+   * `round.from`, says which round it is, and the PR's guard cooldown does not hold it back.
+   */
+  round?: ReviewRound;
 };
 
 /**
@@ -132,7 +138,7 @@ export const runReview = async (ctx: ReviewCtx, opts: ReviewRunOptions = {}): Pr
     // What the review is actually about, before anything expensive happens.
     if (rest.length === 1 && /^(help|\?|--help|prompt|how)$/i.test(rest[0] ?? "")) {
       const wantPrompt = /^prompt$/i.test(rest[0] ?? "");
-      const text = reviewHelp(prefix, wantPrompt, reviewAgentsOf(deps), botNameOf(deps), undefined, deps.reviewExtendedOwners);
+      const text = reviewHelp(prefix, wantPrompt, reviewAgentsOf(deps), botNameOf(deps), undefined, deps.reviewRounds?.maxRounds?.());
       // The real prompt is longer than one Slack message, and a post that is
       // too long simply fails to land - which looks like being ignored.
       return wantPrompt ? clip(text) : text;
@@ -211,7 +217,7 @@ export const runReview = async (ctx: ReviewCtx, opts: ReviewRunOptions = {}): Pr
     // PRs whose approval the CI watcher took over when the review ended.
     const releasedUrls = new Set<string>();
     for (const url of urls) {
-      const holder = deps.reviewGuard?.claim(url, { channelId, threadTs: ctx.threadTs });
+      const holder = deps.reviewGuard?.claim(url, { channelId, threadTs: ctx.threadTs }, { ignoreCooldown: !!opts.round });
       if (!holder) {
         mine.push(url);
         continue;
@@ -282,8 +288,20 @@ export const runReview = async (ctx: ReviewCtx, opts: ReviewRunOptions = {}): Pr
       // one repo and revoked when the review ends - never the installation's own.
       scoped = asApp && urls[0] ? await mintFor(deps, urls[0]) : undefined;
       if (asApp && !scoped) return "I could not get a credential for the GitHub App on that repository (is the app installed there?), so nothing ran.";
+      // The head each PR is at when the review starts, so a push that lands while it runs is the next
+      // round's, never swallowed by this one. Only a review in a thread can be followed: the rounds
+      // answer in the same place.
+      const followed = new Map<string, string>();
+      // Never one run on the bot's own credential (the owner pressed approve for exactly that run): the
+      // rounds would carry the owner's identity over and spend the owner's token on reviews nobody approved.
+      if (deps.reviewRounds && channelId && ctx.threadTs && urls.length > 0 && !opts.botCredentialOk) {
+        for (const url of mine) {
+          const head = opts.round?.to ?? (await deps.github?.headSha?.(url));
+          if (head) followed.set(url, head);
+        }
+      }
       const params = {
-        system: reviewPrompt(targets, name, await account, approvedUpFront, reviewAgentsOf(deps), note, deps.reviewExtendedOwners, redUrls, identity),
+        system: reviewPrompt(targets, name, await account, approvedUpFront, reviewAgentsOf(deps), note, redUrls, identity, opts.round),
         messages: [{ role: "user" as const, content: `review ${targets.join(" ")}${note ? `\n\n${note}` : ""}` }],
         assistantName: name,
         policy,
@@ -310,7 +328,7 @@ export const runReview = async (ctx: ReviewCtx, opts: ReviewRunOptions = {}): Pr
       // "reviewing" always opens the run: an up-front approval (opt-in policy)
       // is announced after it, never before the thread says a review started.
       await reply(
-        `🔍 reviewing ${targets.join(" ")}` +
+        (opts.round && urls[0] ? roundStartText(urls[0], opts.round) : `🔍 reviewing ${targets.join(" ")}`) +
           (override ? `\n_${override}, for this run only_` : "") +
           (note ? `\n_looking at: ${note}_` : ""),
       );
@@ -385,6 +403,19 @@ export const runReview = async (ctx: ReviewCtx, opts: ReviewRunOptions = {}): Pr
 
       await reply(out.trim() || "I could not put a review together for that one.");
 
+      // Reviewed: from this head on, the PR is followed. A push gets the next round by itself.
+      for (const [url, headSha] of out.trim() ? followed : []) {
+        deps.reviewRounds?.reviewed({
+          url,
+          headSha,
+          identity,
+          actorSlackId: actor.slackId,
+          channelId: channelId ?? "",
+          threadTs: ctx.threadTs ?? "",
+          ...(opts.round ? { round: opts.round.number } : {}),
+        });
+      }
+
       // Held back until now: approve only what the review left unblocked, and
       // ask GitHub rather than inferring it from what the review seemed to say.
       // With a CI gate a red CI is a change request instead, and a CI that is
@@ -453,7 +484,7 @@ export const REVIEW_COMMANDS: readonly CommandDef[] = [
     ownHelp: true,
     minRole: "pal",
     usage: "<pr-url> [pr-url...] [--policy first|after] [what to look at]",
-    summary: "quick review of a PR when asked (tag me `review <pr>` or type this; a review requested on GitHub starts the same review by itself): blockers-only comment on GitHub and here (owners set in REVIEW_EXTENDED_OWNERS: non-blocking findings too)",
+    summary: "quick review of a PR when asked (tag me `review <pr>` or type this; a review requested on GitHub starts the same review by itself): blockers first, then non-blocking findings, tracing all of the diff; a new push gets the next round by itself, in the same thread",
     run: (ctx) => runReview(ctx),
   },
   {
