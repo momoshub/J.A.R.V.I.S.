@@ -124,7 +124,7 @@ no classes.
   with `chat.update` (footer included) and the stream messages go, so one ask stays
   one message; with several posts, a rich post, an upload or a refused update it is
   sent as a message of its own. The marker is never shown, with or without a
-  self-post: it is filtered from the live stream (`createKeepMarkerFilter`), stripped
+  self-post: it is filtered from the live stream (`createKeepMarkerFilter`, own line or closing token), stripped
   from the closing reply and from every text the tidy-up writes. The proxy also strips it
   (own line or closing token) from the `text` and `blocks` of a turn's own
   `chat.postMessage` / `chat.update` (`stripKeepMarkerFromCall`), and refuses a

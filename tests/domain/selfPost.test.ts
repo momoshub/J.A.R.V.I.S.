@@ -186,6 +186,50 @@ describe("createKeepMarkerFilter", () => {
   });
 });
 
+describe("createKeepMarkerFilter, closing token after other words (bug #20)", () => {
+  const run = (chunks: string[]): string => {
+    const f = createKeepMarkerFilter();
+    return chunks.map(f.push).join("") + f.flush();
+  };
+  const sign = "Done, sir 🐦‍🔥";
+  test("a sign line, an emoji and the token in one delta: the token never comes out", () => {
+    const f = createKeepMarkerFilter();
+    expect(f.push(`Answer.\n${sign} ${KEEP_REPLY}`)).toBe("Answer.\n");
+    expect(f.flush()).toBe(sign);
+    expect(run([`${sign} ${KEEP_REPLY}`])).toBe(sign);
+    expect(run([`${sign} ${KEEP_REPLY}\n`])).toBe(sign);
+  });
+  test("split across deltas (`KEEP_` + `REPLY`), the line waits for the end", () => {
+    const f = createKeepMarkerFilter();
+    expect(f.push(`${sign} `)).toBe(`${sign} `);
+    expect(f.push("KEEP_")).toBe("");
+    expect(f.push("REPLY")).toBe("");
+    expect(f.flush()).toBe("");
+    expect(run([`${sign} K`, "EEP", "_REPLY"])).toBe(sign);
+  });
+  test("an emoji glued to the token counts as a non-word character", () => {
+    expect(run([`${sign}${KEEP_REPLY}`])).toBe(sign);
+    expect(run(["ok 🐦‍🔥", "KEEP_", "REPLY"])).toBe("ok 🐦‍🔥");
+  });
+  test("a longer word ending in the token passes through, held or not", () => {
+    expect(run([`x XKEEP_REPLY`])).toBe("x XKEEP_REPLY");
+    expect(run(["x NOT_", "KEEP_REPLY"])).toBe("x NOT_KEEP_REPLY");
+    expect(run(["see OK"])).toBe("see OK");
+  });
+  test("a held line that goes on is released whole, with its line break", () => {
+    const f = createKeepMarkerFilter();
+    expect(f.push(`${sign} ${KEEP_REPLY}`)).toBe("");
+    expect(f.push(" and more\nnext")).toBe(`${sign} ${KEEP_REPLY} and more\nnext`);
+    expect(run([`${sign} ${KEEP_REPLY}\nmore`])).toBe(`${sign} ${KEEP_REPLY}\nmore`);
+  });
+  test("the stream equals the final text rule (`stripKeepMarker`) for a closing token", () => {
+    for (const text of [`${sign} ${KEEP_REPLY}`, `a\n\nb ${KEEP_REPLY}  \n\n`, `${sign}${KEEP_REPLY}`]) {
+      expect(run([text]).trim()).toBe(stripKeepMarker(text));
+      expect(run([...text]).trim()).toBe(stripKeepMarker(text));
+    }
+  });
+});
+
 describe("rich self-posts and the post a closing reply may replace", () => {
   const ok = (ts: string) => JSON.stringify({ ok: true, ts });
   const inThread = { channel: "C1", thread_ts: "1.1", text: "x" };

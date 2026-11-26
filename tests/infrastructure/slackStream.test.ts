@@ -62,6 +62,57 @@ describe("createSlackStream", () => {
     expect(s.parts.map((p) => p.text).join("")).not.toContain("KEEP_REPLY");
   });
 
+  test("a closing KEEP_REPLY after the sign line and an emoji never reaches the stream (bug #20)", async () => {
+    for (const deltas of [["Answer.\n", "Done, sir 🐦‍🔥 KEEP_REPLY"], ["Answer.\nDone, sir 🐦‍🔥 KEEP_", "REPLY"], ["Answer.\nDone, sir 🐦‍🔥KEEP_REPLY"]]) {
+      const f = fakeStreamer();
+      const s = createSlackStream(f.make);
+      for (const delta of deltas) s.sink({ type: "text", delta });
+      await s.finish();
+      const shown = f.appends.map((a) => a.markdown_text ?? "").join("");
+      expect(shown).toContain("Done, sir 🐦‍🔥");
+      expect(shown).not.toContain("KEEP");
+      expect(s.parts.map((p) => p.text).join("")).not.toContain("KEEP_REPLY");
+    }
+  });
+
+  test("a one-line reply ending in the marker token is delivered: finish answers true and shows it (bug #20)", async () => {
+    for (const delta of ["Done, sir 🐦‍🔥 KEEP_REPLY", "Done, sir 🐦‍🔥 K"]) {
+      const f = fakeStreamer();
+      const s = createSlackStream(f.make);
+      s.sink({ type: "text", delta });
+      expect(await s.finish()).toBe(true);
+      expect(f.appends.map((a) => a.markdown_text ?? "").join("")).toBe(delta.endsWith("K") ? delta : "Done, sir 🐦‍🔥");
+    }
+  });
+
+  test("blank text never opens a message or goes out on its own (bug #20: empty posts)", async () => {
+    const f = fakeStreamer();
+    const s = createSlackStream(f.make);
+    s.sink({ type: "text", delta: "\n" });
+    s.sink({ type: "text", delta: "  \n\n" });
+    s.sink({ type: "tool", id: "t1", title: "Run: step", status: "in_progress" });
+    s.sink({ type: "text", delta: "\n" });
+    expect(f.made()).toBe(0);
+    s.sink({ type: "text", delta: "First.\n" });
+    s.sink({ type: "text", delta: "\n" });
+    s.sink({ type: "text", delta: "Second." });
+    s.sink({ type: "text", delta: "\n\n" });
+    const ok = await s.finish();
+    expect(ok).toBe(true);
+    const sent = f.appends.map((a) => a.markdown_text ?? "");
+    expect(sent.every((t) => t.trim() !== "")).toBe(true);
+    expect(sent.join("")).toBe("First.\n\nSecond.");
+  });
+
+  test("a stream of blank text only opens nothing and delivers nothing", async () => {
+    const f = fakeStreamer();
+    const s = createSlackStream(f.make);
+    for (const delta of ["\n", " ", "\n\n"]) s.sink({ type: "text", delta });
+    expect(await s.finish()).toBe(false);
+    expect(f.made()).toBe(0);
+    expect(f.appends).toEqual([]);
+  });
+
   test("bufferText: text before it streams, text after it is held back, finish says the reply was not delivered", async () => {
     const f = fakeStreamer();
     const st = stubStatus();

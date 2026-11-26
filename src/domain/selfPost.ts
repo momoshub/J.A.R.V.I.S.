@@ -166,40 +166,74 @@ const mayBecomeMarker = (line: string): boolean => {
   return word === body ? KEEP_REPLY.startsWith(body) : word === KEEP_REPLY;
 };
 
-/** Filters marker lines out of streamed text, chunk by chunk. */
+/**
+ * Where the held tail of `buf` starts, or -1 when nothing needs holding: the last non-blank line (with the blank
+ * lines after it) when it ends in `KEEP_REPLY` or the start of it, the character before being no word character
+ * (`... sir 🐦‍🔥 KEEP_`, `...🐦‍🔥KEEP_REPLY`). Whether that token is the end of the reply is only known at the end of the
+ * stream, so the whole line waits: releasing its head and holding the token would also lose the line break
+ * after it if more text follows. `before` is the last character already released.
+ */
+const closingTokenFrom = (buf: string, before: string): number => {
+  const line = buf.trimEnd();
+  const lineStart = line.lastIndexOf("\n") + 1;
+  const last = line.slice(lineStart);
+  for (let n = Math.min(KEEP_REPLY.length, last.length); n > 0; n--) {
+    if (!last.endsWith(KEEP_REPLY.slice(0, n))) continue;
+    // the word character in front of the token: in the held text, or the last one already released
+    const prev = n < last.length ? last.charAt(last.length - n - 1) : lineStart === 0 ? before : "";
+    if (!/[A-Za-z0-9_]/.test(prev)) return lineStart;
+  }
+  return -1;
+};
+
+/** Filters marker lines and a closing marker token out of streamed text, chunk by chunk. */
 export type KeepMarkerFilter = {
   /** The part of the stream that is safe to show now; may be empty while a line is undecided. */
   readonly push: (delta: string) => string;
-  /** The held trailing line at the end of the stream, unless it is a marker line. */
+  /** The held tail at the end of the stream, minus a marker line or the closing marker token. */
   readonly flush: () => string;
 };
 
 /**
  * Stream deltas carry the marker before the final reply is tidied, and a chunk
  * can split the token (`KEEP_` + `REPLY`). Complete lines are released minus the
- * marker lines; the trailing partial line is held while it could still become a
- * marker line, and released as soon as it cannot.
+ * marker lines. The last line is held while it could still become a marker line,
+ * or while it ends in the token (or the start of it) after other words, which only
+ * the end of the stream can tell from a mention; it is released as soon as it
+ * cannot be one, and `flush` drops the closing token like `stripKeepMarker` does.
  */
 export const createKeepMarkerFilter = (): KeepMarkerFilter => {
   let pending = "";
+  /** The last character released, for the word-character check when the token opens the held text. */
+  let before = "";
   const lineOut = (line: string): string => (KEEP_LINE.test(line.replace(/\r?\n$/, "")) ? "" : line);
+  /** The text minus its marker lines; the first piece goes through as it is when it continues a line already released. */
+  const lines = (text: string, continues: boolean): string =>
+    text
+      .split(/(?<=\n)/)
+      .map((line, i) => (i === 0 && continues ? line : lineOut(line)))
+      .join("");
   return {
     push: (delta) => {
-      pending += delta;
-      const cut = pending.lastIndexOf("\n") + 1;
-      const complete = pending.slice(0, cut);
-      pending = pending.slice(cut);
-      let out = complete.split(/(?<=\n)/).map(lineOut).join("");
-      if (pending && !mayBecomeMarker(pending)) {
-        out += pending;
-        pending = "";
+      const buf = pending + delta;
+      let hold = closingTokenFrom(buf, before);
+      if (hold < 0) {
+        const cut = buf.lastIndexOf("\n") + 1;
+        // a partial line is a marker line only when it opens a line: after a line break, or at the very start
+        const opensLine = cut > 0 || before === "" || before === "\n";
+        hold = buf.slice(cut) && !(opensLine && mayBecomeMarker(buf.slice(cut))) ? buf.length : cut;
       }
+      pending = buf.slice(hold);
+      const out = lines(buf.slice(0, hold), before !== "" && before !== "\n");
+      if (out) before = out.slice(-1);
       return out;
     },
     flush: () => {
-      const rest = lineOut(pending);
+      // a held line that continues released text ends in the token, so it goes either way: no `continues` needed
+      const rest = lines(pending, false);
       pending = "";
-      return rest;
+      const trimmed = rest.trimEnd();
+      return KEEP_TRAILING.test(trimmed) ? trimmed.replace(KEEP_TRAILING, "").trimEnd() : rest;
     },
   };
 };
