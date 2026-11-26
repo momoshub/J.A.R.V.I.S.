@@ -16,6 +16,7 @@ import {
   DEFAULT_WINDOW_MS,
 } from "../domain/stalePromise.ts";
 import { DEFAULT_REAP_IDLE_MS, DEFAULT_REAP_INTERVAL_MS } from "../domain/idleWorkers.ts";
+import { DEFAULT_REVIEW_IDLE_DAYS, DEFAULT_REVIEW_ROUNDS } from "../domain/reviewRounds.ts";
 import { parseSelfPrAccounts, RESTART_TURN_BUDGET_MS, type SelfPrAccounts } from "../domain/selfUpdate.ts";
 import { parseDenyList } from "../domain/workerMcp.ts";
 
@@ -213,10 +214,13 @@ const schema = z
     SELF_PR_AUTHOR: z.string().optional(),
     SELF_PR_REVIEWER: z.string().optional(),
 
-    // GitHub owners (comma separated, case-insensitive) whose PRs `quick-review`
-    // posts non-blocking findings for, on top of the blockers every review
-    // posts. Empty: blockers only, everywhere.
-    REVIEW_EXTENDED_OWNERS: z.string().optional(),
+    // Review rounds: a PR that had a quick review is followed, and a new head
+    // commit pushed to it gets the next round by itself (same thread, same
+    // asker's token). REVIEW_ROUNDS_MAX is the rounds in all, the review that
+    // was asked for included (0 turns following off); REVIEW_ROUNDS_IDLE_DAYS the
+    // days without a push after which a PR is no longer followed.
+    REVIEW_ROUNDS_MAX: z.coerce.number().int().min(0).max(50).default(DEFAULT_REVIEW_ROUNDS),
+    REVIEW_ROUNDS_IDLE_DAYS: z.coerce.number().int().min(1).max(365).default(DEFAULT_REVIEW_IDLE_DAYS),
 
     // Local database MCP servers on this host (comma separated names as in
     // `claude mcp list`, e.g. `pg-prod,clickhouse-ro`). Each is denied BY NAME to
@@ -321,8 +325,10 @@ export type AppConfig = {
   selfPrAccounts?: SelfPrAccounts;
   /** Slack bot ids whose messages are answered as the person they post for; empty ignores every bot. */
   acceptedBotIds: string[];
-  /** GitHub owners whose PRs get non-blocking review findings too; empty is none. */
-  reviewExtendedOwners: string[];
+  /** Review rounds a PR is followed for, the first included; 0 is off. */
+  reviewRoundsMax: number;
+  /** Days without a push after which a reviewed PR is no longer followed. */
+  reviewRoundsIdleDays: number;
   /** Local database MCP servers denied by name to roles that may not use databases; empty denies none. */
   dbMcpServers: string[];
   /** Secret-shaped variable names a turn may still inherit; empty is none. */
@@ -416,7 +422,8 @@ export const loadConfig = (source: Record<string, string | undefined> = process.
       parseSelfPrAccounts(env.SELF_PR_AUTHOR, env.SELF_PR_REVIEWER),
     ),
     acceptedBotIds: parseList(env.ACCEPTED_BOT_IDS),
-    reviewExtendedOwners: parseList(env.REVIEW_EXTENDED_OWNERS),
+    reviewRoundsMax: env.REVIEW_ROUNDS_MAX,
+    reviewRoundsIdleDays: env.REVIEW_ROUNDS_IDLE_DAYS,
     dbMcpServers: parseList(env.DB_MCP_SERVERS),
     turnEnvPassthrough: parseList(env.TURN_ENV_PASSTHROUGH),
     executerDbMcpServers: parseList(env.EXECUTER_DB_MCP_SERVERS),

@@ -127,6 +127,18 @@ export const createGhCli = (config: GhCliConfig = {}): GitHubPort => {
       }
     },
 
+    prHead: async (prUrl: string) => {
+      try {
+        const { code, out } = await run(["pr", "view", prUrl, "--json", "state,headRefOid", "--jq", '[.state, .headRefOid] | join(" ")'], prUrl);
+        if (code !== 0) return undefined;
+        const [state, sha] = out.trim().split(" ");
+        if (state !== "OPEN" && state !== "MERGED" && state !== "CLOSED") return undefined;
+        return sha && /^[0-9a-f]{7,64}$/i.test(sha) ? { state, headSha: sha.toLowerCase() } : undefined;
+      } catch {
+        return undefined;
+      }
+    },
+
     reviewDecision: async (prUrl: string): Promise<string | undefined> => {
       try {
         const { code, out } = await run(["pr", "view", prUrl, "--json", "reviewDecision", "--jq", ".reviewDecision"], prUrl);

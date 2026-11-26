@@ -144,6 +144,9 @@ import { dispatchCommand, isQuietCommand, listCommandInfo, startReview } from ".
 import type { ReviewApp } from "./application/commands/shared.ts";
 import { createAutoReview, type AutoReview } from "./application/autoReview.ts";
 import { createReviewRunRepo } from "./infrastructure/db/reviewRunRepo.ts";
+import { createReviewRoundRepo } from "./infrastructure/db/reviewRoundRepo.ts";
+import { createReviewRounds, type ReviewRounds } from "./application/reviewRounds.ts";
+import { DEFAULT_ROUND_LIMITS } from "./domain/reviewRounds.ts";
 import { createCommandTickets, refusalMessage } from "./application/commandTickets.ts";
 import { createSlackTickets, slackTicketContext } from "./application/slackTickets.ts";
 import { createOwnerTickets, ownerTicketWanted } from "./application/ownerTickets.ts";
@@ -262,6 +265,8 @@ const main = async () => {
   const reviewRuns = createReviewRunRepo(db);
   // Filled in below, once `deps` exists: the owner's press on a review with nobody's token resolves through it.
   let autoReview: AutoReview | undefined;
+  // Same for the rounds: a review that finishes reports to it, and it starts reviews through `deps`.
+  let reviewRounds: ReviewRounds | undefined;
   const selfIssues = createSelfIssueRepo(db);
   const skillDrafts = createSkillDraftRepo(db);
   const loops = createLoopRepo(db);
@@ -842,7 +847,7 @@ const main = async () => {
     restartScript,
     repoPath,
     selfPrAccounts: config.selfPrAccounts,
-    reviewExtendedOwners: config.reviewExtendedOwners,
+    reviewRounds: { reviewed: (r) => reviewRounds?.reviewed(r), maxRounds: () => config.reviewRoundsMax },
     noTools: noTools(config.dbMcpServers),
     draft,
     toolPolicy,
@@ -1315,6 +1320,20 @@ const main = async () => {
     prefix: config.commandPrefix,
     log: (msg) => console.error(`[review] ${msg}`),
   });
+  // A PR that had a review is followed: a push gets the next round by itself, in the same thread.
+  reviewRounds = createReviewRounds({
+    clock,
+    rounds: createReviewRoundRepo(db),
+    users,
+    hasToken: (slackId) => claudeTokens?.has(slackId) ?? false,
+    pr: async (url) => github.prHead?.(url),
+    post: async (channel, text, thread) => (await slackAdmin.post(channel, text, thread, SIGNATURES.reviewInbox))?.ts,
+    review: (start) => startReview(deps, start),
+    limits: () => ({ ...DEFAULT_ROUND_LIMITS, maxRounds: config.reviewRoundsMax, idleMs: config.reviewRoundsIdleDays * 86_400_000 }),
+    prefix: config.commandPrefix,
+    log: (msg) => console.error(`[review-rounds] ${msg}`),
+    onError: onDbError,
+  });
   const reviewInbox = createReviewInbox({
     clock,
     settings,
@@ -1410,6 +1429,7 @@ const main = async () => {
     console.log(`[github-app] off - missing ${appCreds.ok ? "client" : appCreds.missing.join(", ")}`);
   }
   // A review a dead process was in the middle of cannot finish: asking for it again retries it.
+  reviewRounds.recover();
   const interrupted = autoReview.recover();
   if (interrupted) console.log(`[review] ${interrupted} review(s) were cut off by the restart; asking again retries them`);
   const pendingReminders = reminders.waiting().length;
@@ -1548,6 +1568,7 @@ const main = async () => {
     void innerChild.tick().catch(tickFailed("inner-child"));
     void learningHarvest.tick().catch(tickFailed("harvest"));
     void reviewInbox.tick().catch(tickFailed("review-inbox"));
+    void reviewRounds?.tick().catch(tickFailed("review-rounds"));
     // Questions Orca workers are blocked on, put to the threads that started them.
     void orcaBridge?.tick().catch(tickFailed("orca-questions"));
     // Calls that arrived while a restart drained, or a previous process left.

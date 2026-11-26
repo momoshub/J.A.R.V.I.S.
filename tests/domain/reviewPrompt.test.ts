@@ -2,7 +2,6 @@ import { describe, expect, test } from "bun:test";
 import {
   asAgentCap,
   DEFAULT_REVIEW_AGENTS,
-  isExtendedOwnerPr,
   REVIEW_AGENT_CEILING,
   reviewHelp,
   reviewPrompt,
@@ -99,33 +98,39 @@ describe("reviewPrompt fan-out", () => {
 });
 
 describe("reviewPrompt comment shape", () => {
-  test("blockers only: a verdict line, then one bullet per blocker, worst first", () => {
+  test("a verdict line, then blockers and non-blocking findings as separate groups, worst first", () => {
     const p = reviewPrompt([PR], "Bot");
     expect(p).toContain('line 1: where you land, "good to merge" or what blocks');
-    expect(p).toContain('one "- " bullet per blocker, worst first');
+    expect(p).toContain('each opened by a bare line "blockers" or "non-blocking"');
+    expect(p).toContain('one "- " bullet per finding, worst first');
+    expect(p).toContain("Blockers first, then non-blocking, then the out-of-scope bullet last");
   });
 
   test("a clean PR gets one line", () => {
     expect(reviewPrompt([PR], "Bot")).toContain("A clean PR gets this line and the sign-off, nothing else");
   });
 
-  test("non-blocking findings never reach the comment", () => {
-    const p = reviewPrompt([PR], "Bot");
-    expect(p).toContain("NON-BLOCKING findings");
-    expect(p).toContain("never go in the comment");
+  test("every PR gets the non-blocking findings, whoever owns it", () => {
+    for (const url of [PR, "https://github.com/any-owner/any-repo/pull/9", "acme/api#7"]) {
+      const p = reviewPrompt([url], "Bot");
+      expect(p).toContain("NON-BLOCKING findings (design risk, correctness doubts, coding style, real cleanups) go in the comment too");
+      expect(p).toContain("Pure-noise nits are dropped");
+    }
   });
 
-  test("non-blocking findings never become an issue", () => {
+  test("non-blocking findings never flip the review and never become an issue", () => {
     const p = reviewPrompt([PR], "Bot");
-    expect(p).toContain("never become an issue: they are dropped");
+    expect(p).toContain("They never make flow B and never become an issue");
     expect(p).toContain("Never open an issue");
     expect(p).not.toContain("gh issue create");
+    expect(p).not.toContain("never go in the comment");
   });
 
-  test("a declared gap is not a blocker, but what the PR breaks is not excused", () => {
+  test("a declared gap is a last warning bullet, never a blocker, but what the PR breaks is not excused", () => {
     const p = reviewPrompt([PR], "Bot");
-    expect(p).toContain("A gap the PR declares out of scope is never a blocker");
-    expect(p).toContain("a problem the PR itself introduces is not out of scope");
+    expect(p).toContain('ONE last bullet, "out of scope per the description: ... risk left standing"');
+    expect(p).toContain("A warning only, never blocking");
+    expect(p).toContain("A problem the PR itself introduces is not out of scope");
   });
 
   test("known content is not said again, and it is read first", () => {
@@ -147,83 +152,83 @@ describe("reviewPrompt comment shape", () => {
   });
 
   test("the prompt stays lean", () => {
-    // the owner asked for a token-efficient prompt; it was ~12.6k chars before
+    // the owner asked for a token-efficient prompt; it was ~12.6k chars once, ~6k blockers-only
     const p = reviewPrompt([PR], "Bot", { login: "kai", name: "Kai" });
     expect(p.length).toBeLessThan(7500);
   });
 });
 
-describe("reviewPrompt per-owner shape", () => {
-  const OWNERS = ["acme-corp"];
-  const EXT = "https://github.com/acme-corp/api/pull/7";
-  const EXT_UPPER = "https://github.com/Acme-Corp/x/pull/2";
-  const build = (urls: string[], reviewer?: { login: string; name: string }) =>
-    reviewPrompt(urls, "Bot", reviewer, urls, undefined, undefined, OWNERS);
-
-  test("isExtendedOwnerPr matches a configured owner only, case-insensitive", () => {
-    expect(isExtendedOwnerPr(EXT, OWNERS)).toBe(true);
-    expect(isExtendedOwnerPr(EXT_UPPER, OWNERS)).toBe(true);
-    expect(isExtendedOwnerPr(EXT, ["ACME-CORP"])).toBe(true);
-    expect(isExtendedOwnerPr(PR, OWNERS)).toBe(false);
-    expect(isExtendedOwnerPr("https://github.com/o/acme-corp/pull/1", OWNERS)).toBe(false);
-    expect(isExtendedOwnerPr("https://github.com/acme-corp-fork/r/pull/1", OWNERS)).toBe(false);
-    expect(isExtendedOwnerPr("#12", OWNERS)).toBe(false);
-    expect(isExtendedOwnerPr("12", OWNERS)).toBe(false);
+describe("reviewPrompt coverage", () => {
+  test("every changed file and hunk is read, never a sample, and callers and callees are followed", () => {
+    const p = reviewPrompt([PR], "Bot");
+    expect(p).toContain("trace ALL of the diff, never a sample");
+    expect(p).toContain("Every changed file and every hunk is read");
+    expect(p).toContain("callers and callees of each changed symbol are followed in the real code");
+    expect(p).toContain("Not big: read every hunk yourself");
   });
 
-  test("no configured owners means no PR is extended", () => {
-    expect(isExtendedOwnerPr(EXT, [])).toBe(false);
-    expect(reviewPrompt([EXT], "Bot")).toContain("never go in the comment and never become an issue: they are dropped");
+  test("on a big PR every file goes to exactly one child agent, and the reviewer covers the rest", () => {
+    const p = reviewPrompt([PR], "Bot");
+    expect(p).toContain("EVERY file is assigned to exactly ONE agent");
+    expect(p).toContain("tell each agent its files by name");
+    expect(p).toContain("You cover whatever no agent was assigned or reported back on");
+    // a lone agent still gets the whole list, the reviewer checks what it missed
+    expect(reviewPrompt([PR], "Bot", undefined, [PR], 1)).toContain("given the whole file list");
   });
 
-  test("isExtendedOwnerPr reads the owner/repo#N shorthand too", () => {
-    expect(isExtendedOwnerPr("acme-corp/api#7", OWNERS)).toBe(true);
-    expect(isExtendedOwnerPr("Acme-Corp/x#2", OWNERS)).toBe(true);
-    expect(isExtendedOwnerPr("o/acme-corp#7", OWNERS)).toBe(false);
-    expect(isExtendedOwnerPr("acme-corp/x", OWNERS)).toBe(false);
+  test("the comment never claims coverage it did not do, and names what could not be read in one line", () => {
+    const p = reviewPrompt([PR], "Bot");
+    expect(p).toContain("Never claim coverage you did not do");
+    expect(p).toContain('"not read: <file> (<why>)"');
+    expect(p).toContain("a binary, a huge generated file");
+    expect(p).toContain("and what was not read if anything");
+  });
+});
+
+describe("reviewPrompt rounds", () => {
+  const round = { number: 2, from: "a".repeat(40), to: "b".repeat(40) };
+  const build = (r?: typeof round) => reviewPrompt([PR], "Bot", { login: "kai", name: "Kai" }, [], 3, undefined, [], "human", r);
+
+  test("a round says which round it is, and reviews the delta in the context of the whole PR", () => {
+    const p = build(round);
+    expect(p).toContain("THIS IS ROUND 2");
+    expect(p).toContain("DELTA aaaaaaa..bbbbbbb");
+    expect(p).toContain(`compare/${round.from}...${round.to}`);
+    expect(p).toContain("read in the context of the whole PR");
+    expect(p).toContain("BIG is judged on the delta too");
   });
 
-  test("a configured owner's PR posts non-blocking bullets and the out-of-scope bullet", () => {
-    const p = build([EXT]);
-    expect(p).toContain("NON-BLOCKING findings (design risk, correctness, coding style, real cleanups) go in the comment");
-    expect(p).toContain("blockers, then non-blocking findings, then the out-of-scope bullet last");
-    expect(p).toContain("out of scope per the description: ... risk left standing");
-    expect(p).toContain("under 250 words");
-    expect(p).toContain("blockers are never squeezed");
-    expect(p).toContain("never make flow B and never become an issue");
-    expect(p).toContain("Never open an issue");
-    expect(build([EXT_UPPER])).toContain("go in the comment");
+  test("line 1 starts with the round, and each earlier blocker is fixed, still open or new", () => {
+    const p = build(round);
+    expect(p).toContain('line 1 starts with "round 2 (aaaaaaa..bbbbbbb)"');
+    expect(p).toContain("whether the new commits fixed it");
+    expect(p).toContain('"still open from round 1:"');
+    expect(p).toContain("New findings follow in their groups");
   });
 
-  test("any other owner keeps the blockers-only text", () => {
-    const p = build([PR]);
-    expect(p).toContain("never go in the comment and never become an issue: they are dropped");
-    expect(p).toContain('one "- " bullet per blocker, worst first');
-    expect(p).not.toContain("out of scope per the description");
-    expect(p).not.toContain("under 250 words");
-    expect(p).not.toContain("Extended-review PRs");
+  test("a round with nothing blocking left is still flow A", () => {
+    expect(build(round)).toContain("A round with no blocker left is flow A");
   });
 
-  test("a mixed batch says which PR gets which shape", () => {
-    const p = build([EXT, PR]);
-    expect(p).toContain(`Extended-review PRs (non-blocking findings are posted):\n${EXT}`);
-    expect(p).toContain(`Every other PR (blockers only, non-blocking findings are never posted):\n${PR}`);
-    expect(p).toContain("For every other PR: non-blocking findings never go in the comment");
-    expect(p).toContain("out of scope per the description");
+  test("a first review has no round text at all", () => {
+    const p = build(undefined);
+    expect(p).not.toContain("ROUND");
+    expect(p).not.toContain("DELTA");
+    expect(p).not.toContain("still open from round");
   });
 
-  test("the extended prompt stays lean too", () => {
-    expect(build([EXT, PR], { login: "kai", name: "Kai" }).length).toBeLessThan(9000);
+  test("the round prompt stays lean too", () => {
+    expect(build(round).length).toBeLessThan(8500);
+  });
+
+  test("red CI on the new head works the same per round", () => {
+    const p = reviewPrompt([PR], "Bot", undefined, [], 3, undefined, [PR], "human", round);
+    expect(p).toContain("change request ALREADY submitted");
+    expect(p).toContain("THIS IS ROUND 2");
   });
 });
 
 describe("reviewHelp", () => {
-  test("names the configured owners as getting non-blocking findings", () => {
-    const h = reviewHelp("X", false, 3, "Bot", undefined, ["acme-corp", "other-org"]);
-    expect(h).toContain("`acme-corp` or `other-org`");
-    expect(h).toContain("out of scope per the description");
-  });
-
   test("the help names quick-review and says when it runs: a person asks, or a review is requested on GitHub", () => {
     const h = reviewHelp("//bot", false, 3, "Bot");
     expect(h).toContain("`//bot quick-review <pr-url>`");
@@ -234,23 +239,54 @@ describe("reviewHelp", () => {
     expect(h).toContain("`//bot quick-review prompt`");
   });
 
-  test("with no owners configured it says non-blocking findings are never posted", () => {
+  test("it says blockers and non-blocking findings both go in the comment, for every PR", () => {
     const h = reviewHelp("X", false, 3, "Bot");
-    expect(h).not.toContain("out of scope per the description");
-    expect(h).toContain("non-blocking findings are never posted, and never become an issue");
+    expect(h).toContain("then lists the blockers, then the non-blocking findings");
+    expect(h).toContain('"out of scope per the description"');
+    expect(h).toContain("non-blocking findings never make me request changes and never become an issue");
+    expect(h).not.toContain("REVIEW_EXTENDED_OWNERS");
+    expect(h).not.toContain("blockers only");
+  });
+
+  test("it says all of the diff is traced and the child agents split the file list", () => {
+    const h = reviewHelp("X", false, 3, "Bot");
+    expect(h).toContain("I trace all of the diff, never a sample");
+    expect(h).toContain("every file belongs to exactly one of them");
+    expect(h).toContain("I never claim coverage I did not do");
+  });
+
+  test("it explains the rounds, with their limits, and no longer says a push needs asking again", () => {
+    const h = reviewHelp("X", false, 3, "Bot");
+    expect(h).toContain("a new commit pushed to it gets the next round by itself");
+    expect(h).toContain("still for 2 minutes");
+    expect(h).toContain("I stop after 5 rounds");
+    expect(h).toContain("7 days without a push");
+    expect(h).toContain("no token on file: one line in the thread, nothing runs");
+    expect(h).not.toContain("only reviewed again when it is asked for again");
+    expect(reviewHelp("X", false, 3, "Bot", undefined, 3)).toContain("I stop after 3 rounds");
+  });
+
+  test("with rounds off it says a push is only reviewed when asked for again", () => {
+    const h = reviewHelp("X", false, 3, "Bot", undefined, 0);
+    expect(h).toContain("*rounds*: off here");
+    expect(h).not.toContain("I stop after");
+  });
+
+  test("`prompt` prints the real system prompt", () => {
+    expect(reviewHelp("X", true, 3, "Bot")).toContain("trace ALL of the diff");
   });
 });
 
 describe("red CI in the prompt", () => {
   test("a PR whose change request is already in skips flow B's first step", () => {
-    const p = reviewPrompt([PR], "Jarvis", undefined, [], 3, undefined, [], [PR]);
+    const p = reviewPrompt([PR], "Jarvis", undefined, [], 3, undefined, [PR]);
     expect(p).toContain("change request ALREADY submitted");
     expect(p).toContain("skip (a) and post only the comment");
   });
 
   test("nothing about it appears when CI was not red", () => {
     expect(reviewPrompt([PR], "Jarvis")).not.toContain("ALREADY submitted");
-    expect(reviewPrompt([PR], "Jarvis", undefined, [], 3, undefined, [], [])).not.toContain("ALREADY submitted");
+    expect(reviewPrompt([PR], "Jarvis", undefined, [], 3, undefined, [])).not.toContain("ALREADY submitted");
   });
 
   test("the help says CI comes first and what the watcher does", () => {

@@ -108,7 +108,7 @@ export const requestedText = (r: RequestedLine): string =>
 
 /** A request on a head that already has a review under this identity: nothing runs again, and the thread says so. */
 export const alreadyReviewedText = (headSha: string): string =>
-  `↩️ \`${headSha.slice(0, 7)}\` already has a review this way - a new push, asked for again, gets another`;
+  `↩️ \`${headSha.slice(0, 7)}\` already has a review this way - a new push gets its next round by itself`;
 
 /** Why a review waits on the owner instead of running. */
 export type AskReason = "no-token" | "unknown" | "unlinked";

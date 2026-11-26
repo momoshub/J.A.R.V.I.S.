@@ -2,6 +2,7 @@
 
 import type { McpToolsPort } from "../../infrastructure/mcp/approvals.ts";
 import type { ReviewGuard } from "../reviewGuard.ts";
+import type { ReviewRounds } from "../reviewRounds.ts";
 import type { WorkerUsagePort } from "../workerCost.ts";
 import type { WorkerTickets } from "../workerTickets.ts";
 import type { InternalKind } from "../../domain/internalMessages.ts";
@@ -201,8 +202,8 @@ export type CommandDeps = {
    * database servers, so the host must wire it.
    */
   noTools?: readonly string[];
-  /** GitHub owners whose PRs `quick-review` posts non-blocking findings for (`REVIEW_EXTENDED_OWNERS`). */
-  reviewExtendedOwners?: readonly string[];
+  /** Where a finished review reports so the PR is followed for later rounds (application/reviewRounds.ts), and what `quick-review help` says about it. */
+  reviewRounds?: Pick<ReviewRounds, "reviewed"> & { maxRounds?: () => number };
   /** Per-user Claude Code tokens. `quick-review` requires one; everything else prefers one. */
   claudeTokens?: ClaudeTokenPort;
   /** Shared 2FA setup keys, for the `2fa` command. */

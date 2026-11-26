@@ -124,6 +124,7 @@ export const migrate = (db: Database): void => {
   migrateWatchParent(db);
   migrateStatusMessages(db);
   migrateMessageViaBot(db);
+  migrateReviewRounds(db);
 };
 
 /**
@@ -1541,4 +1542,47 @@ const migrateMessageViaBot = (db: Database): void => {
     user_version: 0,
   };
   if (user_version < 52) db.exec("PRAGMA user_version = 52;");
+};
+
+/**
+ * Migration v53: PRs followed for review rounds.
+ *
+ * One row per PR that had a quick review: the head the last round reviewed
+ * (`last_head`, the base of the next delta), the last head the poll dealt with
+ * whether or not a review came of it (`handled_head`, so it is never retried),
+ * the round number, who asked (whose token pays), as which identity the
+ * comments go out and the Slack thread they go to. `observed_head` and
+ * `observed_at` carry the quiet period of a new push, `last_push_at` the idle
+ * window, and `running` is the guard that keeps two rounds of one PR from
+ * running at once. A new table, so a rerun is a no-op.
+ */
+const migrateReviewRounds = (db: Database): void => {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS review_rounds (
+      pr_key        TEXT PRIMARY KEY,
+      url           TEXT NOT NULL,
+      repo          TEXT NOT NULL,
+      number        INTEGER NOT NULL,
+      identity      TEXT NOT NULL,
+      actor_slack   TEXT NOT NULL,
+      channel_id    TEXT NOT NULL,
+      thread_ts     TEXT NOT NULL,
+      last_head     TEXT NOT NULL,
+      handled_head  TEXT NOT NULL,
+      round         INTEGER NOT NULL,
+      observed_head TEXT NOT NULL DEFAULT '',
+      observed_at   INTEGER NOT NULL DEFAULT 0,
+      last_push_at  INTEGER NOT NULL,
+      status        TEXT NOT NULL DEFAULT 'following',
+      stop_reason   TEXT NOT NULL DEFAULT '',
+      running       INTEGER NOT NULL DEFAULT 0,
+      created_at    INTEGER NOT NULL,
+      updated_at    INTEGER NOT NULL
+    );
+  `);
+  db.exec("CREATE INDEX IF NOT EXISTS idx_review_rounds_status ON review_rounds (status);");
+  const { user_version } = db.query<{ user_version: number }, []>("PRAGMA user_version").get() ?? {
+    user_version: 0,
+  };
+  if (user_version < 53) db.exec("PRAGMA user_version = 53;");
 };

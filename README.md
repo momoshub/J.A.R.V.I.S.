@@ -105,7 +105,8 @@ Required / notable env (see `.env.example`):
 | `GITHUB_APP_LABEL` | label that calls it on an issue/PR (default `jarvis`) |
 | `SELF_PR_AUTHOR` / `SELF_PR_REVIEWER` | gh logins for the bot's own PRs: the author opens the PR and answers reviews, the reviewer posts its reviews (request changes or approve) and merges. Both or neither, and not the same login (otherwise: one account) |
 | `ACCEPTED_BOT_IDS` | Slack bot ids, comma list, whose messages are answered as the person they post for. A bot that posts with a person's user token carries both a `bot_id` and that person's `user`; with its id listed the message is handled as that user speaking, authorized through the normal access check (exactly that person's role, never more). A bot message without a `user` is still ignored, and after 3 accepted-bot turns in a row in one thread with no person writing, the bot stops answering bots there until a person does. The turn's context marks such a message `via bot` next to the person. Default empty: every bot message is ignored |
-| `REVIEW_EXTENDED_OWNERS` | GitHub owners, comma list (case-insensitive), whose PRs `quick-review` also posts non-blocking findings for. Default empty: blockers only everywhere |
+| `REVIEW_ROUNDS_MAX` | review rounds a PR is followed for, the review that was asked for included (default `5`; `0` turns following off). See [Review rounds](#review-rounds) |
+| `REVIEW_ROUNDS_IDLE_DAYS` | days without a push after which a reviewed PR is no longer followed (default `7`) |
 | `TURN_ENV_PASSTHROUGH` | secret-shaped variable names (`*_TOKEN`, `*_SECRET`, `*_API_KEY`...) an agent turn may still inherit, comma list; default none. A turn's environment is the bot's **minus every credential-shaped variable** (`SLACK_BOT_TOKEN`, `SLACK_APP_TOKEN`, `ANTHROPIC_API_KEY`, the webhook secret, ...): a turn reads untrusted text, so anything in its environment is one `curl` from leaving. `CLAUDE_CODE_OAUTH_TOKEN` is always kept (the CLI needs it). Slack goes through a per-turn ticket instead, see "Secrets and turns". Name a variable here only when a tool a turn runs genuinely needs it |
 | `DB_MCP_SERVERS` | names of the local database MCP servers on this host (as `claude mcp list` shows them, e.g. `pg-prod,clickhouse-ro`), comma list. **Security setting:** each is denied by name to every role that may not use databases (pal, executer, side questions), and a denial has to name the server, so a server missing here is reachable by EVERY role. Default empty denies nothing - list every database server you configure (at boot the activity log warns about local servers in `~/.claude.json` that are not listed) |
 | `EXECUTER_DB_MCP_SERVERS` | the subset of `DB_MCP_SERVERS` the executer role may query; list only servers whose credential is read-only on the server side. Default empty: executers get none |
@@ -187,7 +188,7 @@ Every command is gated by its own `command:<name>` grant, and its sub-actions by
 | `token [remove\|who]` (alias `claude-token`) | pal, executer, admin | add, replace or forget your own Claude Code token (used only by `quick-review`) - see [Your own Claude token](#your-own-claude-token) |
 | `session [reset\|on\|off]` (alias `sess`) | pal, executer, admin (on/off: `runs:stop-any`) | the CLI session this thread is talking to - see [One session per thread](#one-session-per-thread) |
 | `ticket <what is wrong>` (aliases `bug`, `raise`) | pal, executer, admin | raise a properly written, correctly routed ticket - see [Raising a ticket](#raising-a-ticket) |
-| `quick-review <pr-url\|help\|prompt> [--policy first\|after] [what to look at]` (alias `rv`) | pal, executer, admin | quick review of a PR, **when a person asks** (tag the bot with `review <pr-url>` or `approve <pr-url>`, or type this; or a review requested on GitHub starts the same one - never from a thread, workflow or hand-back - see [Asking for a review in words](#asking-for-a-review-in-words) and [Reviews that start by themselves](#reviews-that-start-by-themselves)): read it first, post a blockers-only comment on GitHub *and* back in the thread (PRs owned by an account in `REVIEW_EXTENDED_OWNERS` also get the non-blocking findings as bullets); request changes on a blocker only, other repos drop non-blocking findings (big PRs are cloned + reviewed by child agents). CI is read first: red requests changes before the review, a running CI gets a watcher (see [CI comes first](#ci-comes-first)). Runs full-access. |
+| `quick-review <pr-url\|help\|prompt> [--policy first\|after] [what to look at]` (alias `rv`) | pal, executer, admin | quick review of a PR, **when a person asks** (tag the bot with `review <pr-url>` or `approve <pr-url>`, or type this; or a review requested on GitHub starts the same one - never from a thread, workflow or hand-back - see [Asking for a review in words](#asking-for-a-review-in-words) and [Reviews that start by themselves](#reviews-that-start-by-themselves)): read all of it, post a comment on GitHub *and* back in the thread with the blockers first and the non-blocking findings after them; request changes on a blocker only (big PRs are cloned + reviewed by child agents that split the files between them); a new push to a reviewed PR gets the next round by itself, see [Review rounds](#review-rounds). CI is read first: red requests changes before the review, a running CI gets a watcher (see [CI comes first](#ci-comes-first)). Runs full-access. |
 | `bomb [categories] [count] <message-link>` (alias `br`) | admin | reaction-bomb a message. Combine categories with commas and set a count: `bomb money,face,negative 9 <link>`. Up to 23; `bomb help` lists every category |
 | `brief <thread-link\|reference> <text>` (`brief help`) | admin | leave a short note FOR another thread: what you posted there, why, what you wait for. Posts nothing, starts no turn; that thread's session reads it on its next turn, whoever speaks (it is part of that turn's message, so the session keeps it for the turns after), then it is marked read for that access tier. It is background information only, never instructions. The receiver sees only an opaque reference to your thread (never a link) and answers with `brief <reference> <text>`. `tell` is for when the other side must act now |
 | `post <#channel \| channel id \| thread-link> <text>` | owner | post a NEW message somewhere the turn is not running: a channel's top level (`#name`, `<#C123>` or its id) or into a linked thread. The command is the audited route; the Slack proxy lets only the owner's own turn write elsewhere by hand, and any other turn only into its own channel. Owner only (anyone else is told who can), audit logged like every command, and it files a `brief` in the target thread so its session knows why (an owner's turn writing there directly through the Slack proxy files the same brief) and, for 7 days after the last such write, that thread's human messages come back to the posting thread as relay briefs (untrusted data, no turn, nothing posted); the footer under the message never names the requester; the bot must be in the channel |
@@ -1367,7 +1368,7 @@ Bots, the app itself included, never trigger it.
 ## Reviews that start by themselves
 
 A review requested on GitHub runs without anyone typing the command, as the same
-`quick-review` (review policy, CI gate, blockers-only, approve only when nothing
+`quick-review` (review policy, CI gate, blockers then non-blocking findings, approve only when nothing
 blocks and CI is green). Who the comments are written as depends on who was asked:
 
 | asked | how it arrives | comments and change requests | approval |
@@ -1390,8 +1391,9 @@ for that one repository, limited to what a review needs and revoked when it ends
   owner's token (the bot's own credential if the owner has none); Reject leaves a
   short note and nothing runs.
 - **Once per head**: one review per PR head commit per identity. A redelivery, a
-  second poll or a re-request on the same head never runs twice, and a new push is
-  reviewed only when it is requested again.
+  second poll or a re-request on the same head never runs twice. A push after the
+  review needs no new request: the PR is followed and gets the next round, see
+  [Review rounds](#review-rounds).
 - `review-inbox auto on|off` (setting `review_auto`, default on) switches it: off,
   a request to the host's account is only announced, as before.
 
@@ -1418,11 +1420,11 @@ brain (`jarvis-run.sh` refuses `quick-review`, and the prompt says so), not for 
 `tell`, a watch hand-back, a worker's question or a drift nudge, not for a
 workflow step or a thread with a workflow running, not for a batch of buffered
 follow-up messages, not for an untagged reply under a followed thread, and not
-for a push (a new head is reviewed only when it is requested again). A GitHub
-review request is its own door, below. A bare PR link typed after the prefix is
+for a push, except to a PR it already reviewed (that one gets its next round, see
+[Review rounds](#review-rounds)). A GitHub review request is its own door, below. A bare PR link typed after the prefix is
 not a review either.
 
-That closes the command, not reviewing. Asked in plain words to review a PR (no `review`/`approve` tag), the bot treats it as an ordinary task: a standalone reviewer worker (`--model opus`, or the Agent tool for a role without Orca) posts one real review, blockers only, and the bot acts on its verdict, merging only if the person asked and CI is green.
+That closes the command, not reviewing. Asked in plain words to review a PR (no `review`/`approve` tag), the bot treats it as an ordinary task: a standalone reviewer worker (`--model opus`, or the Agent tool for a role without Orca) posts one real review, and the bot acts on its verdict, merging only if the person asked and CI is green.
 
 This matters beyond convenience: only the command can offer the box that takes a
 Claude token, so a spoken request used to get a description of the token instead
@@ -1513,28 +1515,62 @@ not in `data/` any more, so back up the Keychain item (Keychain Access, or
 
 ## What a review comment looks like
 
-Blockers only (except for the owners in `REVIEW_EXTENDED_OWNERS`, see below). One line saying where it lands - good to merge, or what blocks -
-then one short bullet per blocker, worst first: what is wrong, one pointer
-(`file.ts:120` or an identifier, never a code block or a quoted line), why it
-matters. A clean PR gets that one line and the sign-off.
+One line saying where it lands - good to merge, or what blocks - then two
+groups, each only when it has something: **blockers** first, then
+**non-blocking** findings (design risk, correctness doubts, coding style, real
+cleanups; pure-noise nits are dropped), one short bullet each, worst first: what
+is wrong, one pointer (`file.ts:120` or an identifier, never a code block or a
+quoted line), why it matters. Anything the description defers ends the comment
+as one "out of scope per the description: ... risk left standing" warning
+bullet. About 250 words for a normal PR; blockers are never squeezed out. A clean
+PR gets the one line and the sign-off.
 
 Blocking means a security hole, data loss, a breaking change, a correctness bug
 that would ship, missing or failing tests on a critical path, or failing CI.
-Everything else - design, cleanups, style, nits - is never posted, and never
-becomes a GitHub issue either: it is dropped.
-
-PRs owned by an account listed in `REVIEW_EXTENDED_OWNERS` (decided per PR from a full url or `owner/repo#N`; empty by
-default, so nobody gets this until you set it) are the
-exception: non-blocking findings (design risk, correctness, coding style, real
-cleanups) follow the blockers as bullets, worst first, under about 250 words for
-a normal PR, then one last "out of scope per the description: ... risk left
-standing" warning bullet for anything the description defers. They never make
-it request changes and never become an issue; pure-noise nits are still dropped.
+Non-blocking findings never make it request changes and never become a GitHub
+issue.
 
 It reads the description and the existing comments **before** reviewing, so
 nothing already said is said again. A gap the description declares out of scope
 is never a blocker, but scope covers what a PR does **not fix**, never what it
 **breaks**.
+
+### All of the diff
+
+The review traces all of the diff, never a sample: every changed file and hunk is
+read, and the callers and callees of what changed are followed in the real code.
+On a big PR the child agents split the changed-file list so every file is
+assigned to exactly one of them, and the reviewer covers whatever none of them
+took or reported on. The comment never claims coverage that was not done: a file
+that could not be read (a binary, a huge generated file) is named in one line,
+`not read: <file> (<why>)`, and the Slack close-out says what was not read.
+
+## Review rounds
+
+A PR that had a quick review (asked in a Slack thread, or started by a request on
+GitHub) is followed. When a new head commit is pushed to it, the next round runs
+by itself:
+
+- **Same thread, same person, same identity**: the round is posted in the thread
+  the review was in, on the asker's own Claude token, as the same GitHub identity
+  (the account or the app). No token on file, or the asker is off the access list:
+  nothing runs, and the thread gets one line.
+- **Debounced**: it starts once the head has been still for 2 minutes, so a burst
+  of pushes is one round. Never two rounds of a PR at once.
+- **A round says so**: its comment starts with `round N (abc1234..def5678)` and
+  reviews what changed since the last reviewed head, in the context of the whole
+  PR: which earlier blockers are now fixed, which still stand, and anything new.
+  Red CI on the new head is a change request, as in any review.
+- **Stops** when the PR is merged or closed, after `REVIEW_ROUNDS_MAX` rounds
+  (default 5, the review that was asked for included; the thread gets one line
+  when one more push arrives), or after `REVIEW_ROUNDS_IDLE_DAYS` days without a
+  push (default 7). Asking for a review again starts over. `REVIEW_ROUNDS_MAX=0`
+  turns following off.
+- A review asked without a thread (a slash command, which answers in a DM) is not
+  followed: the rounds would have nowhere to answer.
+
+State lives in the `review_rounds` table (one row per PR); the poll is one
+`gh pr view` per followed PR a minute.
 
 ## Explaining a review
 
