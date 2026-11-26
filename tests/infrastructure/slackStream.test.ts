@@ -75,6 +75,16 @@ describe("createSlackStream", () => {
     }
   });
 
+  test("a one-line reply ending in the marker token is delivered: finish answers true and shows it (bug #20)", async () => {
+    for (const delta of ["Done, sir 🐦‍🔥 KEEP_REPLY", "Done, sir 🐦‍🔥 K"]) {
+      const f = fakeStreamer();
+      const s = createSlackStream(f.make);
+      s.sink({ type: "text", delta });
+      expect(await s.finish()).toBe(true);
+      expect(f.appends.map((a) => a.markdown_text ?? "").join("")).toBe(delta.endsWith("K") ? delta : "Done, sir 🐦‍🔥");
+    }
+  });
+
   test("blank text never opens a message or goes out on its own (bug #20: empty posts)", async () => {
     const f = fakeStreamer();
     const s = createSlackStream(f.make);

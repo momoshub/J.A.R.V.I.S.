@@ -410,6 +410,8 @@ export const createSlackStream = (
   /** Push out what the normalisers still hold, so the text shown so far is complete. */
   const flushPipeline = (): void => {
     const rest = markerFilter.flush();
+    // a one-line reply ending in the marker token is held to here: it is the content, so `finish` must count it
+    if (rest.trim()) contentShown = true;
     if (rest) emitSegments(kit.push(rest));
     emitSegments(kit.flush());
     const tail = proseFlush(fences.flush());

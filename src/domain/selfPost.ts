@@ -229,6 +229,7 @@ export const createKeepMarkerFilter = (): KeepMarkerFilter => {
       return out;
     },
     flush: () => {
+      // a held line that continues released text ends in the token, so it goes either way: no `continues` needed
       const rest = lines(pending, false);
       pending = "";
       const trimmed = rest.trimEnd();
