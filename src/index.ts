@@ -484,6 +484,7 @@ const main = async () => {
       fileScript,
       grafanaGetScript,
       slackReadScript,
+      slackCallScript,
       macUiScript,
       agentDesktop,
       desktopScript,

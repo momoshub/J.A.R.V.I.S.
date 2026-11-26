@@ -453,6 +453,13 @@ export type ToolPolicyOptions = {
    * and refusing is a worse answer than a narrow door.
    */
   readonly slackReadScript?: string;
+  /**
+   * Absolute path of the generic Slack call helper (`bin/slack-api.sh`, the
+   * script behind `"$BOT_SLACK_CALL"`). The system prompt tells every turn to use
+   * it, so a sandboxed role needs it on its list; it only reaches the ticketed
+   * proxy, whose method allow-list and channel scoping decide what goes through.
+   */
+  readonly slackCallScript?: string;
   /** Absolute path of the Accessibility driver (`bin/mac-ui.js`): executer only. */
   readonly macUiScript?: string;
   /** Absolute path of the agent-desktop binary, the second AX driver: executer only. */
@@ -492,6 +499,7 @@ const withHelpers = (tools: readonly string[], opts: ToolPolicyOptions): readonl
   ...(opts.fileScript ? [`Bash(${opts.fileScript}:*)`] : []),
   ...(opts.grafanaGetScript ? [`Bash(${opts.grafanaGetScript}:*)`] : []),
   ...(opts.slackReadScript ? [`Bash(${opts.slackReadScript}:*)`] : []),
+  ...(opts.slackCallScript ? [`Bash(${opts.slackCallScript}:*)`] : []),
   ...(opts.githubCommentScript ? [`Bash(${opts.githubCommentScript}:*)`] : []),
   ...(opts.githubAppScript ? [`Bash(${opts.githubAppScript}:*)`] : []),
 ];

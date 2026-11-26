@@ -731,7 +731,7 @@ describe("sandboxed shell note", () => {
     const out = buildSystemPrompt({ learnings: [], sandboxed: true });
     expect(out).toContain(SANDBOX_SHELL_NOTE);
     expect(out).toContain("one plain command per Bash call");
-    expect(out).toContain("try again before you say the shell was denied");
+    expect(out).toContain("after ANY denial you MUST retry as split plain single commands");
   });
 
   test("a sandboxed turn is told the allow-list matches by prefix: no git -C, no sed -i, quote shell characters, a denial is one command", () => {
@@ -740,14 +740,23 @@ describe("sandboxed shell note", () => {
     expect(out).toContain("never `git -C <dir> ...`");
     expect(out).toContain("never `sed -i`");
     expect(out).toContain("quote every argument that holds spaces or shell characters");
-    expect(out).toContain('do not say "Bash is denied"');
+    expect(out).toContain("A denial covers that one command only, never the shell");
+  });
+
+  test("a sandboxed turn is banned from blaming the shell or the owner, and told to check the job fits before promising it", () => {
+    const out = buildSystemPrompt({ learnings: [], sandboxed: true });
+    expect(out).toContain('never write "shell denied host-side", "Bash is blocked" or "Kai / the owner must restore the shell"');
+    expect(out).toContain("has no package manager");
+    expect(out).toContain("Before you promise tests, a build, a PR or a feat env");
+    expect(out).toContain("the owner can approve an Orca worker for it");
   });
 
   test("a full-access turn does not carry the prefix rules", () => {
     const out = buildSystemPrompt({ learnings: [], sandboxed: false });
     expect(out).not.toContain("matches a command by its PREFIX");
     expect(out).not.toContain("quote every argument that holds spaces");
-    expect(out).not.toContain('do not say "Bash is denied"');
+    expect(out).not.toContain("A denial covers that one command only");
+    expect(out).not.toContain("has no package manager");
   });
 
   test("a full-access turn does not carry it", () => {

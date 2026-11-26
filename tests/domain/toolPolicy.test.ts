@@ -90,6 +90,20 @@ describe("toolPolicyFor", () => {
     }
   });
 
+  test("every role gets the Slack call helper behind $BOT_SLACK_CALL, and still no package manager", () => {
+    // the system prompt tells every turn to call Slack through it; a sandboxed
+    // turn that could not was refused and reported its whole shell as denied
+    const withCall = { ...opts, slackCallScript: "/bin/slack-api.sh" };
+    for (const role of ["pal", "executer"] as const) {
+      const allowed = toolPolicyFor(role, withCall).allowedTools ?? [];
+      expect(allowed).toContain("Bash(/bin/slack-api.sh:*)");
+      for (const pm of ["pnpm", "npm", "yarn", "bun"]) {
+        expect(allowed.some((t) => t.startsWith(`Bash(${pm} `) || t === `Bash(${pm}:*)`)).toBe(false);
+      }
+    }
+    expect(toolPolicyFor("pal", opts).allowedTools ?? []).not.toContain("Bash(/bin/slack-api.sh:*)");
+  });
+
   test("reading Slack is NOT denied - it impersonates nobody", () => {
     // the blanket ban refused the reads too, which was never its point: reading
     // is the only way to see a channel the bot was never invited to
