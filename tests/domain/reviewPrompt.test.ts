@@ -107,7 +107,10 @@ describe("reviewPrompt comment shape", () => {
   });
 
   test("a clean PR gets one line", () => {
-    expect(reviewPrompt([PR], "Bot")).toContain("A clean PR gets this line and the sign-off, nothing else");
+    // clean means no finding at all: a PR with only non-blocking findings still gets its group
+    const p = reviewPrompt([PR], "Bot");
+    expect(p).toContain("A PR with no finding at all (no blocker, nothing non-blocking, nothing deferred) gets this line and the sign-off, nothing else");
+    expect(p).not.toContain("A clean PR gets");
   });
 
   test("every PR gets the non-blocking findings, whoever owns it", () => {
@@ -206,6 +209,12 @@ describe("reviewPrompt rounds", () => {
     expect(p).toContain("New findings follow in their groups");
   });
 
+  test("after a rebase or force-push the delta is the whole PR diff, and line 1 says so", () => {
+    const p = build(round);
+    expect(p).toContain("is no longer an ancestor of the head (a rebase or force-push) or the compare fails");
+    expect(p).toContain("the delta is the whole PR diff: review that in full and say so in line 1");
+  });
+
   test("a round with nothing blocking left is still flow A", () => {
     expect(build(round)).toContain("A round with no blocker left is flow A");
   });
@@ -242,6 +251,7 @@ describe("reviewHelp", () => {
   test("it says blockers and non-blocking findings both go in the comment, for every PR", () => {
     const h = reviewHelp("X", false, 3, "Bot");
     expect(h).toContain("then lists the blockers, then the non-blocking findings");
+    expect(h).toContain("a PR with nothing to report gets just the line and the sign-off");
     expect(h).toContain('"out of scope per the description"');
     expect(h).toContain("non-blocking findings never make me request changes and never become an issue");
     expect(h).not.toContain("REVIEW_EXTENDED_OWNERS");

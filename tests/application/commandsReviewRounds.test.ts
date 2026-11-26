@@ -52,6 +52,25 @@ describe("quick-review leaves the PR followed for rounds", () => {
     expect(reported).toEqual([]);
   });
 
+  test("a run on the bot's own credential (the owner pressed approve for it) is not followed: rounds would spend the owner's token", async () => {
+    const { deps, reported } = setup();
+    const lines: string[] = [];
+    await startReview(deps, {
+      actor: actor(),
+      channelId: "C1",
+      threadTs: "111.1",
+      url: PR,
+      identity: "human",
+      botCredentialOk: true,
+      reply: async (t) => void lines.push(t),
+    });
+    expect(lines).toContain("the review");
+    expect(reported).toEqual([]);
+    // the same run on the asker's own token is followed
+    await startReview(deps, { actor: actor(), channelId: "C1", threadTs: "111.1", url: PR, identity: "human", reply: async () => {} });
+    expect(reported).toHaveLength(1);
+  });
+
   test("a review that produced nothing is not followed", async () => {
     const { deps, reported } = setup();
     deps.llm = { complete: async () => "   " };

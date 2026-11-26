@@ -51,6 +51,17 @@ describe("review round repo", () => {
     expect(repo.get("o/r#7")?.round).toBe(3);
   });
 
+  test("a round never moves the count down, even when a person's review finished meanwhile", () => {
+    const repo = make();
+    repo.reviewed(pr, 100);
+    repo.reviewed({ ...pr, headSha: "bbb2222" }, 150); // a person asked again: round 2
+    repo.reviewed({ ...pr, headSha: "ccc3333" }, 160); // and again: round 3
+    repo.reviewed({ ...pr, headSha: "ddd4444", round: 2 }, 200); // a round that started before them reports in late
+    expect(repo.get("o/r#7")?.round).toBe(3);
+    repo.reviewed({ ...pr, headSha: "eee5555", round: 4 }, 300);
+    expect(repo.get("o/r#7")?.round).toBe(4);
+  });
+
   test("asking again for a PR that stopped starts over at round 1, followed again", () => {
     const repo = make();
     repo.reviewed(pr, 100);

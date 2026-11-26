@@ -292,7 +292,9 @@ export const runReview = async (ctx: ReviewCtx, opts: ReviewRunOptions = {}): Pr
       // round's, never swallowed by this one. Only a review in a thread can be followed: the rounds
       // answer in the same place.
       const followed = new Map<string, string>();
-      if (deps.reviewRounds && channelId && ctx.threadTs && urls.length > 0) {
+      // Never one run on the bot's own credential (the owner pressed approve for exactly that run): the
+      // rounds would carry the owner's identity over and spend the owner's token on reviews nobody approved.
+      if (deps.reviewRounds && channelId && ctx.threadTs && urls.length > 0 && !opts.botCredentialOk) {
         for (const url of mine) {
           const head = opts.round?.to ?? (await deps.github?.headSha?.(url));
           if (head) followed.set(url, head);

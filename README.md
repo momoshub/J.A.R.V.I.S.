@@ -1522,8 +1522,8 @@ cleanups; pure-noise nits are dropped), one short bullet each, worst first: what
 is wrong, one pointer (`file.ts:120` or an identifier, never a code block or a
 quoted line), why it matters. Anything the description defers ends the comment
 as one "out of scope per the description: ... risk left standing" warning
-bullet. About 250 words for a normal PR; blockers are never squeezed out. A clean
-PR gets the one line and the sign-off.
+bullet. About 250 words for a normal PR; blockers are never squeezed out. A PR with
+nothing to report at all gets the one line and the sign-off.
 
 Blocking means a security hole, data loss, a breaking change, a correctness bug
 that would ship, missing or failing tests on a critical path, or failing CI.

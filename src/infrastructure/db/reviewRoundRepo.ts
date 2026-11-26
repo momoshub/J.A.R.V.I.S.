@@ -118,7 +118,8 @@ export const createReviewRoundRepo = (db: DbClient): ReviewRoundRepo => {
   return {
     reviewed: (r, at) => {
       const row = getStmt.get(r.prKey);
-      const round = r.round ?? (row && row.status === "following" ? row.round + 1 : 1);
+      // A round the poll started never moves the count down: a person's review that finished meanwhile may already have counted.
+      const round = r.round !== undefined ? Math.max(r.round, row?.status === "following" ? row.round : 0) : row && row.status === "following" ? row.round + 1 : 1;
       insertStmt.run({
         $prKey: r.prKey,
         $url: r.url,

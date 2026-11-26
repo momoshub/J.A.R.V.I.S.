@@ -4,8 +4,8 @@
  * A preset, tightly-scoped task with FULL tools (gh read+write, git, shell, the
  * Task tool for child agents). The comment lists the blockers first, then the
  * non-blocking findings (design risk, correctness doubts, style, real cleanups)
- * as a separate group, then the out-of-scope warning bullet; a clean PR gets
- * one line. Non-blocking never makes flow B and never becomes an issue.
+ * as a separate group, then the out-of-scope warning bullet; a PR with nothing
+ * to report gets one line. Non-blocking never makes flow B and never becomes an issue.
  * The review traces ALL of the diff: every changed file is read, and on a big
  * PR every file is assigned to exactly one child agent. A PR that already had a
  * review gets another round when a new head commit lands (`round`, see
@@ -96,7 +96,7 @@ const short = (sha: string): string => sha.slice(0, 7);
 /** Step 2's coverage rule, and what a round changes about it. */
 const coverageStep = (maxAgents: number, round?: ReviewRound): string => {
   const scope = round
-    ? `THIS IS ROUND ${round.number}: the review covers the DELTA ${short(round.from)}..${short(round.to)} (\`gh api repos/<owner>/<repo>/compare/${round.from}...${round.to}\`), read in the context of the whole PR. "Every changed file" below means every file of that delta; BIG is judged on the delta too.`
+    ? `THIS IS ROUND ${round.number}: the review covers the DELTA ${short(round.from)}..${short(round.to)} (\`gh api repos/<owner>/<repo>/compare/${round.from}...${round.to}\`), read in the context of the whole PR. "Every changed file" below means every file of that delta; BIG is judged on the delta too. If \`${short(round.from)}\` is no longer an ancestor of the head (a rebase or force-push) or the compare fails, the delta is the whole PR diff: review that in full and say so in line 1.`
     : "";
   const split =
     maxAgents === 1
@@ -176,7 +176,7 @@ ${ciNote(changesRequested)}   The change request is a state flip, not a place to
    DECLARED OUT OF SCOPE (the description or a comment says it is deliberately not handled here): not a finding, never a request. ONE last bullet, "out of scope per the description: ... risk left standing", saying what is deferred and what risk stays. A warning only, never blocking. A problem the PR itself introduces is not out of scope.
 
 5. The comment, first person as ${who}${reviewer?.login ? ` (posted as ${reviewer.login})` : ""}, like a quick chat message:
-   - line 1: where you land, "good to merge" or what blocks. A clean PR gets this line and the sign-off, nothing else
+   - line 1: where you land, "good to merge" or what blocks. A PR with no finding at all (no blocker, nothing non-blocking, nothing deferred) gets this line and the sign-off, nothing else
    - then the groups, each only when it has something, each opened by a bare line "blockers" or "non-blocking" (lowercase, no colon decoration), then one "- " bullet per finding, worst first, one or two lines: what is wrong, ONE pointer (\`file.ts:120\` or the identifier), why it matters. Blockers first, then non-blocking, then the out-of-scope bullet last. Never paste code, a diff or a quote of the code. No intro, no other headings, no summary of the diff, nothing the description, commits or another reviewer already said. If the PR already landed, say so in line 1. Length: under 250 words for a normal PR, a big PR may run longer, and blockers are never squeezed out${roundStep(round)}
    - ${ownApprovalNote(approved.length > 0, account)}. Other reviewers' approvals and change requests DO count
    - style: no em dashes and no en dashes anywhere in the text (a hyphen, comma or colon instead), lowercase first word of each sentence and bullet unless it is "I", a proper noun or a code identifier, no full stop ending a paragraph or bullet, backticks only for a name or path, no * emphasis (GitHub and Slack render it differently)
@@ -223,7 +223,7 @@ export const reviewHelp = (
     "*3.* then exactly one of two flows, never a mix:",
     "    - nothing blocking: one short comment, done",
     "    - something blocking: request changes with a fixed marker, then one comment carrying the blockers",
-    "*4.* the comment says where I land in one line, then lists the blockers, then the non-blocking findings (design risk, correctness doubts, style, real cleanups) as a separate group, then one last \"out of scope per the description\" warning bullet when something is deferred. a clean PR gets just the line and the sign-off",
+    "*4.* the comment says where I land in one line, then lists the blockers, then the non-blocking findings (design risk, correctness doubts, style, real cleanups) as a separate group, then one last \"out of scope per the description\" warning bullet when something is deferred. a PR with nothing to report gets just the line and the sign-off",
     "*5.* non-blocking findings never make me request changes and never become an issue",
     "*6.* a short wrap-up lands back in the thread with what I did and the headline blocker",
     "",
