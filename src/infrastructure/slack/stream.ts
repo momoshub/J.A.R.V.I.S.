@@ -295,7 +295,7 @@ export const createSlackStream = (
    * total: appends are serialised, and deciding outside would race with
    * whatever is still in flight.
    */
-  const appendText = (text: string) => {
+  const queueText = (text: string) => {
     ensure();
     enqueue(async () => {
       let rest = text;
@@ -313,6 +313,27 @@ export const createSlackStream = (
     });
   };
 
+  /** Whether any text or block has been queued: until then, blank text opens nothing. */
+  let queued = false;
+  /** Blank text between two pieces of content, kept to join them and never sent on its own. */
+  let blank = "";
+
+  /**
+   * Blank text never goes out alone. A "\n" before the first word, or one between two tool
+   * steps, opened a message that showed nothing (empty posts in the thread). Before any content it is dropped;
+   * after it, it waits and is sent in front of the next piece, so paragraph breaks survive.
+   */
+  const appendText = (text: string) => {
+    if (!text.trim()) {
+      if (queued) blank += text;
+      return;
+    }
+    const joined = blank + text;
+    blank = "";
+    queued = true;
+    queueText(joined);
+  };
+
   /**
    * Send a run of blocks as one chunk, in order with the text around it.
    *
@@ -325,6 +346,9 @@ export const createSlackStream = (
    * content survives, and the rest of the reply keeps streaming.
    */
   const appendBlocks = (blocks: Block[]) => {
+    if (blank) queueText(blank);
+    blank = "";
+    queued = true;
     ensure();
     const chunk = { type: "blocks", blocks } as AnyChunk;
     enqueue(async () => {
@@ -412,7 +436,8 @@ export const createSlackStream = (
       // The marker line the turn may end with is for the bot, not the reader.
       const delta = markerFilter.push(event.delta);
       if (delta) {
-        contentShown = true;
+        // blank text is no content: it neither counts as shown nor opens a message
+        if (delta.trim()) contentShown = true;
         emitSegments(kit.push(delta));
       }
       return;
