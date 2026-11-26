@@ -90,7 +90,7 @@ describe("toolPolicyFor", () => {
     }
   });
 
-  test("every role gets the Slack call helper behind $BOT_SLACK_CALL, and still no package manager", () => {
+  test("pal and executer get the Slack call helper behind $BOT_SLACK_CALL, and still no package manager", () => {
     // the system prompt tells every turn to call Slack through it; a sandboxed
     // turn that could not was refused and reported its whole shell as denied
     const withCall = { ...opts, slackCallScript: "/bin/slack-api.sh" };

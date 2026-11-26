@@ -844,6 +844,7 @@ const main = async () => {
     fileScript,
     grafanaGetScript,
     slackReadScript,
+    slackCallScript,
     artifactScript,
     restartScript,
     repoPath,

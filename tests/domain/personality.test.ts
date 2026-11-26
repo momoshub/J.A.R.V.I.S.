@@ -745,10 +745,19 @@ describe("sandboxed shell note", () => {
 
   test("a sandboxed turn is banned from blaming the shell or the owner, and told to check the job fits before promising it", () => {
     const out = buildSystemPrompt({ learnings: [], sandboxed: true });
-    expect(out).toContain('never write "shell denied host-side", "Bash is blocked" or "Kai / the owner must restore the shell"');
+    expect(out).toContain('never write "shell denied host-side", "Bash is blocked" or "the owner must restore the shell"');
     expect(out).toContain("has no package manager");
     expect(out).toContain("Before you promise tests, a build, a PR or a feat env");
     expect(out).toContain("the owner can approve an Orca worker for it");
+  });
+
+  test("a sandboxed turn is told to call the Slack helper by its path, which is the form the allow-list matches", () => {
+    const out = buildSystemPrompt({ learnings: [], sandboxed: true, slackCallScript: "/opt/j/bin/slack-api.sh" });
+    expect(out).toContain("run `/opt/j/bin/slack-api.sh` instead");
+    expect(out).toContain("never through the variable");
+    expect(buildSystemPrompt({ learnings: [], sandboxed: true })).not.toContain("never through the variable");
+    expect(buildSystemPrompt({ learnings: [], sandboxed: false, slackCallScript: "/opt/j/bin/slack-api.sh" })).not.toContain("never through the variable");
+    // the path it teaches is exactly the one withHelpers puts on the list
   });
 
   test("a full-access turn does not carry the prefix rules", () => {

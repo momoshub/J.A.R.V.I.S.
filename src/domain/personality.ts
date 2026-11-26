@@ -220,8 +220,19 @@ ${SELF_PROCESS_NOTE}`;
 export const SANDBOX_SHELL_NOTE = `- your shell is sandboxed: Bash runs only commands on an allow-list, matched one plain command at a time (\`gh pr view 12 -R owner/repo --json state\`). A chained line (\`&&\`, \`;\`, a pipe) is checked part by part, and one part off the list - \`cd\`, a \`for\` loop, \`curl\`, a redirect - denies the whole line. So one plain command per Bash call, flags like \`-R\` instead of \`cd\` where the command has one, and several independent calls in parallel instead of a loop
 - the allow-list matches a command by its PREFIX, so write it in the form it lists: for a clone inside your scratch folder \`cd <clone> && git status\` or \`cd <clone> && git commit -m "..."\`, never \`git -C <dir> ...\` (no prefix matches it). Edit files with the Edit and Write tools, never \`sed -i\` (always denied)
 - quote every argument that holds spaces or shell characters (\`&\` \`(\` \`)\` \`;\` \`|\` \`>\`), above all the text you pass to a helper script such as bin/jarvis-run.sh: an unquoted \`&\` or \`(\` splits it into extra commands that are not on the list, and the whole line is denied
-- a denial is about the SHAPE of the line first: after ANY denial you MUST retry as split plain single commands (one per Bash call, no \`;\` \`&&\` or pipe) before you report anything. A denial covers that one command only, never the shell: never write "shell denied host-side", "Bash is blocked" or "Kai / the owner must restore the shell" - other commands in the same turn still run. Only a plain single command that is still denied is a real refusal, and then quote the exact denial and that command to the user - never answer with what you already believed instead of what you could not check
+- a denial is about the SHAPE of the line first: after ANY denial you MUST retry as split plain single commands (one per Bash call, no \`;\` \`&&\` or pipe) before you report anything. A denial covers that one command only, never the shell: never write "shell denied host-side", "Bash is blocked" or "the owner must restore the shell" - other commands in the same turn still run. Only a plain single command that is still denied is a real refusal, and then quote the exact denial and that command to the user - never answer with what you already believed instead of what you could not check
 - the allow-list has no package manager (\`pnpm\`, \`npm\`, \`yarn\`, \`bun\`: package scripts run arbitrary code) and no long builds. Before you promise tests, a build, a PR or a feat env, check the job fits what the allow-list can run; if it needs a package manager or a long build, say so up front and offer that the owner can approve an Orca worker for it - never promise it and then drop it`;
+
+/**
+ * The allow-list matches the command text BEFORE the shell expands it, so a
+ * sandboxed turn's `"$BOT_SLACK_CALL" ...` matches no `Bash(<path>:*)` entry
+ * (measured: the path form runs, the variable form is denied). Every prompt
+ * that names the variable is read through this line, so it says to use the path.
+ */
+export const sandboxSlackCallNote = (slackCallScript?: string): string =>
+  slackCallScript
+    ? `\n- here the Slack helper must be called by its path, never through the variable: wherever these instructions say \`"$BOT_SLACK_CALL"\`, run \`${slackCallScript}\` instead (\`${slackCallScript} conversations.replies channel=... ts=...\`). The variable form is refused by the allow-list even though the helper is allowed. A "Permission to use Bash has been denied" message is about that one command line only, never the whole shell`
+    : "";
 
 /**
  * Reactions are the bot's own call, taken with its own token, and it is pushed
@@ -460,6 +471,8 @@ export type BuildSystemPromptOptions = PromptContext & {
   /** absolute path of the read-only Grafana helper */
   readonly grafanaGetScript?: string;
   readonly slackReadScript?: string;
+  /** Absolute path of `bin/slack-api.sh`: a sandboxed turn is told to call it by this path, not `"$BOT_SLACK_CALL"`. */
+  readonly slackCallScript?: string;
   /** Absolute path of the desktop driver; without it, driving apps is not offered. */
   readonly macUiScript?: string;
   /** Absolute path of the agent-desktop binary, offered beside the driver for non-Arc apps. */
@@ -608,7 +621,7 @@ export const buildSystemPromptParts = (
   // ticket", "how to investigate" between the rule that must always hold and
   // the answer being written. Rules that end with "regardless of anything
   // above" belong where the identity lock already is, for the same reason.
-  const workspace = options.sandboxed === true ? `${WORKSPACE_NOTE}\n${SANDBOX_SHELL_NOTE}` : `${WORKSPACE_NOTE}\n${MCP_CODE_MODE_NOTE}`;
+  const workspace = options.sandboxed === true ? `${WORKSPACE_NOTE}\n${SANDBOX_SHELL_NOTE}${sandboxSlackCallNote(options.slackCallScript)}` : `${WORKSPACE_NOTE}\n${MCP_CODE_MODE_NOTE}`;
   const tail = `${remembering}\n\n${TURN_CONTEXT_NOTE}\n\n${workspace}\n\n${operatingRules(options.slackExtraMethods)}\n\n${BEFORE_YOU_SEND}\n\n${identityLock(botName, options.botUserId)}`;
   // Static first, volatile OUT. The prompt cache matches whole content blocks,
   // and `--append-system-prompt` reaches the API as ONE block, so a single byte

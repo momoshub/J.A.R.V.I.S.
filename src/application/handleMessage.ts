@@ -224,6 +224,8 @@ export type HandleMessageDeps = {
   grafanaGetScript?: string;
   /** Absolute path of the read-only Slack reader, granted to every role. */
   slackReadScript?: string;
+  /** Absolute path of `bin/slack-api.sh`, so a sandboxed turn is told to call it by path. */
+  slackCallScript?: string;
   /** Absolute path of the "has anything new been said" helper, for `watch reply`. */
   slackWaitScript?: string;
   /** The command that runs `bin/orca-worker-wait.ts` (bun + script), for `watch worker`. */
@@ -561,6 +563,7 @@ export const handleMessage = async (
     canRaiseTickets: deps.canRaiseTickets?.(),
     grafanaGetScript: deps.grafanaGetScript,
     slackReadScript: deps.slackReadScript,
+    slackCallScript: deps.slackCallScript,
     // It drives the real screen somebody is sitting at, so it is offered only
     // to the roles whose tool policy grants it: full access, and executers for
     // browser testing.
