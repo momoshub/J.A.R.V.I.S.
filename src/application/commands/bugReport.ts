@@ -80,7 +80,9 @@ export const BUG_REPORT_COMMANDS: readonly CommandDef[] = [
         return "I could not DM the owner, so the bug report was not sent.";
       }
       repo.setNotice(b.id, notice.channel, notice.ts);
-      if (route.route === "approve" && repo.decide(b.id, "approved", now, "coordinator")) {
+      if (route.route === "approve") {
+        // The owner may have pressed Reject in the instant since the notice went out: then it is decided already, and that is what is said.
+        if (!repo.decide(b.id, "approved", now, "coordinator")) return `Bug #${b.id} was already decided (${repo.get(b.id)?.state ?? "gone"}) before it could be approved. Do not fix it.`;
         // Not awaited: the fix runs for as long as it runs, in the notice's thread, as the owner, exactly as the press would start it.
         void Promise.resolve(
           deps.runTurn?.({ channelId: notice.channel, threadTs: notice.ts, slackUserId: deps.ownerSlackId, text: approvedByCoordinatorBrief(b.id, input, route.reason) }),

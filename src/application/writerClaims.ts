@@ -31,7 +31,10 @@ export const createWriterClaims = (clock: Clock, repo: WriterClaimRepo): WriterC
   return {
     take: (keys, who) => {
       const now = clock();
-      const verdicts = keys.map((key) => ({ key, live: repo.liveOfKey(key), verdict: takeVerdict(repo.liveOfKey(key), who) }));
+      const verdicts = keys.map((key) => {
+        const live = repo.liveOfKey(key);
+        return { key, live, verdict: takeVerdict(live, who) };
+      });
       for (const v of verdicts) if (!v.verdict.ok) return { ok: false, error: refusalText(v.key, v.verdict.holder, now) };
       for (const v of verdicts) {
         if (v.verdict.ok && v.verdict.refresh && v.live[0]) repo.refresh(v.live[0].id, now);

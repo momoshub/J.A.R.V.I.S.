@@ -171,7 +171,7 @@ export type BugRoute =
  * Who decides a new bug report. The coordinator approves in two cases only:
  * 1. the owner himself asked for the fix (or said to approve it) in the conversation it was filed from: the turn claims
  *    it (`--owner-asked`) and the code checks it against the ticket's owner bit and the thread;
- * 2. it is a low-risk fix to my own source, filed from the owner's own conversation: it states `--reversible`, none of the
+ * 2. it is a low-risk fix to my own source, filed from a turn the owner's own message started (the same ticket bit; a watch, a loop, the coordinator's own turn never qualify): it states `--reversible`, none of the
  *    risky facts, and the text it wrote names no role, permission, auth, ticket, token, secret, approval or prod word.
  * Anything else, and every report filed from someone else's conversation, goes to the owner's buttons.
  */
@@ -180,7 +180,9 @@ export const routeBugReport = (i: BugReportInput, claims: BugClaims, filing: Bug
   if (claims.ownerAsked && filing.ownerTurn && filing.sameThread) {
     return { route: "approve", reason: "the owner asked for the fix in that thread" };
   }
-  if (isLowRiskFix(claims.risk) && !touchesSensitive(i.issue, i.summary, i.plan)) {
+  // The low-risk lane needs the owner's own message behind the turn too: a watch-fired, loop, scheduled or coordinator turn runs AS the owner
+  // and reads pages, CI logs and other people's messages, so the actor alone proves nothing.
+  if (filing.ownerTurn && isLowRiskFix(claims.risk) && !touchesSensitive(i.issue, i.summary, i.plan)) {
     return { route: "approve", reason: "low-risk fix in my own source (reversible, no data, access, secrets, approvals or prod)" };
   }
   return { route: "ask", why: claims.ownerAsked ? "the owner's own message in this thread did not start this turn" : "not low-risk, or not stated as such" };
@@ -216,7 +218,7 @@ export const approvedByCoordinatorText = (name: string, id: number, i: BugReport
     `🐞 bug #${id} - approved by ${name}: ${cleanLine(reason, 160)}, fixing it`,
     `*Issue:* ${i.issue}`,
     `<${i.thread}|the thread>`,
-    "Press Reject to stop it.",
+    "Press Reject and the fix is told to stop and undo.",
   ].join("\n");
 
 /** What the fix turn the coordinator's approval starts is told to do (the same ask as an owner's Approve). */

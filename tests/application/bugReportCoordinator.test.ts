@@ -92,9 +92,9 @@ describe("bug-report: the coordinator approves the owner's own ask", () => {
 });
 
 describe("bug-report: the coordinator approves a low-risk own-source fix", () => {
-  test("stated reversible from the owner's own conversation: approved", async () => {
+  test("stated reversible from a turn the owner's own message started: approved", async () => {
     const { deps, bugReports, turns } = setup();
-    const out = await inThread(deps, `${REPORT} --reversible`, false);
+    const out = await inThread(deps, `${REPORT} --reversible`, true);
     await settle();
     expect(out).toContain("approved by the coordinator");
     expect(bugReports.get(1)?.decidedBy).toBe("coordinator");
@@ -102,11 +102,18 @@ describe("bug-report: the coordinator approves a low-risk own-source fix", () =>
     expect(turns).toHaveLength(1);
   });
 
+  test("a turn running as the owner without his message (a loop, a watch, the coordinator's own turn) goes to the buttons even when it states low-risk", async () => {
+    const { deps, bugReports, turns } = setup();
+    expect(await inThread(deps, `${REPORT} --reversible`, false)).toContain("sent to the owner");
+    expect(bugReports.get(1)?.state).toBe("pending");
+    expect(turns).toHaveLength(0);
+  });
+
   test("nothing stated, a stated risk, or a sensitive word in the report: the owner's buttons", async () => {
     const { deps, bugReports, turns } = setup();
-    expect(await inThread(deps, REPORT, false)).toContain("sent to the owner");
-    expect(await inThread(deps, `${REPORT.replace("reply posted twice", "b")} --reversible --data-write`, false)).toContain("sent to the owner");
-    expect(await inThread(deps, `${REPORT.replace("reply posted twice", "c").replace("dedupe on message ts", "change the token refresh")} --reversible`, false)).toContain("sent to the owner");
+    expect(await inThread(deps, REPORT, true)).toContain("sent to the owner");
+    expect(await inThread(deps, `${REPORT.replace("reply posted twice", "b")} --reversible --data-write`, true)).toContain("sent to the owner");
+    expect(await inThread(deps, `${REPORT.replace("reply posted twice", "c").replace("dedupe on message ts", "change the token refresh")} --reversible`, true)).toContain("sent to the owner");
     expect(bugReports.byState("pending", 10)).toHaveLength(3);
     expect(turns).toHaveLength(0);
   });
@@ -153,7 +160,7 @@ describe("the owner's Reject on what the coordinator approved", () => {
 
   test("an approval the owner gave with the button is final: Reject afterwards changes nothing", async () => {
     const { deps, bugReports } = setup();
-    await inThread(deps, REPORT, false);
+    await inThread(deps, REPORT, true);
     const approval = { bugReports, slack: deps.slack, clock: () => 2_000_000_000, ownerSlackId: OWNER };
     expect(await decideBugReportPress(approval, press({ actionId: BUG_APPROVE_ACTION }))).toMatchObject({ kind: "approved" });
     expect(await decideBugReportPress(approval, press())).toMatchObject({ kind: "decided", state: "approved" });

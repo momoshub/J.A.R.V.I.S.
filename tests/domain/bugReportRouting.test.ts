@@ -67,8 +67,13 @@ describe("routeBugReport: the coordinator decides the small ones, in code", () =
     expect(routeBugReport(input(), claims({}, { reversible: true }), f)).toMatchObject({ route: "ask" });
   });
 
-  test("a low-risk fix to my own source, from the owner's conversation, is approved", () => {
-    expect(routeBugReport(input(), claims({}, { reversible: true }), filing({ ownerTurn: false, sameThread: false }))).toMatchObject({ route: "approve" });
+  test("a low-risk fix to my own source, from a turn the owner's own message started, is approved (the thread need not be the report's)", () => {
+    expect(routeBugReport(input(), claims({}, { reversible: true }), filing({ sameThread: false }))).toMatchObject({ route: "approve" });
+  });
+
+  test("a turn that runs as the owner without his message (a watch, a loop, the coordinator's own turn) is never low-risk, whatever it states", () => {
+    expect(routeBugReport(input(), claims({}, { reversible: true }), filing({ ownerTurn: false, sameThread: false }))).toMatchObject({ route: "ask" });
+    expect(routeBugReport(input(), claims({ ownerAsked: true }, { reversible: true }), filing({ ownerTurn: false }))).toMatchObject({ route: "ask" });
   });
 
   test("not stated reversible: the buttons", () => {
@@ -107,7 +112,7 @@ describe("what the coordinator's approval says", () => {
   test("the notice names the coordinator and the reason and leaves Reject as the way to stop it", () => {
     const t = approvedByCoordinatorText("Boss", 4, input(), "the owner asked for the fix in that thread");
     expect(t).toContain("approved by Boss: the owner asked for the fix in that thread");
-    expect(t).toContain("Press Reject to stop it");
+    expect(t).toContain("Press Reject and the fix is told to stop");
   });
 
   test("the fix turn is told it is the owner's ask, and what to do if it is rejected", () => {
