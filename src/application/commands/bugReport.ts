@@ -15,7 +15,7 @@ import {
   linkIsThread,
   parseReport,
   routeBugReport,
-  settledText,
+  settledByAgentText,
 } from "../../domain/bugReport.ts";
 import { coordinatorName } from "../../domain/coordinator.ts";
 import { SIGNATURES } from "../../domain/messageFooter.ts";
@@ -52,8 +52,9 @@ export const BUG_REPORT_COMMANDS: readonly CommandDef[] = [
         if (word === "reject") {
           if (!repo.decide(b.id, "rejected", now, DECIDED_BY_AGENT)) return `Bug #${b.id} was already decided. Nothing changed.`;
           if (b.noticeChannel && b.noticeTs) {
-            await deps.slack?.settleInteractive(b.noticeChannel, b.noticeTs, settledText(b.id, input, "rejected", deps.ownerSlackId), SIGNATURES.bugReport).catch(logAndIgnore("bug report settle"));
+            await deps.slack?.settleInteractive(b.noticeChannel, b.noticeTs, settledByAgentText(b.id, input, "rejected"), SIGNATURES.bugReport).catch(logAndIgnore("bug report settle"));
           }
+          await deps.slack?.postDm(deps.ownerSlackId, settledByAgentText(b.id, input, "rejected"), SIGNATURES.bugReport).catch(logAndIgnore("bug report agent reject audit"));
           return `Bug #${b.id} rejected by me in the owner's own turn. I leave it.`;
         }
         // The audit line is the notice the owner's Reject press is checked against, so it has to be able to go out before anything is decided.
@@ -73,13 +74,26 @@ export const BUG_REPORT_COMMANDS: readonly CommandDef[] = [
             SIGNATURES.bugReport,
           )
           .catch(logAndIgnore("bug report agent approval audit"));
+        // A Reject press can land while the audit line was going out: it reads the old notice, and it revokes the delegated approval.
+        // Look again before anything else is done on the strength of the approval.
+        const stillApproved = () => {
+          const now2 = repo.get(b.id);
+          return now2?.state === "approved" && now2.decidedBy === DECIDED_BY_AGENT;
+        };
+        const revoked = `Bug #${b.id} was rejected by the owner while I approved it. Do not fix it.`;
+        if (audit && !stillApproved()) {
+          await deps.slack.settleInteractive(audit.channel, audit.ts, settledByAgentText(b.id, input, "rejected"), SIGNATURES.bugReport).catch(logAndIgnore("bug report settle"));
+          return revoked;
+        }
         if (audit) {
           // The Reject on the audit line is now the one a press is checked against; the old Approve / Reject notice is settled.
-          if (b.noticeChannel && b.noticeTs) {
-            await deps.slack.settleInteractive(b.noticeChannel, b.noticeTs, settledText(b.id, input, "approved", deps.ownerSlackId), SIGNATURES.bugReport).catch(logAndIgnore("bug report settle"));
-          }
           repo.setNotice(b.id, audit.channel, audit.ts);
+          if (b.noticeChannel && b.noticeTs) {
+            await deps.slack.settleInteractive(b.noticeChannel, b.noticeTs, settledByAgentText(b.id, input, "approved"), SIGNATURES.bugReport).catch(logAndIgnore("bug report settle"));
+          }
         }
+        // Nothing awaits between this check and the start of the turn.
+        if (!stillApproved()) return revoked;
         const warn = audit ? "" : " The audit DM to the owner did not go out: say so.";
         void deps.coordinator?.act(`bug #${b.id} approved by me in the owner's turn`).catch(logAndIgnore("bug report digest"));
         if (thisTurnFixes || !audit) {

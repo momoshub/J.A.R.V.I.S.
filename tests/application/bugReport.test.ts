@@ -157,7 +157,8 @@ describe("bug-report approve / reject from a turn", () => {
     expect(audit?.text).toContain("reply posted twice");
     expect(slackCalls.buttons).toEqual(["jv:bug-report:reject:1"]);
     // the old Approve / Reject notice is settled, and the audit line is the notice a Reject press is checked against
-    expect(slackCalls.settled[0]?.text).toContain("approved by");
+    expect(slackCalls.settled[0]?.text).toContain("approved by me, in a turn your own message started");
+    expect(slackCalls.settled[0]?.text).not.toContain(`<@${OWNER}>`);
     expect(turns).toHaveLength(1);
     expect(turns[0]).toMatchObject({ channelId: OWNER, slackUserId: OWNER, unprompted: true });
     expect(turns[0]?.text).toContain("approved by the agent");
@@ -186,6 +187,32 @@ describe("bug-report approve / reject from a turn", () => {
     expect(bugReports.get(1)).toMatchObject({ state: "approved", decidedBy: "agent" });
   });
 
+  test("a Reject pressed while the audit line is going out is not undone: no fix turn, the audit line is settled rejected", async () => {
+    const { deps, bugReports } = setup();
+    await run(deps, REPORT);
+    const turns: unknown[] = [];
+    const racing = {
+      ...deps,
+      runTurn: async (r: unknown) => void turns.push(r),
+      slack: {
+        ...deps.slack!,
+        postDmInteractive: async (...a: Parameters<NonNullable<typeof deps.slack>["postDmInteractive"]>) => {
+          const b = bugReports.get(1)!;
+          await decideBugReportPress(
+            { bugReports, slack: deps.slack, clock: deps.clock, ownerSlackId: OWNER },
+            { slackUserId: OWNER, actionId: BUG_REJECT_ACTION, value: "1", channel: b.noticeChannel, messageTs: b.noticeTs },
+          );
+          return deps.slack!.postDmInteractive(...a);
+        },
+      },
+    };
+    const out = await dispatchCommand(racing, actor(), "C9", "bug-report approve 1", { fromBrainRun: true, threadTs: "1800000000.000100", messageTs: "1800000000.000100", ownerTurn: { named: [] } });
+    expect(out).toContain("rejected by the owner while I approved it");
+    expect(turns).toHaveLength(0);
+    expect(bugReports.get(1)?.state).toBe("rejected");
+    expect(slackCalls.settled.some((s) => s.text.includes("rejected by me"))).toBe(true);
+  });
+
   test("no way to DM the audit line means nothing is approved", async () => {
     const { deps, bugReports } = setup();
     await run(deps, REPORT);
@@ -198,7 +225,11 @@ describe("bug-report approve / reject from a turn", () => {
     const { deps, bugReports } = setup();
     await run(deps, REPORT);
     expect(await ownerRun(deps, "bug-report approve 7", "1800000000.000100")).toContain("no bug report");
+    slackCalls.posts.length = 0;
     expect(await ownerRun(deps, "bug-report reject 1", "1800000000.000100")).toContain("rejected by me");
+    // the owner is told, and the settled notice does not name them as the one who decided
+    expect(slackCalls.posts.some((p) => p.channel === OWNER && p.text.includes("rejected by me"))).toBe(true);
+    expect(slackCalls.settled.at(-1)?.text).not.toContain(`<@${OWNER}>`);
     expect(bugReports.get(1)?.state).toBe("rejected");
     expect(await ownerRun(deps, "bug-report approve 1", "1800000000.000100")).toContain("already rejected");
   });

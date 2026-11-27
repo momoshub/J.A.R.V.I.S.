@@ -209,6 +209,10 @@ export const approvalText = (id: number, i: BugReportInput): string =>
 export const settledText = (id: number, i: BugReportInput, kind: "approved" | "rejected", by: string): string =>
   `🐞 bug #${id} - ${kind === "approved" ? "approved by" : "rejected by"} <@${by}>${kind === "approved" ? ", fixing it" : ", leaving it"}\n*Issue:* ${i.issue}\n<${i.thread}|the thread>`;
 
+/** The settled notice of a report the agent decided in the owner's own turn: says so, never names the owner as the one who pressed. */
+export const settledByAgentText = (id: number, i: BugReportInput, kind: "approved" | "rejected"): string =>
+  `🐞 bug #${id} - ${kind} by me, in a turn your own message started\n*Issue:* ${i.issue}\n<${i.thread}|the thread>`;
+
 /** What the fix turn the owner's Approve press starts is told to do. */
 export const approvedBrief = (id: number, i: BugReportInput): string =>
   [
@@ -262,4 +266,4 @@ export const approvedByCoordinatorBrief = (id: number, i: BugReportInput, reason
 
 /** Told to the fix turn when the owner presses Reject on a report the coordinator approved. */
 export const stoppedBrief = (id: number): string =>
-  `Bug #${id} was approved by the coordinator and the owner then rejected it (they pressed Reject): stop. Change nothing more, do not merge or restart anything, close any PR you opened for it unmerged, and say so.`;
+  `Bug #${id} was approved for the owner (by the coordinator or by me in their turn) and the owner then rejected it (they pressed Reject): stop. Change nothing more, do not merge or restart anything, close any PR you opened for it unmerged, and say so.`;

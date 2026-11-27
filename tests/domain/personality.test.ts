@@ -289,7 +289,7 @@ describe("buildSystemPrompt", () => {
     expect(p).toContain("bug in YOURSELF");
     expect(p).toContain("owner was asked");
     expect(p).toContain("wait for the owner's Approve, except when the owner asked for the fix in that same conversation");
-    expect(p).toContain('a turn that starts with "Bug #<id> is approved by the owner" or "Bug #<id> is approved by the coordinator" is exactly that ask');
+    expect(p).toContain('a turn that starts with "Bug #<id> is approved by the owner" or "Bug #<id> is approved by the coordinator" or "Bug #<id> is approved by the agent" is exactly that ask');
     // The coordinator decides the small ones in code: the facts a report states, and what code checks them against
     expect(p).toContain("The coordinator decides the small ones in code");
     expect(p).toContain("--owner-asked");
