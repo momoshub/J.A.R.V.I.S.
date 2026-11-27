@@ -752,6 +752,7 @@ const main = async () => {
     ownPrs: coordinatorPrProbe.scan,
     unanswered: (id, since, before) => messages.endedOnUser(id, since, before, 50),
     runTurn: (req) => deps.runTurn!(req),
+    lang: config.coordinator.lang,
     offsetMinutes: () => config.coordinator.tzOffsetMin,
     quiet: { startHour: config.coordinator.quietStartHour, endHour: config.coordinator.quietEndHour },
     enabled: () => !draining,
@@ -787,7 +788,7 @@ const main = async () => {
     selfIssues,
     bugReportApproval: { bugReports, slack: slackAdmin, clock, ownerSlackId: config.ownerSlackId },
     coordinator,
-    coordinatorApproval: { repo: coordinatorRepo, slack: slackAdmin, clock, ownerSlackId: config.ownerSlackId, name: config.coordinator.name, onApproved: () => void coordinator.tick() },
+    coordinatorApproval: { repo: coordinatorRepo, slack: slackAdmin, clock, ownerSlackId: config.ownerSlackId, name: config.coordinator.name, lang: config.coordinator.lang, onApproved: () => void coordinator.tick() },
     skillDrafts,
     skillDraftApproval,
     reviewRunApproval: {

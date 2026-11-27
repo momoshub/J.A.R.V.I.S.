@@ -30,6 +30,7 @@ describe("loadConfig", () => {
       quietStartHour: 22,
       quietEndHour: 5,
       tzOffsetMin: 420,
+      lang: "vi",
     });
     expect(loadConfig({ ...base, COORDINATOR_INTERVAL_MS: "0" }).coordinator.intervalMs).toBe(0);
     expect(loadConfig({ ...base, COORDINATOR_NAME: "Aide" }).coordinator.name).toBe("Aide");

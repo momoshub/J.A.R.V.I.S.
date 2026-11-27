@@ -2109,6 +2109,7 @@ describe("coordinator blocker press listener", () => {
       clock: () => 5,
       ownerSlackId: OWNER,
       name: "Aide",
+      lang: "en",
       onApproved: () => void approvedHook++,
     });
     const client = { chat: { postMessage: async () => ({}), postEphemeral: async (a: Record<string, unknown>) => void ephemeral.push(a) } };

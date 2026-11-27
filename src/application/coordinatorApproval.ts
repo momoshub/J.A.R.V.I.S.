@@ -13,7 +13,7 @@
  * names that person's thread and what to do there (a turn on approve, a plain
  * line on reject), and the row is marked handled so no tick repeats it.
  */
-import { coordinatorPressKind, hasSubject, settledBlockerText, unblockApprovedBrief, unblockRejectedText } from "../domain/coordinator.ts";
+import { coordinatorPressKind, hasSubject, settledBlockerText, unblockApprovedBrief, unblockRejectedText, type CoordinatorLang } from "../domain/coordinator.ts";
 import type { CoordinatorBlocker, CoordinatorRepo } from "../infrastructure/db/coordinatorRepo.ts";
 import { logAndIgnore } from "./ignoredError.ts";
 import type { Clock } from "./ports.ts";
@@ -26,6 +26,8 @@ export type CoordinatorApprovalDeps = {
   ownerSlackId: string;
   /** The display name the settled message is signed with (`COORDINATOR_NAME`). */
   name: string;
+  /** The language the blocker was asked in, so its settled text matches. Vietnamese when left out. */
+  lang?: CoordinatorLang;
   /** Called once an approval is stored, to run the tick soon instead of at the next interval. */
   onApproved?: () => void;
 };
@@ -56,7 +58,7 @@ export const decideCoordinatorPress = async (
   const verdict = pressed === "approve" ? "approved" : "rejected";
   if (!deps.repo.decide(b.id, verdict, deps.clock())) return { kind: "decided", id: b.id, state: b.state };
   await deps.slack
-    ?.settleInteractive(b.noticeChannel, b.noticeTs, settledBlockerText(deps.name, b, verdict, press.slackUserId), deps.name)
+    ?.settleInteractive(b.noticeChannel, b.noticeTs, settledBlockerText(deps.name, b, verdict, press.slackUserId, deps.lang), deps.name)
     .catch(logAndIgnore("coordinator blocker settle"));
   if (hasSubject(b)) {
     // Acted on here, in their thread: nothing is left for a tick (and the coordinator never goes ahead "as the owner" on it).

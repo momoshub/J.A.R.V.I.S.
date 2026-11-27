@@ -17,7 +17,10 @@ import {
 } from "../domain/stalePromise.ts";
 import {
   coordinatorName,
+  COORDINATOR_LANGS,
   DEFAULT_COORDINATOR_NAME,
+  DEFAULT_LANG,
+  type CoordinatorLang,
   DEFAULT_INTERVAL_MS,
   DEFAULT_OFFSET_MIN,
   DEFAULT_PROD_REPING_MS,
@@ -183,6 +186,9 @@ const schema = z
     // names (minutes east of UTC; Asia/Ho_Chi_Minh is 420). Equal hours: never quiet. Default 22 -> 5.
     COORDINATOR_QUIET_START_HOUR: z.coerce.number().int().min(0).max(23).default(DEFAULT_QUIET_START_HOUR),
     COORDINATOR_QUIET_END_HOUR: z.coerce.number().int().min(0).max(23).default(DEFAULT_QUIET_END_HOUR),
+    // The language of everything the coordinator writes to the owner: the digest, a blocker, and the
+    // lines its turn files (`vi` or `en`). The owner talks to the bot in Vietnamese, so `vi` by default.
+    COORDINATOR_LANG: z.enum(COORDINATOR_LANGS).default(DEFAULT_LANG),
     COORDINATOR_TZ_OFFSET_MIN: z.coerce.number().int().min(-720).max(840).default(DEFAULT_OFFSET_MIN),
     // Channel the offline alarm reports to: a notice armed on Slack's side
     // that posts by itself if the host loses its connection, and is edited to
@@ -344,7 +350,7 @@ export type AppConfig = {
   /** Stale-promise sweep: interval (0 = off), minimum age of the promise, look-back window, nudges per sweep. */
   stalePromise: { intervalMs: number; minAgeMs: number; windowMs: number; maxNudges: number };
   /** The coordinator (domain/coordinator.ts): its display name (what it signs with), tick interval (0 = off), stale journey age, prod blocker re-ask, quiet hours (local hours) and the zone's offset in minutes east of UTC. */
-  coordinator: { name: string; intervalMs: number; staleJourneyMs: number; prodRepingMs: number; quietStartHour: number; quietEndHour: number; tzOffsetMin: number };
+  coordinator: { name: string; intervalMs: number; staleJourneyMs: number; prodRepingMs: number; quietStartHour: number; quietEndHour: number; tzOffsetMin: number; lang: CoordinatorLang };
   /** Channel the offline alarm posts to when the host drops off; unset is off. */
   offlineAlarmChannel?: string;
   /** Channel for the owner's copy of other people's slash commands; unset is the owner's DM. */
@@ -457,6 +463,7 @@ export const loadConfig = (source: Record<string, string | undefined> = process.
       quietStartHour: env.COORDINATOR_QUIET_START_HOUR,
       quietEndHour: env.COORDINATOR_QUIET_END_HOUR,
       tzOffsetMin: env.COORDINATOR_TZ_OFFSET_MIN,
+      lang: env.COORDINATOR_LANG,
     },
     ...(env.OFFLINE_ALARM_CHANNEL ? { offlineAlarmChannel: env.OFFLINE_ALARM_CHANNEL } : {}),
     ...(env.SLASH_MIRROR_CHANNEL ? { slashMirrorChannel: env.SLASH_MIRROR_CHANNEL } : {}),

@@ -234,8 +234,11 @@ no classes.
   Asia/Ho_Chi_Minh); a prod blocker is asked again every `COORDINATOR_PROD_REPING_MS`
   until the owner acts, quiet hours or not, unless it is both urgent and
   low-risk and inside the owner's role, which the coordinator fixes itself and reports in
-  the digest and one direct line. A blocker can also be about another person
-  (`unblock`, or `coordinator blocker --for <user> --thread <link>`): the owner
+  the digest and one direct line. The digest and every blocker are written in
+  `COORDINATOR_LANG` (Vietnamese by default), and the digest message carries the grey
+  usage footer: the last tick's line plus the day's total, kept in `coordinator_usage`
+  and counted only for a turn that really ran. A blocker can also be about another
+  person (`unblock`, or `coordinator blocker --for <user> --thread <link>`): the owner
   is asked to unblock THAT person, and the owner's Approve starts a turn in the
   stuck person's thread (a Reject posts one line there), decided in code at the
   press, never through the tick. See "The coordinator sweeps" and "A person who

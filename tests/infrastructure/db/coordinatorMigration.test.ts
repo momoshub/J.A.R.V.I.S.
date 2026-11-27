@@ -33,7 +33,7 @@ const V54 = `
   );
 `;
 
-const NEW_TABLES = ["coordinator_actions", "coordinator_blockers", "coordinator_digest"];
+const NEW_TABLES = ["coordinator_actions", "coordinator_blockers", "coordinator_digest", "coordinator_usage"];
 
 /** Every table of this feature, in either generation. */
 const tables = (db: Database): string[] =>

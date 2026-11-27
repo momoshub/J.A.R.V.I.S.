@@ -4,7 +4,8 @@
  * the message the digest lives on, and the blockers put to the owner.
  */
 import type { DbClient } from "./client.ts";
-import { isBlockerKind, type BlockerKind, type BlockerSubject } from "../../domain/coordinator.ts";
+import { addDayUsage, isBlockerKind, type BlockerKind, type BlockerSubject, type DayUsage } from "../../domain/coordinator.ts";
+import type { FooterUsage } from "../../domain/usageFooter.ts";
 
 export type CoordinatorBlocker = {
   readonly id: number;
@@ -53,6 +54,29 @@ type BlockerRow = {
   plan: string;
 };
 
+const NUM_FIELDS = ["inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "costUsd", "durationMs"] as const;
+
+/** The last tick's usage as stored; undefined for a row that does not read back as one. */
+const parseUsage = (raw: string): FooterUsage | undefined => {
+  try {
+    const v: unknown = JSON.parse(raw);
+    if (typeof v !== "object" || v === null) return undefined;
+    const r = v as Record<string, unknown>;
+    if (typeof r.model !== "string" || NUM_FIELDS.some((k) => typeof r[k] !== "number")) return undefined;
+    return {
+      model: r.model,
+      inputTokens: r.inputTokens as number,
+      outputTokens: r.outputTokens as number,
+      cacheReadTokens: r.cacheReadTokens as number,
+      cacheWriteTokens: r.cacheWriteTokens as number,
+      costUsd: r.costUsd as number,
+      durationMs: r.durationMs as number,
+    };
+  } catch {
+    return undefined;
+  }
+};
+
 const toBlocker = (r: BlockerRow): CoordinatorBlocker => ({
   id: r.id,
   key: r.key,
@@ -82,6 +106,10 @@ export type CoordinatorRepo = {
   mark: (kind: string, ref: string, at: number) => void;
   /** When `ref` was last marked, or undefined. */
   lastMark: (kind: string, ref: string) => number | undefined;
+  /** Adds one tick's usage to the day's total, which survives a restart. */
+  addUsage: (day: string, u: FooterUsage) => void;
+  /** What the day's ticks cost; undefined when none has reported. */
+  usage: (day: string) => DayUsage | undefined;
   digest: (day: string) => { channel: string; ts: string } | undefined;
   setDigest: (day: string, channel: string, ts: string) => void;
   /** The blocker with this key, if any ever existed (the key is its identity). */
@@ -124,6 +152,17 @@ export const createCoordinatorRepo = (db: DbClient): CoordinatorRepo => {
   const setDigestStmt = db.query(
     "INSERT INTO coordinator_digest (day, channel, ts) VALUES ($day, $channel, $ts) ON CONFLICT(day) DO UPDATE SET channel = $channel, ts = $ts",
   );
+  const usageStmt = db.query<{ ticks: number; cost: number; tokens: number; last: string }, [string]>(
+    "SELECT ticks, cost, tokens, last FROM coordinator_usage WHERE day = ?",
+  );
+  const setUsageStmt = db.query(
+    "INSERT INTO coordinator_usage (day, ticks, cost, tokens, last) VALUES ($day, $ticks, $cost, $tokens, $last) ON CONFLICT(day) DO UPDATE SET ticks = $ticks, cost = $cost, tokens = $tokens, last = $last",
+  );
+  const readUsage = (day: string): DayUsage | undefined => {
+    const r = usageStmt.get(day);
+    const last = r ? parseUsage(r.last) : undefined;
+    return r && last ? { ticks: r.ticks, costUsd: r.cost, tokens: r.tokens, last } : undefined;
+  };
   const byKeyStmt = db.query<BlockerRow, [string]>("SELECT * FROM coordinator_blockers WHERE key = ?");
   const byIdStmt = db.query<BlockerRow, [number]>("SELECT * FROM coordinator_blockers WHERE id = ?");
   const openStmt = db.query(
@@ -170,6 +209,11 @@ export const createCoordinatorRepo = (db: DbClient): CoordinatorRepo => {
     lines: (day) => linesStmt.all(day).map((r) => ({ at: r.at, text: r.line })),
     mark: (kind, ref, at) => void markStmt.run({ $kind: kind, $ref: ref, $at: at }),
     lastMark: (kind, ref) => lastMarkStmt.get(kind, ref)?.at ?? undefined,
+    addUsage: (day, u) => {
+      const next = addDayUsage(readUsage(day), u);
+      setUsageStmt.run({ $day: day, $ticks: next.ticks, $cost: next.costUsd, $tokens: next.tokens, $last: JSON.stringify(u) });
+    },
+    usage: readUsage,
     digest: (day) => digestStmt.get(day) ?? undefined,
     setDigest: (day, channel, ts) => void setDigestStmt.run({ $day: day, $channel: channel, $ts: ts }),
     blockerByKey: (key) => {
