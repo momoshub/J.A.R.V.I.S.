@@ -160,6 +160,32 @@ describe("createSlackStream", () => {
     ]);
   });
 
+  test("the step's description, command and result reach the status message", async () => {
+    const f = fakeStreamer();
+    const st = stubStatus();
+    const s = createSlackStream(f.make, () => {}, { status: st.status });
+    s.sink({ type: "tool", id: "t1", title: "Run: 🏃 Read", detail: "Read it", command: "cat a", status: "in_progress" });
+    s.sink({ type: "tool", id: "t2", title: "Tool: 📄 Reading a file", target: "/a/b", status: "in_progress" });
+    s.sink({ type: "tool", id: "t1", title: "Run: 🏃 Read", detail: "Read it", command: "cat a", output: "ok", status: "complete" });
+    expect(st.steps()).toEqual([
+      { id: "t1", title: "Run: 🏃 Read", state: "in_progress", detail: "Read it", command: "cat a" },
+      { id: "t2", title: "Tool: 📄 Reading a file", state: "in_progress", command: "/a/b" },
+      { id: "t1", title: "Run: 🏃 Read", state: "complete", detail: "Read it", command: "cat a", output: "ok" },
+    ]);
+  });
+
+  test("a grouped step keeps its content and takes the last result", async () => {
+    const f = fakeStreamer();
+    const st = stubStatus();
+    const s = createSlackStream(f.make, () => {}, { status: st.status });
+    const open = (id: string) => s.sink({ type: "tool", id, title: "Run: 🏃 Query", detail: "Query", command: "q", status: "in_progress" });
+    open("a");
+    open("b");
+    s.sink({ type: "tool", id: "a", title: "Run: 🏃 Query", command: "q", output: "first", status: "complete" });
+    s.sink({ type: "tool", id: "b", title: "Run: 🏃 Query", command: "q", output: "last", status: "complete" });
+    expect(st.steps().at(-1)).toEqual({ id: "a", title: "Run: 🏃 Query (2 runs)", state: "complete", detail: "Query", command: "q", output: "last" });
+  });
+
   test("a turn that only ran tools opens no stream, so the caller posts its reply", async () => {
     const f = fakeStreamer();
     const st = stubStatus();
@@ -369,7 +395,7 @@ describe("hidden actions", () => {
       status: "complete",
     });
     await stream.finish();
-    expect(st.steps()).toEqual([{ id: "t1", title: "run: gh pr view", state: "complete" }]);
+    expect(st.steps()).toEqual([{ id: "t1", title: "run: gh pr view", state: "complete", command: "gh pr view https://github.com/o/r/pull/1" }]);
     expect(f.appends).toHaveLength(0);
   });
 });

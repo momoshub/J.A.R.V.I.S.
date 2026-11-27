@@ -513,6 +513,7 @@ export const createHandler =
     const status: StatusMessage | undefined =
       config.streamUpdates && msg.client.chat.postMessage
         ? createStatusMessage({
+            label: config.thinkingLabel,
             api: {
               post: async (view) => {
                 const res = (await msg.client.chat.postMessage?.({
