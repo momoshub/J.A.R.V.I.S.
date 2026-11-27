@@ -80,7 +80,7 @@ export const NODES: SysNode[] = [
     files: ["src/infrastructure/db/", "src/infrastructure/adapter/adapterStore.ts"] },
   { id: "timers", label: "timers", sub: "watch, remind, loop, announcements", kind: "timer", x: 470, y: 560,
     about: "Work outside any turn: watches, reminders, loops (recurring prompts, fired as turns into the creator's DM), the review inbox poll (it only announces a GitHub review request, it never reviews), the Orca question bridge, workflow continues, the offline alarm, the stuck-work sweep (dead Orca workers and quiet PRs, DMed to the owner), the stale-promise sweep (steers a thread whose last bot message promised work nothing is doing). None holds a session while it waits.",
-    files: ["src/application/watcher.ts", "src/application/reminders.ts", "src/application/loops.ts", "src/application/reviewInbox.ts", "src/application/orcaQuestions.ts", "src/application/offlineAlarm.ts", "src/application/stuckSweeper.ts", "src/application/stalePromiseSweep.ts", "src/application/jueki.ts"] },
+    files: ["src/application/watcher.ts", "src/application/reminders.ts", "src/application/loops.ts", "src/application/reviewInbox.ts", "src/application/orcaQuestions.ts", "src/application/offlineAlarm.ts", "src/application/stuckSweeper.ts", "src/application/stalePromiseSweep.ts", "src/application/coordinator.ts"] },
   { id: "github", label: "GitHub", sub: "PRs, issues, Actions", kind: "external", x: 470, y: 70,
     about: "Review requests are polled once a minute by the timers and only announced in Slack. Mentions of the GitHub App arrive as webhooks through Tailscale Funnel.",
     files: [] },

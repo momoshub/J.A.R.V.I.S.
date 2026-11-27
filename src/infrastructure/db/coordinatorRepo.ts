@@ -1,12 +1,12 @@
 /**
- * Jueki's state, in the database and never in a session (see domain/jueki.ts):
+ * The coordinator's state, in the database and never in a session (see domain/coordinator.ts):
  * the digest's lines and the marks that keep an item from being nudged twice,
  * the message the digest lives on, and the blockers put to the owner.
  */
 import type { DbClient } from "./client.ts";
-import { isBlockerKind, type BlockerKind } from "../../domain/jueki.ts";
+import { isBlockerKind, type BlockerKind } from "../../domain/coordinator.ts";
 
-export type JuekiBlocker = {
+export type CoordinatorBlocker = {
   readonly id: number;
   readonly key: string;
   readonly kind: BlockerKind;
@@ -23,7 +23,7 @@ export type JuekiBlocker = {
   readonly decidedAt: number;
 };
 
-export type JuekiLine = { readonly at: number; readonly text: string };
+export type CoordinatorLine = { readonly at: number; readonly text: string };
 
 type BlockerRow = {
   id: number;
@@ -41,7 +41,7 @@ type BlockerRow = {
   decided_at: number;
 };
 
-const toBlocker = (r: BlockerRow): JuekiBlocker => ({
+const toBlocker = (r: BlockerRow): CoordinatorBlocker => ({
   id: r.id,
   key: r.key,
   kind: isBlockerKind(r.kind) ? r.kind : "other",
@@ -57,10 +57,10 @@ const toBlocker = (r: BlockerRow): JuekiBlocker => ({
   decidedAt: r.decided_at,
 });
 
-export type JuekiRepo = {
+export type CoordinatorRepo = {
   /** One line of the day's digest. */
   addLine: (day: string, at: number, text: string) => void;
-  lines: (day: string) => JuekiLine[];
+  lines: (day: string) => CoordinatorLine[];
   /** Remember that `ref` was dealt with (`nudge:journey:3`), so it is not again for a while. */
   mark: (kind: string, ref: string, at: number) => void;
   /** When `ref` was last marked, or undefined. */
@@ -68,71 +68,71 @@ export type JuekiRepo = {
   digest: (day: string) => { channel: string; ts: string } | undefined;
   setDigest: (day: string, channel: string, ts: string) => void;
   /** The blocker with this key, if any ever existed (the key is its identity). */
-  blockerByKey: (key: string) => JuekiBlocker | undefined;
-  blocker: (id: number) => JuekiBlocker | undefined;
+  blockerByKey: (key: string) => CoordinatorBlocker | undefined;
+  blocker: (id: number) => CoordinatorBlocker | undefined;
   /**
    * Opens a blocker, or returns the one already stored under the key. A key stored non-prod that is
    * raised again as prod BECOMES prod (never the other way): a prod blocker must never fall under the
-   * once-only rule. A key Jueki fixed itself opens again from nothing.
+   * once-only rule. A key the coordinator fixed itself opens again from nothing.
    */
-  openBlocker: (b: { key: string; kind: BlockerKind; prod: boolean; text: string }, at: number) => JuekiBlocker;
+  openBlocker: (b: { key: string; kind: BlockerKind; prod: boolean; text: string }, at: number) => CoordinatorBlocker;
   setNotice: (id: number, channel: string, ts: string) => void;
   /** Record that it was put to the owner (again). */
   raised: (id: number, at: number) => void;
-  /** Jueki fixed it itself under the prod rule: closes a still pending row; false when it was not pending. */
+  /** The coordinator fixed it itself under the prod rule: closes a still pending row; false when it was not pending. */
   close: (id: number, at: number) => boolean;
   /** First decision wins; false when it was already decided. */
   decide: (id: number, state: "approved" | "rejected", at: number) => boolean;
-  pending: () => JuekiBlocker[];
+  pending: () => CoordinatorBlocker[];
   /** Approved, not yet handed to a turn. */
-  approvedUnhandled: () => JuekiBlocker[];
+  approvedUnhandled: () => CoordinatorBlocker[];
   markHandled: (id: number, at: number) => void;
 };
 
-export const createJuekiRepo = (db: DbClient): JuekiRepo => {
-  const addLine = db.query("INSERT INTO jueki_actions (day, at, kind, ref, line) VALUES ($day, $at, 'line', '', $line)");
+export const createCoordinatorRepo = (db: DbClient): CoordinatorRepo => {
+  const addLine = db.query("INSERT INTO coordinator_actions (day, at, kind, ref, line) VALUES ($day, $at, 'line', '', $line)");
   const linesStmt = db.query<{ at: number; line: string }, [string]>(
-    "SELECT at, line FROM jueki_actions WHERE day = ? AND kind = 'line' ORDER BY id ASC",
+    "SELECT at, line FROM coordinator_actions WHERE day = ? AND kind = 'line' ORDER BY id ASC",
   );
-  const markStmt = db.query("INSERT INTO jueki_actions (day, at, kind, ref, line) VALUES ('', $at, $kind, $ref, '')");
+  const markStmt = db.query("INSERT INTO coordinator_actions (day, at, kind, ref, line) VALUES ('', $at, $kind, $ref, '')");
   const lastMarkStmt = db.query<{ at: number | null }, [string, string]>(
-    "SELECT MAX(at) AS at FROM jueki_actions WHERE kind = ? AND ref = ?",
+    "SELECT MAX(at) AS at FROM coordinator_actions WHERE kind = ? AND ref = ?",
   );
-  const digestStmt = db.query<{ channel: string; ts: string }, [string]>("SELECT channel, ts FROM jueki_digest WHERE day = ?");
+  const digestStmt = db.query<{ channel: string; ts: string }, [string]>("SELECT channel, ts FROM coordinator_digest WHERE day = ?");
   const setDigestStmt = db.query(
-    "INSERT INTO jueki_digest (day, channel, ts) VALUES ($day, $channel, $ts) ON CONFLICT(day) DO UPDATE SET channel = $channel, ts = $ts",
+    "INSERT INTO coordinator_digest (day, channel, ts) VALUES ($day, $channel, $ts) ON CONFLICT(day) DO UPDATE SET channel = $channel, ts = $ts",
   );
-  const byKeyStmt = db.query<BlockerRow, [string]>("SELECT * FROM jueki_blockers WHERE key = ?");
-  const byIdStmt = db.query<BlockerRow, [number]>("SELECT * FROM jueki_blockers WHERE id = ?");
+  const byKeyStmt = db.query<BlockerRow, [string]>("SELECT * FROM coordinator_blockers WHERE key = ?");
+  const byIdStmt = db.query<BlockerRow, [number]>("SELECT * FROM coordinator_blockers WHERE id = ?");
   const openStmt = db.query(
-    `INSERT INTO jueki_blockers (key, kind, prod, text, created_at) VALUES ($key, $kind, $prod, $text, $at)
+    `INSERT INTO coordinator_blockers (key, kind, prod, text, created_at) VALUES ($key, $kind, $prod, $text, $at)
      ON CONFLICT(key) DO UPDATE SET
-       prod = MAX(jueki_blockers.prod, excluded.prod),
-       kind = CASE WHEN jueki_blockers.state = 'fixed' THEN excluded.kind ELSE jueki_blockers.kind END,
-       text = CASE WHEN jueki_blockers.state = 'fixed' THEN excluded.text ELSE jueki_blockers.text END,
-       raised_count = CASE WHEN jueki_blockers.state = 'fixed' THEN 0 ELSE jueki_blockers.raised_count END,
-       last_raised_at = CASE WHEN jueki_blockers.state = 'fixed' THEN 0 ELSE jueki_blockers.last_raised_at END,
-       notice_channel = CASE WHEN jueki_blockers.state = 'fixed' THEN '' ELSE jueki_blockers.notice_channel END,
-       notice_ts = CASE WHEN jueki_blockers.state = 'fixed' THEN '' ELSE jueki_blockers.notice_ts END,
-       handled_at = CASE WHEN jueki_blockers.state = 'fixed' THEN 0 ELSE jueki_blockers.handled_at END,
-       decided_at = CASE WHEN jueki_blockers.state = 'fixed' THEN 0 ELSE jueki_blockers.decided_at END,
-       state = CASE WHEN jueki_blockers.state = 'fixed' THEN 'pending' ELSE jueki_blockers.state END`,
+       prod = MAX(coordinator_blockers.prod, excluded.prod),
+       kind = CASE WHEN coordinator_blockers.state = 'fixed' THEN excluded.kind ELSE coordinator_blockers.kind END,
+       text = CASE WHEN coordinator_blockers.state = 'fixed' THEN excluded.text ELSE coordinator_blockers.text END,
+       raised_count = CASE WHEN coordinator_blockers.state = 'fixed' THEN 0 ELSE coordinator_blockers.raised_count END,
+       last_raised_at = CASE WHEN coordinator_blockers.state = 'fixed' THEN 0 ELSE coordinator_blockers.last_raised_at END,
+       notice_channel = CASE WHEN coordinator_blockers.state = 'fixed' THEN '' ELSE coordinator_blockers.notice_channel END,
+       notice_ts = CASE WHEN coordinator_blockers.state = 'fixed' THEN '' ELSE coordinator_blockers.notice_ts END,
+       handled_at = CASE WHEN coordinator_blockers.state = 'fixed' THEN 0 ELSE coordinator_blockers.handled_at END,
+       decided_at = CASE WHEN coordinator_blockers.state = 'fixed' THEN 0 ELSE coordinator_blockers.decided_at END,
+       state = CASE WHEN coordinator_blockers.state = 'fixed' THEN 'pending' ELSE coordinator_blockers.state END`,
   );
-  const noticeStmt = db.query("UPDATE jueki_blockers SET notice_channel = $channel, notice_ts = $ts WHERE id = $id");
+  const noticeStmt = db.query("UPDATE coordinator_blockers SET notice_channel = $channel, notice_ts = $ts WHERE id = $id");
   const raisedStmt = db.query(
-    "UPDATE jueki_blockers SET raised_count = raised_count + 1, last_raised_at = $at WHERE id = $id",
+    "UPDATE coordinator_blockers SET raised_count = raised_count + 1, last_raised_at = $at WHERE id = $id",
   );
   const decideStmt = db.query(
-    "UPDATE jueki_blockers SET state = $state, decided_at = $at WHERE id = $id AND state = 'pending'",
+    "UPDATE coordinator_blockers SET state = $state, decided_at = $at WHERE id = $id AND state = 'pending'",
   );
   const closeStmt = db.query(
-    "UPDATE jueki_blockers SET state = 'fixed', decided_at = $at WHERE id = $id AND state = 'pending'",
+    "UPDATE coordinator_blockers SET state = 'fixed', decided_at = $at WHERE id = $id AND state = 'pending'",
   );
-  const pendingStmt = db.query<BlockerRow, []>("SELECT * FROM jueki_blockers WHERE state = 'pending' ORDER BY id ASC");
+  const pendingStmt = db.query<BlockerRow, []>("SELECT * FROM coordinator_blockers WHERE state = 'pending' ORDER BY id ASC");
   const approvedStmt = db.query<BlockerRow, []>(
-    "SELECT * FROM jueki_blockers WHERE state = 'approved' AND handled_at = 0 ORDER BY id ASC",
+    "SELECT * FROM coordinator_blockers WHERE state = 'approved' AND handled_at = 0 ORDER BY id ASC",
   );
-  const handledStmt = db.query("UPDATE jueki_blockers SET handled_at = $at WHERE id = $id");
+  const handledStmt = db.query("UPDATE coordinator_blockers SET handled_at = $at WHERE id = $id");
 
   return {
     addLine: (day, at, text) => void addLine.run({ $day: day, $at: at, $line: text }),

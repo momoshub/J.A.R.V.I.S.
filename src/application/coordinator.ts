@@ -1,7 +1,7 @@
 /**
- * Jueki's tick (see domain/jueki.ts for the why and the rules).
+ * The coordinator's tick (see domain/coordinator.ts for the why and the rules).
  *
- * Every `JUEKI_INTERVAL_MS`, outside any turn, it rebuilds its picture from the
+ * Every `COORDINATOR_INTERVAL_MS`, outside any turn, it rebuilds its picture from the
  * bot's own records - journeys, worker tickets, watches, Orca tasks, open PRs,
  * the owner's unanswered threads - and never from a session. What code can
  * settle it settles itself (close a journey that sat at 100%, renew a worker
@@ -31,7 +31,7 @@ import {
   emptyPicture,
   inQuietHours,
   journeyAction,
-  juekiTurnText,
+  coordinatorTurnText,
   localDay,
   lapsedWorkerDispatch,
   pictureSize,
@@ -41,9 +41,8 @@ import {
   routeBlocker,
   selfFixDmText,
   ticketAction,
-  JUEKI_APPROVE_ACTION,
-  JUEKI_REJECT_ACTION,
-  JUEKI_NAME,
+  COORDINATOR_APPROVE_ACTION,
+  COORDINATOR_REJECT_ACTION,
   type BlockerFacts,
   type BlockerKind,
   type BlockerRoute,
@@ -51,15 +50,14 @@ import {
   type Picture,
   type PictureItem,
   type TicketFacts,
-} from "../domain/jueki.ts";
+} from "../domain/coordinator.ts";
 import { watchesWorker } from "../domain/watch.ts";
 import { WORKER_TTL_DEFAULT_MS } from "../domain/workerTicket.ts";
 import type { StuckWork } from "../domain/stuckWork.ts";
 import type { JourneyRepo } from "../infrastructure/db/journeyRepo.ts";
-import type { JuekiBlocker, JuekiRepo } from "../infrastructure/db/juekiRepo.ts";
+import type { CoordinatorBlocker, CoordinatorRepo } from "../infrastructure/db/coordinatorRepo.ts";
 import type { EndedThread } from "../infrastructure/db/messageRepo.ts";
 import type { Watch, WatchRepo } from "../infrastructure/db/watchRepo.ts";
-import { SIGNATURES } from "../domain/messageFooter.ts";
 import { logAndIgnore } from "./ignoredError.ts";
 import type { Clock } from "./ports.ts";
 import type { SlackAdminPort } from "./slackAdmin.ts";
@@ -95,8 +93,8 @@ export const rearmWatch = (
   ).id;
 };
 
-/** The actor Jueki's own journey and ticket changes are filed under. */
-export const JUEKI_ACTOR = "jueki";
+/** The actor the coordinator's own journey and ticket changes are filed under. */
+export const COORDINATOR_ACTOR = "coordinator";
 
 /** An owner thread nobody answered for this long counts. */
 export const UNANSWERED_AFTER_MS = 2 * HOUR_MS;
@@ -104,12 +102,12 @@ export const UNANSWERED_AFTER_MS = 2 * HOUR_MS;
 export const UNANSWERED_WINDOW_MS = 3 * DAY_MS;
 /** A dead worker is put to the turn again after this long. */
 export const WORKER_REPEAT_MS = 6 * HOUR_MS;
-/** A `jueki fixed` is accepted this long after the `blocker` that answered `self-fix`. */
+/** A `coordinator fixed` is accepted this long after the `blocker` that answered `self-fix`. */
 export const SELF_FIX_GRANT_MS = 6 * HOUR_MS;
 /** Threads and PRs handed to one turn, so a backlog is worked down, not dumped. */
 const PICTURE_CAP = 6;
 
-export type JuekiTurnRequest = {
+export type CoordinatorTurnRequest = {
   channelId: string;
   threadTs: string;
   slackUserId: string;
@@ -122,10 +120,12 @@ export type JuekiTurnRequest = {
   trigger: "loop";
 };
 
-export type JuekiDeps = {
+export type CoordinatorDeps = {
   readonly clock: Clock;
   readonly ownerSlackId: string;
-  readonly repo: JuekiRepo;
+  /** The display name every message is signed with and the turn answers to (`COORDINATOR_NAME`). */
+  readonly name: string;
+  readonly repo: CoordinatorRepo;
   readonly journeys: JourneyRepo;
   readonly slack: Pick<SlackAdminPort, "postDm" | "update" | "postDmInteractive" | "settleInteractive"> & {
     openDm?: SlackAdminPort["openDm"];
@@ -146,7 +146,7 @@ export type JuekiDeps = {
   /** Open PRs of the bot's own repo with CI and reviewer state. */
   readonly ownPrs: () => Promise<{ readonly prs: readonly OwnPr[]; readonly problem?: string }>;
   readonly unanswered: (slackUserId: string, since: number, before: number) => readonly EndedThread[];
-  readonly runTurn: (req: JuekiTurnRequest) => Promise<{ text: string; ran?: boolean } | undefined | void>;
+  readonly runTurn: (req: CoordinatorTurnRequest) => Promise<{ text: string; ran?: boolean } | undefined | void>;
   /** Minutes east of UTC the owner's day is read in. */
   readonly offsetMinutes: () => number;
   readonly quiet: { readonly startHour: number; readonly endHour: number };
@@ -165,7 +165,7 @@ export type BlockerInput = {
   readonly facts: BlockerFacts;
 };
 
-export type Jueki = {
+export type Coordinator = {
   /** One tick. Never throws, never overlaps itself. */
   tick: () => Promise<void>;
   /** A turn reports a wall; code routes it. The string is what the turn is told. */
@@ -174,13 +174,13 @@ export type Jueki = {
   act: (line: string) => Promise<void>;
   /** A prod item fixed under the self-fix rule: the digest line and one direct DM line. False (nothing posted) when no self-fix was granted for that key. */
   fixed: (key: string, line: string) => Promise<boolean>;
-  /** What Jueki holds right now, for `jueki status`. */
+  /** What the coordinator holds right now, for `coordinator status`. */
   status: () => string;
 };
 
 const ref = (kind: string, id: string | number): string => `${kind}:${id}`;
 
-export const createJueki = (deps: JuekiDeps): Jueki => {
+export const createCoordinator = (deps: CoordinatorDeps): Coordinator => {
   const log = deps.log ?? (() => {});
   const staleMs = deps.staleJourneyMs ?? DEFAULT_STALE_JOURNEY_MS;
   const repingMs = deps.repingMs ?? DEFAULT_PROD_REPING_MS;
@@ -189,7 +189,7 @@ export const createJueki = (deps: JuekiDeps): Jueki => {
 
   const quietNow = (): boolean => inQuietHours(deps.clock(), deps.offsetMinutes(), deps.quiet.startHour, deps.quiet.endHour);
   /**
-   * Jueki's day starts when quiet hours end (05:00), not at midnight: what happens at 23:00 belongs to
+   * The coordinator's day starts when quiet hours end (05:00), not at midnight: what happens at 23:00 belongs to
    * the day that began that morning, so a line held for quiet hours is posted with that day's digest
    * instead of being stranded by the calendar rolling over. Without quiet hours it is the calendar day.
    */
@@ -206,16 +206,16 @@ export const createJueki = (deps: JuekiDeps): Jueki => {
     for (const day of [dayAt(deps.clock() - DAY_MS), today()]) {
       const lines = deps.repo.lines(day);
       if (lines.length === 0) continue;
-      const text = renderDigest(day, lines, deps.offsetMinutes(), deps.repo.pending().length);
+      const text = renderDigest(deps.name, day, lines, deps.offsetMinutes(), deps.repo.pending().length);
       if (text === rendered.get(day)) continue;
       const where = deps.repo.digest(day);
       if (where) {
-        await deps.slack.update(where.channel, where.ts, text, SIGNATURES.jueki);
+        await deps.slack.update(where.channel, where.ts, text, deps.name);
         rendered.set(day, text);
         continue;
       }
       if (quietNow()) continue;
-      const posted = await deps.slack.postDm(deps.ownerSlackId, text, SIGNATURES.jueki);
+      const posted = await deps.slack.postDm(deps.ownerSlackId, text, deps.name);
       if (posted) {
         deps.repo.setDigest(day, posted.channel, posted.ts);
         rendered.set(day, text);
@@ -227,19 +227,19 @@ export const createJueki = (deps: JuekiDeps): Jueki => {
     const text = digestLine(line);
     if (!text) return;
     deps.repo.addLine(today(), deps.clock(), text);
-    await refreshDigest().catch(logAndIgnore("jueki digest"));
+    await refreshDigest().catch(logAndIgnore("coordinator digest"));
   };
 
   /** Put a blocker to the owner now: a new message, and the previous one (a prod re-ask) is settled. */
-  const raise = async (b: JuekiBlocker): Promise<void> => {
+  const raise = async (b: CoordinatorBlocker): Promise<void> => {
     const posted = await deps.slack.postDmInteractive(
       deps.ownerSlackId,
-      blockerText(b, b.raisedCount),
+      blockerText(deps.name, b, b.raisedCount),
       [
-        { actionId: JUEKI_APPROVE_ACTION, label: "Approve", value: String(b.id), style: "primary" },
-        { actionId: JUEKI_REJECT_ACTION, label: "Reject", value: String(b.id), style: "danger" },
+        { actionId: COORDINATOR_APPROVE_ACTION, label: "Approve", value: String(b.id), style: "primary" },
+        { actionId: COORDINATOR_REJECT_ACTION, label: "Reject", value: String(b.id), style: "danger" },
       ],
-      SIGNATURES.jueki,
+      deps.name,
     );
     if (!posted) {
       log(`could not raise blocker ${b.id}; trying again next tick`);
@@ -250,19 +250,19 @@ export const createJueki = (deps: JuekiDeps): Jueki => {
     deps.repo.raised(b.id, deps.clock());
     if (before.channel && before.ts) {
       await deps.slack
-        .settleInteractive(before.channel, before.ts, `*${JUEKI_NAME}* - blocker #${b.id} asked again below.`, SIGNATURES.jueki)
-        .catch(logAndIgnore("jueki superseded blocker"));
+        .settleInteractive(before.channel, before.ts, `*${deps.name}* - blocker #${b.id} asked again below.`, deps.name)
+        .catch(logAndIgnore("coordinator superseded blocker"));
     }
     await act(`${b.prod ? "prod " : ""}blocker #${b.id} (${b.kind}) put to you: ${b.text}`);
   };
 
-  /** A pending blocker Jueki fixed itself: closed, and the message that asked is settled so nobody presses it. */
-  const closeAsked = async (b: JuekiBlocker, why: string): Promise<void> => {
+  /** A pending blocker the coordinator fixed itself: closed, and the message that asked is settled so nobody presses it. */
+  const closeAsked = async (b: CoordinatorBlocker, why: string): Promise<void> => {
     if (!deps.repo.close(b.id, deps.clock())) return;
     if (b.noticeChannel && b.noticeTs) {
       await deps.slack
-        .settleInteractive(b.noticeChannel, b.noticeTs, `*${JUEKI_NAME}* - blocker #${b.id} (${b.kind}): ${b.text}\n_${why}._`, SIGNATURES.jueki)
-        .catch(logAndIgnore("jueki closed blocker"));
+        .settleInteractive(b.noticeChannel, b.noticeTs, `*${deps.name}* - blocker #${b.id} (${b.kind}): ${b.text}\n_${why}._`, deps.name)
+        .catch(logAndIgnore("coordinator closed blocker"));
     }
     await act(`prod blocker #${b.id} closed: ${why}`);
   };
@@ -275,10 +275,10 @@ export const createJueki = (deps: JuekiDeps): Jueki => {
     const prior = deps.repo.blockerByKey(key);
     const route: BlockerRoute = routeBlocker(input.facts, prior, now, { quiet: quietNow(), repingMs });
     if (route.route === "self-fix") {
-      // The grant `fixed` checks, and the end of any earlier ask: an owner asked about something Jueki is now fixing would be asked all night.
+      // The grant `fixed` checks, and the end of any earlier ask: an owner asked about something the coordinator is now fixing would be asked all night.
       deps.repo.mark("selffix", key, now);
       if (prior?.state === "pending") await closeAsked(prior, "now fixed by me (urgent, low-risk)");
-      return `self-fix: prod, urgent and low-risk (reversible, no data write, no schema change, no secret or IAM change), inside the owner's role. Do it, then run \`${deps.prefix} jueki fixed ${key} "<what you did>"\`.`;
+      return `self-fix: prod, urgent and low-risk (reversible, no data write, no schema change, no secret or IAM change), inside the owner's role. Do it, then run \`${deps.prefix} coordinator fixed ${key} "<what you did>"\`.`;
     }
     const b = deps.repo.openBlocker({ key, kind: input.kind, prod: input.facts.prod, text }, now);
     if (route.route === "raise") {
@@ -298,7 +298,7 @@ export const createJueki = (deps: JuekiDeps): Jueki => {
 
   const fixed = async (key: string, line: string): Promise<boolean> => {
     const k = cleanKey(key);
-    // Only a self-fix `blocker` granted (in the last hours) can be reported: this line is not a way to post as Jueki about anything.
+    // Only a self-fix `blocker` granted (in the last hours) can be reported: this line is not a way to post as the coordinator about anything.
     const granted = deps.repo.lastMark("selffix", k);
     if (granted === undefined || deps.clock() - granted > SELF_FIX_GRANT_MS) return false;
     const stored = deps.repo.blockerByKey(k);
@@ -306,8 +306,8 @@ export const createJueki = (deps: JuekiDeps): Jueki => {
     await act(`prod fix by me (urgent, low-risk): ${line}`);
     // A direct line, quiet hours or not: a prod item was touched and the owner hears it.
     await deps.slack
-      .postDm(deps.ownerSlackId, selfFixDmText(k, line), SIGNATURES.jueki)
-      .catch(logAndIgnore("jueki self-fix DM"));
+      .postDm(deps.ownerSlackId, selfFixDmText(deps.name, k, line), deps.name)
+      .catch(logAndIgnore("coordinator self-fix DM"));
     return true;
   };
 
@@ -337,7 +337,7 @@ export const createJueki = (deps: JuekiDeps): Jueki => {
       const action = journeyAction(j, now, staleMs);
       if (!action) continue;
       if (action.kind === "close") {
-        deps.journeys.update(j.id, { status: "done", note: "closed by Jueki: it sat at 100% and was never closed" }, now, JUEKI_ACTOR);
+        deps.journeys.update(j.id, { status: "done", note: `closed by ${deps.name}: it sat at 100% and was never closed` }, now, COORDINATOR_ACTOR);
         await act(`closed journey #${j.id} "${j.title}": it sat at 100%`);
       } else if (picture.staleJourneys.length < PICTURE_CAP && fresh("nudge", ref("journey", j.id), now, NUDGE_REPEAT_MS)) {
         picture.staleJourneys.push({
@@ -455,11 +455,11 @@ export const createJueki = (deps: JuekiDeps): Jueki => {
     };
     // Judgment waits for morning when it may message people. Nothing is marked while it waits, so the same items are in the next tick's picture.
     if (pictureSize(handed) > 0 && !quietNow() && !turnRunning) startTurn(now, handed, approved, toMark);
-    await refreshDigest().catch(logAndIgnore("jueki digest"));
+    await refreshDigest().catch(logAndIgnore("coordinator digest"));
   };
 
   /** Not awaited: a turn can run half an hour and the tick must not hold the next one. */
-  const startTurn = (now: number, picture: Picture, approved: readonly JuekiBlocker[], marks: readonly { kind: string; id: string }[]): void => {
+  const startTurn = (now: number, picture: Picture, approved: readonly CoordinatorBlocker[], marks: readonly { kind: string; id: string }[]): void => {
     turnRunning = true;
     void (async () => {
       try {
@@ -474,7 +474,7 @@ export const createJueki = (deps: JuekiDeps): Jueki => {
           // One made-up thread per local day: a fresh session each morning that reads its state back, the same one through the day.
           threadTs: dayThreadTs(day),
           slackUserId: deps.ownerSlackId,
-          text: juekiTurnText(day, quietNow(), picture, deps.prefix),
+          text: coordinatorTurnText(deps.name, day, quietNow(), picture, deps.prefix),
           unprompted: true,
           loop: true,
           hold: true,
@@ -501,7 +501,7 @@ export const createJueki = (deps: JuekiDeps): Jueki => {
     const day = today();
     const pending = deps.repo.pending();
     return [
-      `*${JUEKI_NAME}* - ${day}${quietNow() ? ", quiet hours" : ""}`,
+      `*${deps.name}* - ${day}${quietNow() ? ", quiet hours" : ""}`,
       `- digest lines today: ${deps.repo.lines(day).length}`,
       `- blockers waiting on the owner: ${pending.length}${pending.length > 0 ? ` (${pending.map((b) => `#${b.id}${b.prod ? " prod" : ""}`).join(", ")})` : ""}`,
       `- a turn is ${turnRunning ? "running" : "not running"}`,
@@ -527,9 +527,9 @@ export const createJueki = (deps: JuekiDeps): Jueki => {
   };
 };
 
-/** `1795000000.000042`: Slack-shaped, unique per local day, never shown (the made-up thread of the daily session). */
+/** `1795000000.000042`: Slack-shaped, unique per local day, never shown (the made-up thread of the daily session; the suffix changed when the feature was renamed, so the first day after the upgrade starts a session that knows the new command). */
 export const dayThreadTs = (day: string): string => {
   const [y, m, d] = day.split("-").map(Number);
   const secs = Math.floor(Date.UTC(y ?? 1970, (m ?? 1) - 1, d ?? 1) / 1000);
-  return `${secs}.000042`;
+  return `${secs}.000043`;
 };

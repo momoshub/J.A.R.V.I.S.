@@ -21,8 +21,9 @@ describe("loadConfig", () => {
     expect([o.whisperBin, o.whisperModelPath, o.ffmpegBin, o.whisperTimeoutMs]).toEqual(["/x/w", join(homedir(), "m.bin"), "/x/f", 5000]);
   });
 
-  test("Jueki ticks every 30 min, quiet 22 -> 5 in UTC+7, stale after 3 days, prod asked again every 30 min; each is configurable and 0 is off", () => {
-    expect(loadConfig(base).jueki).toEqual({
+  test("the coordinator ticks every 30 min, quiet 22 -> 5 in UTC+7, stale after 3 days, prod asked again every 30 min; each is configurable and 0 is off", () => {
+    expect(loadConfig(base).coordinator).toEqual({
+      name: "Coordinator",
       intervalMs: 30 * 60_000,
       staleJourneyMs: 3 * 24 * 60 * 60_000,
       prodRepingMs: 30 * 60_000,
@@ -30,8 +31,10 @@ describe("loadConfig", () => {
       quietEndHour: 5,
       tzOffsetMin: 420,
     });
-    expect(loadConfig({ ...base, JUEKI_INTERVAL_MS: "0" }).jueki.intervalMs).toBe(0);
-    expect(loadConfig({ ...base, JUEKI_INTERVAL_MS: "900000", JUEKI_QUIET_START_HOUR: "23", JUEKI_TZ_OFFSET_MIN: "0" }).jueki).toMatchObject({
+    expect(loadConfig({ ...base, COORDINATOR_INTERVAL_MS: "0" }).coordinator.intervalMs).toBe(0);
+    expect(loadConfig({ ...base, COORDINATOR_NAME: "Aide" }).coordinator.name).toBe("Aide");
+    expect(loadConfig({ ...base, COORDINATOR_NAME: "  " }).coordinator.name).toBe("Coordinator");
+    expect(loadConfig({ ...base, COORDINATOR_INTERVAL_MS: "900000", COORDINATOR_QUIET_START_HOUR: "23", COORDINATOR_TZ_OFFSET_MIN: "0" }).coordinator).toMatchObject({
       intervalMs: 900_000,
       quietStartHour: 23,
       tzOffsetMin: 0,
