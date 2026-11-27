@@ -120,3 +120,47 @@ describe("the lookups Jueki reads other tables with", () => {
     expect(t.bound().map((r) => r.id)).toEqual(["aaaaaaaa"]);
   });
 });
+
+describe("juekiRepo: a blocker about another person", () => {
+  const subject = { forUser: "U0PAL000001", channelId: "C0TEST00001", threadTs: "1.5", permalink: "https://team.slack.com/archives/C0TEST00001/p1000000", plan: "open the PR" };
+
+  test("the subject is stored with the row and read back; an owner's own blocker has none", () => {
+    const r = repo();
+    const a = r.openBlocker({ key: "u", kind: "unblock", prod: false, text: "needs access", subject }, 5);
+    expect(a).toMatchObject(subject);
+    expect(r.blocker(a.id)).toMatchObject(subject);
+    const own = r.openBlocker({ key: "own", kind: "decision", prod: false, text: "x" }, 6);
+    expect(own).toMatchObject({ forUser: "", channelId: "", threadTs: "", permalink: "", plan: "" });
+  });
+
+  test("opening the same key again keeps the first subject", () => {
+    const r = repo();
+    r.openBlocker({ key: "u", kind: "unblock", prod: false, text: "needs access", subject }, 5);
+    const again = r.openBlocker({ key: "u", kind: "unblock", prod: false, text: "other", subject: { ...subject, forUser: "U0OTHER0002", threadTs: "9.9" } }, 9);
+    expect(again).toMatchObject({ forUser: "U0PAL000001", threadTs: "1.5", text: "needs access" });
+  });
+
+  test("unblocksSince counts only unblock rows opened since then", () => {
+    const r = repo();
+    r.openBlocker({ key: "u1", kind: "unblock", prod: false, text: "a", subject }, 100);
+    r.openBlocker({ key: "u2", kind: "unblock", prod: false, text: "b", subject }, 200);
+    r.openBlocker({ key: "own", kind: "decision", prod: false, text: "c" }, 300);
+    expect(r.unblocksSince(0)).toBe(2);
+    expect(r.unblocksSince(150)).toBe(1);
+    expect(r.unblocksSince(1000)).toBe(0);
+  });
+
+  test("a table from before v55 gains the columns, and its rows read as the owner's own", () => {
+    const db = new Database(":memory:");
+    db.exec(`CREATE TABLE jueki_blockers (
+      id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, prod INTEGER NOT NULL DEFAULT 0,
+      text TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending', notice_channel TEXT NOT NULL DEFAULT '', notice_ts TEXT NOT NULL DEFAULT '',
+      raised_count INTEGER NOT NULL DEFAULT 0, last_raised_at INTEGER NOT NULL DEFAULT 0, handled_at INTEGER NOT NULL DEFAULT 0,
+      created_at INTEGER NOT NULL, decided_at INTEGER NOT NULL DEFAULT 0)`);
+    db.exec("INSERT INTO jueki_blockers (key, kind, text, created_at) VALUES ('old', 'decision', 'old wall', 1)");
+    migrate(db);
+    migrate(db);
+    expect(createJuekiRepo(db).blockerByKey("old")).toMatchObject({ text: "old wall", forUser: "", channelId: "", plan: "" });
+  });
+});
+

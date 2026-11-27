@@ -233,7 +233,12 @@ no classes.
   Asia/Ho_Chi_Minh); a prod blocker is asked again every `JUEKI_PROD_REPING_MS`
   until the owner acts, quiet hours or not, unless it is both urgent and
   low-risk and inside the owner's role, which Jueki fixes itself and reports in
-  the digest and one direct line. See "Jueki" in CLAUDE.md.
+  the digest and one direct line. A blocker can also be about another person
+  (`unblock`, or `jueki blocker --for <user> --thread <link>`): the owner is
+  asked to unblock THAT person, and the owner's Approve starts a turn in the
+  stuck person's thread (a Reject posts one line there), decided in code at the
+  press, never through the tick. See "Jueki" and "A person who is stuck" in
+  CLAUDE.md.
 - **Followed threads: debounce and gate.** An untagged message in a thread the bot
   follows (the `asked` and `own-thread` routes; tagged messages, DMs, one-on-one
   threads and command lines skip all of this) is not a turn yet. `app.ts` hands it
@@ -341,7 +346,7 @@ No I/O, no frameworks. Just data shapes and functions of their inputs.
 - `acceptedBots.ts` - the `ACCEPTED_BOT_IDS` allowlist (an allowlisted bot posting with a person's user token is that user speaking) and the per-thread loop guard that caps consecutive accepted-bot turns
 - `threadFollow.ts`, `followGate.ts` - which untagged thread messages the bot answers, and the pure rules of the gate in front of a followed thread (settings, bypass, batch windows, verdict parsing, the gate's prompt)
 - `bugReport.ts` - the internal `bug-report` command's pure parts: flag parsing, the Slack-link check, the fingerprint that dedupes, the owner's DM text, the `jv:bug-report:` button ids (the prefix is code-handled: `application/bugReportApproval.ts` decides a press, owner only, on the stored notice channel/ts, and only an approve starts the fix turn)
-- `jueki.ts` - Jueki's pure rules: quiet hours and the owner's day, what a journey or worker ticket needs, own PRs from `gh`, urgent / low-risk / the prod self-fix rule, how a blocker is routed, the digest and the turn's text
+- `jueki.ts` - Jueki's pure rules: quiet hours and the owner's day, what a journey or worker ticket needs, own PRs from `gh`, urgent / low-risk / the prod self-fix rule, how a blocker is routed, the digest and the turn's text; a blocker's optional subject (a person other than the owner) and the `unblock` parse, key and texts
 - `journey.ts` - the bot's own work log: statuses, flag parsing for the internal `journey` command (run only by the brain's own turn, never typed), the one-line and help text
 - `watch.ts`, `reminder.ts`, `loop.ts`, `selfUpdate.ts`, `runControl.ts`, `threadBackground.ts`, `backgroundJobs.ts` - waits, reminders, draining restart, stopping a turn and the background agents its thread started
 - `stalePromise.ts`, `tellPrompt.ts` - the stale-promise rules (bilingual promise heuristic, the model's yes/no question, which threads may be nudged, the per-thread record) and the internal steer text shared by `tell` and the sweep

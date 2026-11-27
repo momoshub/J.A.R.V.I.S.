@@ -65,3 +65,63 @@ describe("jueki command", () => {
     expect(await run({ ...deps, jueki: undefined }, "jueki status")).toContain("off");
   });
 });
+
+describe("unblock command", () => {
+  const LINK = "https://team.slack.com/archives/C0TEST00001/p1795000000123456";
+  const PAL = "U0PAL000001";
+  const palTurn = () => actor({ slackId: PAL, role: "pal" });
+  const line = `unblock --thread ${LINK} --for ${PAL} --need "needs the staging grant" --plan "run it for them"`;
+
+  test("a pal's brain turn hands Jueki an unblock for that thread; the owner is the one decided to ask", async () => {
+    const { deps, blockers } = setup();
+    expect(await run(deps, line, palTurn())).toBe("raised");
+    expect(blockers).toHaveLength(1);
+    expect(blockers[0]).toMatchObject({
+      kind: "unblock",
+      text: "needs the staging grant",
+      subject: { forUser: PAL, channelId: "C0TEST00001", threadTs: "1795000000.123456", plan: "run it for them" },
+    });
+    expect(blockers[0]!.facts).toMatchObject({ prod: false, ownerDecision: true, reversible: false });
+  });
+
+  test("the same line twice has the same key, so Jueki can dedupe it", async () => {
+    const { deps, blockers } = setup();
+    await run(deps, line, palTurn());
+    await run(deps, line.replace("needs the staging grant", "Needs the staging grant!"), palTurn());
+    expect(blockers[0]!.key).toBe(blockers[1]!.key);
+  });
+
+  test("a typed line is refused for everyone, the owner included", async () => {
+    const { deps, blockers } = setup();
+    await dispatchCommand(deps, palTurn(), "D1", line);
+    await dispatchCommand(deps, actor(), "D1", line);
+    expect(blockers).toHaveLength(0);
+  });
+
+  test("approve and reject are never a command: only the owner's button", async () => {
+    const { deps, blockers } = setup();
+    expect(await run(deps, "unblock approve 1", actor())).toContain("only by the owner pressing the button");
+    expect(await run(deps, "unblock reject 1", palTurn())).toContain("only by the owner pressing the button");
+    expect(blockers).toHaveLength(0);
+  });
+
+  test("a bad line says what is wrong; the owner is not unblocked by the owner", async () => {
+    const { deps, blockers } = setup();
+    expect(await run(deps, `unblock --for ${PAL} --need x`, palTurn())).toContain("--thread");
+    expect(await run(deps, `unblock --thread ${LINK} --for ${PAL}`, palTurn())).toContain("--need");
+    expect(await run(deps, `unblock --thread ${LINK} --for ${OWNER} --need x`, palTurn())).toContain("needs no unblocking");
+    expect(blockers).toHaveLength(0);
+  });
+
+  test("with Jueki off it says so", async () => {
+    const { deps } = setup();
+    expect(await run({ ...deps, jueki: undefined }, line, palTurn())).toContain("cannot reach the owner");
+  });
+
+  test("`jueki blocker --for --thread` is the same wall for that person", async () => {
+    const { deps, blockers } = setup();
+    await run(deps, `jueki blocker j87 --for ${PAL} --thread ${LINK} "build never started"`);
+    expect(blockers[0]).toMatchObject({ key: "j87", kind: "unblock", subject: { forUser: PAL } });
+  });
+});
+

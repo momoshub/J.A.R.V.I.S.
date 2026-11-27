@@ -4,7 +4,7 @@
  * the message the digest lives on, and the blockers put to the owner.
  */
 import type { DbClient } from "./client.ts";
-import { isBlockerKind, type BlockerKind } from "../../domain/jueki.ts";
+import { isBlockerKind, type BlockerKind, type BlockerSubject } from "../../domain/jueki.ts";
 
 export type JuekiBlocker = {
   readonly id: number;
@@ -21,6 +21,13 @@ export type JuekiBlocker = {
   readonly handledAt: number;
   readonly createdAt: number;
   readonly decidedAt: number;
+  /** Who is stuck, when it is somebody other than the owner (`BlockerSubject`); empty otherwise. */
+  readonly forUser: string;
+  /** Their thread: where an approval carries on. */
+  readonly channelId: string;
+  readonly threadTs: string;
+  readonly permalink: string;
+  readonly plan: string;
 };
 
 export type JuekiLine = { readonly at: number; readonly text: string };
@@ -39,6 +46,11 @@ type BlockerRow = {
   handled_at: number;
   created_at: number;
   decided_at: number;
+  for_user: string;
+  channel_id: string;
+  thread_ts: string;
+  permalink: string;
+  plan: string;
 };
 
 const toBlocker = (r: BlockerRow): JuekiBlocker => ({
@@ -55,6 +67,11 @@ const toBlocker = (r: BlockerRow): JuekiBlocker => ({
   handledAt: r.handled_at,
   createdAt: r.created_at,
   decidedAt: r.decided_at,
+  forUser: r.for_user,
+  channelId: r.channel_id,
+  threadTs: r.thread_ts,
+  permalink: r.permalink,
+  plan: r.plan,
 });
 
 export type JuekiRepo = {
@@ -75,7 +92,12 @@ export type JuekiRepo = {
    * raised again as prod BECOMES prod (never the other way): a prod blocker must never fall under the
    * once-only rule. A key Jueki fixed itself opens again from nothing.
    */
-  openBlocker: (b: { key: string; kind: BlockerKind; prod: boolean; text: string }, at: number) => JuekiBlocker;
+  openBlocker: (
+    b: { key: string; kind: BlockerKind; prod: boolean; text: string; subject?: BlockerSubject },
+    at: number,
+  ) => JuekiBlocker;
+  /** How many unblock asks were opened since `at` (the daily cap). */
+  unblocksSince: (at: number) => number;
   setNotice: (id: number, channel: string, ts: string) => void;
   /** Record that it was put to the owner (again). */
   raised: (id: number, at: number) => void;
@@ -105,7 +127,8 @@ export const createJuekiRepo = (db: DbClient): JuekiRepo => {
   const byKeyStmt = db.query<BlockerRow, [string]>("SELECT * FROM jueki_blockers WHERE key = ?");
   const byIdStmt = db.query<BlockerRow, [number]>("SELECT * FROM jueki_blockers WHERE id = ?");
   const openStmt = db.query(
-    `INSERT INTO jueki_blockers (key, kind, prod, text, created_at) VALUES ($key, $kind, $prod, $text, $at)
+    `INSERT INTO jueki_blockers (key, kind, prod, text, created_at, for_user, channel_id, thread_ts, permalink, plan)
+     VALUES ($key, $kind, $prod, $text, $at, $forUser, $channelId, $threadTs, $permalink, $plan)
      ON CONFLICT(key) DO UPDATE SET
        prod = MAX(jueki_blockers.prod, excluded.prod),
        kind = CASE WHEN jueki_blockers.state = 'fixed' THEN excluded.kind ELSE jueki_blockers.kind END,
@@ -116,7 +139,15 @@ export const createJuekiRepo = (db: DbClient): JuekiRepo => {
        notice_ts = CASE WHEN jueki_blockers.state = 'fixed' THEN '' ELSE jueki_blockers.notice_ts END,
        handled_at = CASE WHEN jueki_blockers.state = 'fixed' THEN 0 ELSE jueki_blockers.handled_at END,
        decided_at = CASE WHEN jueki_blockers.state = 'fixed' THEN 0 ELSE jueki_blockers.decided_at END,
+       for_user = CASE WHEN jueki_blockers.state = 'fixed' OR jueki_blockers.for_user = '' THEN excluded.for_user ELSE jueki_blockers.for_user END,
+       channel_id = CASE WHEN jueki_blockers.state = 'fixed' OR jueki_blockers.for_user = '' THEN excluded.channel_id ELSE jueki_blockers.channel_id END,
+       thread_ts = CASE WHEN jueki_blockers.state = 'fixed' OR jueki_blockers.for_user = '' THEN excluded.thread_ts ELSE jueki_blockers.thread_ts END,
+       permalink = CASE WHEN jueki_blockers.state = 'fixed' OR jueki_blockers.for_user = '' THEN excluded.permalink ELSE jueki_blockers.permalink END,
+       plan = CASE WHEN jueki_blockers.state = 'fixed' OR jueki_blockers.for_user = '' THEN excluded.plan ELSE jueki_blockers.plan END,
        state = CASE WHEN jueki_blockers.state = 'fixed' THEN 'pending' ELSE jueki_blockers.state END`,
+  );
+  const unblocksStmt = db.query<{ n: number }, [number]>(
+    "SELECT COUNT(*) AS n FROM jueki_blockers WHERE kind = 'unblock' AND created_at >= ?",
   );
   const noticeStmt = db.query("UPDATE jueki_blockers SET notice_channel = $channel, notice_ts = $ts WHERE id = $id");
   const raisedStmt = db.query(
@@ -150,9 +181,21 @@ export const createJuekiRepo = (db: DbClient): JuekiRepo => {
       return r ? toBlocker(r) : undefined;
     },
     openBlocker: (b, at) => {
-      openStmt.run({ $key: b.key, $kind: b.kind, $prod: b.prod ? 1 : 0, $text: b.text, $at: at });
+      openStmt.run({
+        $key: b.key,
+        $kind: b.kind,
+        $prod: b.prod ? 1 : 0,
+        $text: b.text,
+        $at: at,
+        $forUser: b.subject?.forUser ?? "",
+        $channelId: b.subject?.channelId ?? "",
+        $threadTs: b.subject?.threadTs ?? "",
+        $permalink: b.subject?.permalink ?? "",
+        $plan: b.subject?.plan ?? "",
+      });
       return toBlocker(byKeyStmt.get(b.key) as BlockerRow);
     },
+    unblocksSince: (at) => unblocksStmt.get(at)?.n ?? 0,
     setNotice: (id, channel, ts) => void noticeStmt.run({ $id: id, $channel: channel, $ts: ts }),
     raised: (id, at) => void raisedStmt.run({ $id: id, $at: at }),
     close: (id, at) => Number(closeStmt.run({ $id: id, $at: at }).changes) > 0,

@@ -44,9 +44,14 @@ import {
   JUEKI_APPROVE_ACTION,
   JUEKI_REJECT_ACTION,
   JUEKI_NAME,
+  MAX_UNBLOCKS_PER_DAY,
+  hasSubject,
+  journeySubject,
+  otherJourneyNote,
   type BlockerFacts,
   type BlockerKind,
   type BlockerRoute,
+  type BlockerSubject,
   type OwnPr,
   type Picture,
   type PictureItem,
@@ -163,6 +168,8 @@ export type BlockerInput = {
   readonly kind: BlockerKind;
   readonly text: string;
   readonly facts: BlockerFacts;
+  /** Who is stuck, when it is a person other than the owner (the kind is then `unblock`). */
+  readonly subject?: BlockerSubject;
 };
 
 export type Jueki = {
@@ -253,7 +260,7 @@ export const createJueki = (deps: JuekiDeps): Jueki => {
         .settleInteractive(before.channel, before.ts, `*${JUEKI_NAME}* - blocker #${b.id} asked again below.`, SIGNATURES.jueki)
         .catch(logAndIgnore("jueki superseded blocker"));
     }
-    await act(`${b.prod ? "prod " : ""}blocker #${b.id} (${b.kind}) put to you: ${b.text}`);
+    await act(`${b.prod ? "prod " : ""}blocker #${b.id} (${b.kind}) put to you: ${b.forUser ? `<@${b.forUser}> is stuck: ` : ""}${b.text}`);
   };
 
   /** A pending blocker Jueki fixed itself: closed, and the message that asked is settled so nobody presses it. */
@@ -265,6 +272,22 @@ export const createJueki = (deps: JuekiDeps): Jueki => {
         .catch(logAndIgnore("jueki closed blocker"));
     }
     await act(`prod blocker #${b.id} closed: ${why}`);
+  };
+
+  /** What a turn that asked the owner to unblock a person is told (it then tells that person in one line). */
+  const unblockReply = async (b: JuekiBlocker, route: BlockerRoute): Promise<string> => {
+    if (route.route === "raise") {
+      await raise(b);
+      return "raised to the owner. Do not ask again. Tell the person in one line that the owner was asked.";
+    }
+    if (route.route === "self-fix") return "held: nothing to do here.";
+    const why: Record<typeof route.why, string> = {
+      "already-raised": "the owner was already asked about this and is not asked twice. Tell the person in one line that the owner was asked.",
+      decided: `the owner already decided it (${b.state}). ${b.state === "rejected" ? "Tell the person the owner said no." : "Carry on in their thread; do not ask again."}`,
+      "not-due": "the owner was just asked. Tell the person in one line that the owner was asked.",
+      "quiet-hours": "the owner is asked when quiet hours end. Tell the person in one line that the owner will be asked in the morning.",
+    };
+    return `held: ${why[route.why]}`;
   };
 
   const blocker = async (input: BlockerInput): Promise<string> => {
@@ -280,7 +303,11 @@ export const createJueki = (deps: JuekiDeps): Jueki => {
       if (prior?.state === "pending") await closeAsked(prior, "now fixed by me (urgent, low-risk)");
       return `self-fix: prod, urgent and low-risk (reversible, no data write, no schema change, no secret or IAM change), inside the owner's role. Do it, then run \`${deps.prefix} jueki fixed ${key} "<what you did>"\`.`;
     }
-    const b = deps.repo.openBlocker({ key, kind: input.kind, prod: input.facts.prod, text }, now);
+    if (input.subject && !prior && deps.repo.unblocksSince(now - DAY_MS) >= MAX_UNBLOCKS_PER_DAY) {
+      return "The owner has been asked to unblock people the most times in a day, so this one was not sent. Tell the person to ask the owner directly.";
+    }
+    const b = deps.repo.openBlocker({ key, kind: input.kind, prod: input.facts.prod, text, ...(input.subject ? { subject: input.subject } : {}) }, now);
+    if (input.subject) return unblockReply(b, route);
     if (route.route === "raise") {
       await raise(b);
       return input.facts.prod
@@ -340,9 +367,10 @@ export const createJueki = (deps: JuekiDeps): Jueki => {
         deps.journeys.update(j.id, { status: "done", note: "closed by Jueki: it sat at 100% and was never closed" }, now, JUEKI_ACTOR);
         await act(`closed journey #${j.id} "${j.title}": it sat at 100%`);
       } else if (picture.staleJourneys.length < PICTURE_CAP && fresh("nudge", ref("journey", j.id), now, NUDGE_REPEAT_MS)) {
+        const other = journeySubject(j, deps.ownerSlackId);
         picture.staleJourneys.push({
           ref: `journey #${j.id}`,
-          line: `${j.status} ${j.progress}%, quiet for ${ageLine(action.idleMs)} - "${j.title}"${j.now ? ` (now: ${j.now})` : ""}${j.prs.length > 0 ? ` ${j.prs.join(" ")}` : ""}`,
+          line: `${j.status} ${j.progress}%, quiet for ${ageLine(action.idleMs)} - "${j.title}"${j.now ? ` (now: ${j.now})` : ""}${j.prs.length > 0 ? ` ${j.prs.join(" ")}` : ""}${other ? otherJourneyNote(other, deps.prefix) : ""}`,
         });
       }
     }
@@ -440,6 +468,8 @@ export const createJueki = (deps: JuekiDeps): Jueki => {
     await raiseDue(now);
     const approved = deps.repo.approvedUnhandled();
     for (const b of approved) {
+      // An approved unblock was acted on at the press, in the stuck person's thread (and marked handled): never go ahead "as the owner" on it here.
+      if (hasSubject(b)) continue;
       picture.approvedBlockers.push({ ref: `blocker #${b.id} (${b.kind})`, line: `${b.text} - the owner approved: go ahead as them` });
     }
 

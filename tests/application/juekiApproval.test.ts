@@ -24,7 +24,7 @@ const setup = () => {
   };
   const press = (over: Partial<Parameters<typeof decideJuekiPress>[1]> = {}) =>
     decideJuekiPress(deps, { slackUserId: OWNER, actionId: JUEKI_APPROVE_ACTION, value: String(b.id), channel: "D1", messageTs: "5.5", ...over });
-  return { repo, id: b.id, settled, press, approved: () => approved };
+  return { repo, id: b.id, settled, press, deps, approved: () => approved };
 };
 
 describe("decideJuekiPress", () => {
@@ -71,3 +71,56 @@ describe("decideJuekiPress", () => {
     expect(juekiPressNotice({ kind: "approved", id: 1 })).toBeUndefined();
   });
 });
+
+describe("decideJuekiPress: a blocker about another person", () => {
+  const subject = { forUser: "U0PAL000001", channelId: "C0TEST00001", threadTs: "1795000000.123456", permalink: "https://team.slack.com/archives/C0TEST00001/p1795000000123456", plan: "open the PR for them" };
+  const setupUnblock = () => {
+    const s = setup();
+    const b = s.repo.openBlocker({ key: "unblock-1", kind: "unblock", prod: false, text: "needs write access", subject }, 1);
+    s.repo.setNotice(b.id, "D1", "7.7");
+    const press = (over: Partial<Parameters<typeof decideJuekiPress>[1]> = {}) =>
+      decideJuekiPress(s.deps, { slackUserId: OWNER, actionId: JUEKI_APPROVE_ACTION, value: String(b.id), channel: "D1", messageTs: "7.7", ...over });
+    return { ...s, ubId: b.id, press };
+  };
+
+  test("the owner's approve starts the work in the stuck person's thread, is settled with who decided, and is not left for a tick", async () => {
+    const s = setupUnblock();
+    const out = await s.press();
+    expect(out).toMatchObject({ kind: "approved", id: s.ubId, unblock: { channelId: "C0TEST00001", threadTs: "1795000000.123456" } });
+    if (out.kind !== "approved" || !out.unblock) throw new Error("no unblock");
+    expect(out.unblock.brief).toContain("approved by the owner");
+    expect(out.unblock.brief).toContain("<@U0PAL000001>");
+    expect(out.unblock.brief).toContain("plan: open the PR for them");
+    expect(s.repo.blocker(s.ubId)).toMatchObject({ state: "approved", handledAt: 77 });
+    expect(s.repo.approvedUnhandled().map((b) => b.id)).not.toContain(s.ubId);
+    expect(s.settled.at(-1)!.text).toContain("Approved by <@U0OWNER0001>: unblocking them");
+    expect(s.approved()).toBe(0);
+  });
+
+  test("the owner's reject names their thread and a plain line telling them no, no turn", async () => {
+    const s = setupUnblock();
+    const out = await s.press({ actionId: JUEKI_REJECT_ACTION });
+    expect(out).toMatchObject({ kind: "rejected", unblock: { channelId: "C0TEST00001", threadTs: "1795000000.123456" } });
+    if (out.kind !== "rejected" || !out.unblock) throw new Error("no unblock");
+    expect(out.unblock.notice).toContain("<@U0PAL000001>");
+    expect(out.unblock.notice).toContain("said no");
+    expect(s.repo.blocker(s.ubId)?.state).toBe("rejected");
+    expect(s.settled.at(-1)!.text).toContain("Rejected by <@U0OWNER0001>: I tell them no");
+  });
+
+  test("only the owner, only on the notice as asked: anyone else or a made-up message starts nothing", async () => {
+    const s = setupUnblock();
+    expect(await s.press({ slackUserId: "U0PAL000001" })).toMatchObject({ kind: "refused", why: "not-owner" });
+    expect(await s.press({ messageTs: "1.1" })).toMatchObject({ kind: "refused", why: "wrong-message" });
+    expect(await s.press({ channel: "C0TEST00001", messageTs: "1795000000.123456" })).toMatchObject({ kind: "refused", why: "wrong-message" });
+    expect(s.repo.blocker(s.ubId)?.state).toBe("pending");
+  });
+
+  test("a second press cannot start the thread's work again", async () => {
+    const s = setupUnblock();
+    await s.press();
+    const again = await s.press();
+    expect(again).toEqual({ kind: "decided", id: s.ubId, state: "approved" });
+  });
+});
+

@@ -159,7 +159,7 @@ Every command has two interfaces - use whichever you like. Both triggers are con
 - **slash**: `<SLASH_COMMAND> <command> <args>` (register that single slash command in the Slack app config; it sub-routes to all commands. Socket Mode needs no request URL)
 - **message**: `<COMMAND_PREFIX> <command> <args>` (or the legacy `!<command>`), in a DM or by @-mentioning the bot
 
-A few commands are **internal**: the bot's own tools (today `journey`, its work log, and `bug-report`, which DMs the owner a bug it found in itself with Approve / Reject), run only by the brain in its own turn through the run helper. A typed line, the slash command, the menu, a schedule or the dashboard gets a short refusal whatever the caller's role (the owner included); they are not in `help`, the command menu, the dashboard command list or the role grants, because no role holds them - the brain runs them as whoever its turn serves.
+A few commands are **internal**: the bot's own tools (today `journey`, its work log, `bug-report`, which DMs the owner a bug it found in itself with Approve / Reject, and `unblock`, which DMs the owner to unblock a person who is stuck on something only the owner can give, with Approve / Reject: an Approve carries on in that person's thread), run only by the brain in its own turn through the run helper. A typed line, the slash command, the menu, a schedule or the dashboard gets a short refusal whatever the caller's role (the owner included); they are not in `help`, the command menu, the dashboard command list or the role grants, because no role holds them - the brain runs them as whoever its turn serves.
 
 Every command is gated by its own `command:<name>` grant, and its sub-actions by the permission named in the cell (see [Roles & tool access](#roles--tool-access)). **Only `owner` is hard-coded.** `pal`, `executer` and `admin` are custom roles like any other: the *seeded to* column only says which of them a fresh install starts with the grant, and the owner moves it with `role grant` / `role revoke` or the Roles page. A role you create holds exactly what you grant it. Rows marked *owner* are hard-coded and never grantable.
 
@@ -891,7 +891,7 @@ spoken in it, and at most 3 threads are nudged per sweep.
 
 ## How the brain runs a command
 
-The brain can run the bot's own commands for whoever it is talking to (and its internal ones, like `journey` and `bug-report`, which nobody else may run). It never
+The brain can run the bot's own commands for whoever it is talking to (and its internal ones, like `journey`, `bug-report` and `unblock`, which nobody else may run). It never
 names the actor - the bot mints a one-turn **ticket** bound to the current
 speaker, and the command runs as them.
 

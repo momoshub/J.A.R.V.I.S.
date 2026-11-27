@@ -986,9 +986,10 @@ export const createKitListeners = (
   /**
    * Approve / Reject on a Jueki blocker. Decided HERE and never handed to the model
    * (`onKitAction` skips `JUEKI_ACTION_PREFIX`): only the owner's press on the latest
-   * notice counts, checked in `decideJuekiPress`. An approval is stored; Jueki's next tick acts on it.
+   * notice counts, checked in `decideJuekiPress`. An approval is stored and Jueki's next tick acts on it; one about another person
+   * (an unblock) is acted on here, in THEIR thread.
    */
-  const onJuekiPress = async ({ ack, body, action, client }: KitActionArgs) => {
+  const onJuekiPress = async ({ ack, body, action, client, context }: KitActionArgs) => {
     await ack();
     const by = body.user?.id;
     const value = action.value;
@@ -1008,6 +1009,17 @@ export const createKitListeners = (
         await (client as KitClient).chat
           .postEphemeral?.({ channel, user: by, thread_ts: body.message?.thread_ts ?? body.message?.ts, text: notice })
           .catch(logAndIgnore("jueki press notice"));
+      }
+      // A blocker about another person: carry on in THEIR thread, as the owner who pressed (an approve),
+      // or tell them no in one line (a reject, plain code, no turn).
+      if (outcome.kind === "approved" && outcome.unblock) {
+        const { channelId, threadTs, brief } = outcome.unblock;
+        await kitTurn(client, context, by, { channelId, threadTs }, brief);
+      } else if (outcome.kind === "rejected" && outcome.unblock) {
+        const { channelId, threadTs, notice: text } = outcome.unblock;
+        await (client as KitClient).chat
+          .postMessage({ channel: channelId, thread_ts: threadTs, text })
+          .catch(logAndIgnore("jueki unblock reject post"));
       }
     } catch (err) {
       log(`jueki press failed: ${err instanceof Error ? err.message : String(err)}`);

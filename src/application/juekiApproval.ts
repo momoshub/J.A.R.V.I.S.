@@ -7,13 +7,19 @@
  * Jueki could approve its own blocker with nobody pressing. Only a press
  * carries `body.user.id` and the channel/ts of the message pressed, and only
  * the notice as it was LAST raised counts (a prod re-ask supersedes the old one).
- * An approval is not acted on here: it is stored, and the next tick hands it to
- * the turn (`approvedUnhandled`).
+ * An approval of the owner's own wall is not acted on here: it is stored, and the
+ * next tick hands it to the turn (`approvedUnhandled`). A blocker about ANOTHER
+ * person (an unblock, see `BlockerSubject`) is acted on at the press: the outcome
+ * names that person's thread and what to do there (a turn on approve, a plain
+ * line on reject), and the row is marked handled so no tick repeats it.
  */
 import {
   JUEKI_APPROVE_ACTION,
   JUEKI_REJECT_ACTION,
+  hasSubject,
   settledBlockerText,
+  unblockApprovedBrief,
+  unblockRejectedText,
 } from "../domain/jueki.ts";
 import { SIGNATURES } from "../domain/messageFooter.ts";
 import type { JuekiBlocker, JuekiRepo } from "../infrastructure/db/juekiRepo.ts";
@@ -34,8 +40,10 @@ export type JuekiPressOutcome =
   | { readonly kind: "unknown" }
   | { readonly kind: "refused"; readonly why: "not-owner" | "wrong-message"; readonly id: number }
   | { readonly kind: "decided"; readonly id: number; readonly state: JuekiBlocker["state"] }
-  | { readonly kind: "approved"; readonly id: number }
-  | { readonly kind: "rejected"; readonly id: number };
+  /** `unblock`: set for a blocker about another person; the owner's approval carries on in their thread with this brief. */
+  | { readonly kind: "approved"; readonly id: number; readonly unblock?: { readonly channelId: string; readonly threadTs: string; readonly brief: string } }
+  /** `unblock`: the line to post in the stuck person's thread. */
+  | { readonly kind: "rejected"; readonly id: number; readonly unblock?: { readonly channelId: string; readonly threadTs: string; readonly notice: string } };
 
 export const decideJuekiPress = async (
   deps: JuekiApprovalDeps,
@@ -55,6 +63,14 @@ export const decideJuekiPress = async (
   await deps.slack
     ?.settleInteractive(b.noticeChannel, b.noticeTs, settledBlockerText(b, verdict, press.slackUserId), SIGNATURES.jueki)
     .catch(logAndIgnore("jueki blocker settle"));
+  if (hasSubject(b)) {
+    // Acted on here, in their thread: nothing is left for a tick (and Jueki never goes ahead "as the owner" on it).
+    deps.repo.markHandled(b.id, deps.clock());
+    const where = { channelId: b.channelId, threadTs: b.threadTs };
+    return verdict === "approved"
+      ? { kind: "approved", id: b.id, unblock: { ...where, brief: unblockApprovedBrief(b) } }
+      : { kind: "rejected", id: b.id, unblock: { ...where, notice: unblockRejectedText(b) } };
+  }
   if (verdict === "approved") deps.onApproved?.();
   return { kind: verdict, id: b.id };
 };

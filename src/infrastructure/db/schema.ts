@@ -1592,7 +1592,8 @@ const migrateReviewRounds = (db: Database): void => {
  * Jueki's own state (domain/jueki.ts): the day's digest lines and dedupe marks
  * (`jueki_actions`), the one message the digest is edited on (`jueki_digest`)
  * and the walls it raised to the owner (`jueki_blockers`, one row per key, so
- * the same non-prod one is never put twice). New tables, so a rerun is a no-op.
+ * the same non-prod one is never put twice). New tables, so a rerun is a no-op;
+ * v55 adds the blocker's subject columns (a person other than the owner who is stuck).
  */
 const migrateJueki = (db: Database): void => {
   db.exec(`
@@ -1627,8 +1628,13 @@ const migrateJueki = (db: Database): void => {
       decided_at     INTEGER NOT NULL DEFAULT 0
     );
   `);
+  // v55: a blocker may be about a person other than the owner (who is stuck, and where their thread is).
+  const cols = db.query<{ name: string }, []>("PRAGMA table_info(jueki_blockers)").all().map((c) => c.name);
+  for (const col of ["for_user", "channel_id", "thread_ts", "permalink", "plan"]) {
+    if (!cols.includes(col)) db.exec(`ALTER TABLE jueki_blockers ADD COLUMN ${col} TEXT NOT NULL DEFAULT ''`);
+  }
   const { user_version } = db.query<{ user_version: number }, []>("PRAGMA user_version").get() ?? {
     user_version: 0,
   };
-  if (user_version < 54) db.exec("PRAGMA user_version = 54;");
+  if (user_version < 55) db.exec("PRAGMA user_version = 55;");
 };

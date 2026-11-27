@@ -13,6 +13,15 @@ import {
   isLowRisk,
   isUrgent,
   journeyAction,
+  journeySubject,
+  blockerText,
+  settledBlockerText,
+  otherJourneyNote,
+  parseUnblock,
+  parseUserId,
+  unblockApprovedBrief,
+  unblockKey,
+  unblockRejectedText,
   juekiTurnText,
   lapsedWorkerDispatch,
   localClock,
@@ -367,5 +376,129 @@ describe("digest and turn text", () => {
   });
   test("in quiet hours the turn is told not to message anyone", () => {
     expect(juekiTurnText("d", true, emptyPicture, "//bot")).toContain("quiet hours");
+  });
+});
+
+const LINK = "https://team.slack.com/archives/C0TEST00001/p1795000000123456";
+const THREAD = { channelId: "C0TEST00001", threadTs: "1795000000.123456" };
+
+describe("a blocker about another person", () => {
+  test("`--for` and `--thread` together name who is stuck and where; the kind becomes unblock", () => {
+    const r = parseBlockerArgs(["journey-87", "--for", "<@U0PAL000001>", "--thread", `<${LINK}|here>`, "needs", "a", "go-ahead"]);
+    expect(r).toMatchObject({ ok: true, key: "journey-87", kind: "unblock", text: "needs a go-ahead" });
+    if (r.ok) expect(r.subject).toEqual({ forUser: "U0PAL000001", ...THREAD, permalink: LINK, plan: "" });
+  });
+
+  test("one without the other, a bad user or a link that is not a Slack message is refused", () => {
+    expect(parseBlockerArgs(["k", "--for", "U0PAL000001", "x"])).toMatchObject({ ok: false });
+    expect(parseBlockerArgs(["k", "--thread", LINK, "x"])).toMatchObject({ ok: false });
+    expect(parseBlockerArgs(["k", "--for", "bob", "--thread", LINK, "x"])).toMatchObject({ ok: false });
+    expect(parseBlockerArgs(["k", "--for", "U0PAL000001", "--thread", "https://example.com/x", "x"])).toMatchObject({ ok: false });
+  });
+
+  test("a blocker with no subject is read as before", () => {
+    const r = parseBlockerArgs(["k", "--kind", "decision", "x"]);
+    expect(r).toMatchObject({ ok: true, kind: "decision" });
+    if (r.ok) expect(r.subject).toBeUndefined();
+  });
+
+  test("parseUserId takes an id or a mention and nothing else", () => {
+    expect(parseUserId("U0PAL000001")).toBe("U0PAL000001");
+    expect(parseUserId("<@U0PAL000001>")).toBe("U0PAL000001");
+    expect(parseUserId("<@U0PAL000001|bob>")).toBe("U0PAL000001");
+    expect(parseUserId("jueki")).toBeUndefined();
+    expect(parseUserId("<!channel>")).toBeUndefined();
+  });
+
+  test("the owner's DM text says who is stuck, the plan, and what each button does", () => {
+    const text = blockerText({ id: 4, kind: "unblock", prod: false, text: "needs write access to the repo", forUser: "U0PAL000001", permalink: LINK, plan: "open the PR for them" }, 0);
+    expect(text).toContain("<@U0PAL000001> is stuck: needs write access to the repo. Plan: open the PR for them.");
+    expect(text).toContain("Approve = unblock them, I continue in their thread; Reject = I tell them no");
+    expect(text).not.toContain("go ahead as you");
+    // The owner's own wall keeps its words.
+    expect(blockerText({ id: 5, kind: "decision", prod: false, text: "which one?" }, 0)).toContain("Approve = go ahead as you");
+  });
+
+  test("the settled text says who decided", () => {
+    const b = { id: 4, kind: "unblock" as const, prod: false, text: "needs access", forUser: "U0PAL000001" };
+    expect(settledBlockerText(b, "approved", "U0OWNER0001")).toContain("Approved by <@U0OWNER0001>: unblocking them");
+    expect(settledBlockerText(b, "rejected", "U0OWNER0001")).toContain("Rejected by <@U0OWNER0001>: I tell them no");
+  });
+
+  test("the approve brief names the owner's approval, the person, the need and the plan; the reject line is plain", () => {
+    const brief = unblockApprovedBrief({ id: 4, forUser: "U0PAL000001", text: "needs access", plan: "open the PR" });
+    expect(brief).toContain("Blocker #4 is approved by the owner");
+    expect(brief).toContain("<@U0PAL000001>");
+    expect(brief).toContain("need: needs access");
+    expect(brief).toContain("plan: open the PR");
+    expect(unblockApprovedBrief({ id: 4, forUser: "U0PAL000001", text: "x", plan: "" })).not.toContain("plan:");
+    expect(unblockRejectedText({ forUser: "U0PAL000001", text: "needs access" })).toContain("<@U0PAL000001> the owner looked at this and said no");
+  });
+});
+
+describe("parseUnblock and its dedupe key", () => {
+  const line = `--thread ${LINK} --for U0PAL000001 --need "needs the staging grant" --plan "run the migration for them"`;
+
+  test("reads the thread, person, need and plan, in any order", () => {
+    const r = parseUnblock(line);
+    expect(r).toMatchObject({ ok: true });
+    if (r.ok) expect(r.input).toEqual({ need: "needs the staging grant", subject: { forUser: "U0PAL000001", ...THREAD, permalink: LINK, plan: "run the migration for them" } });
+    expect(parseUnblock(`--need="x" --for=U0PAL000001 --thread=${LINK}`)).toMatchObject({ ok: true });
+  });
+
+  test("a thread reply link resolves to its root thread", () => {
+    const r = parseUnblock(`--thread ${LINK}?thread_ts=1795000000.000001&cid=C0TEST00001 --for U0PAL000001 --need x`);
+    if (r.ok) expect(r.input.subject.threadTs).toBe("1795000000.000001");
+    else throw new Error(r.error);
+  });
+
+  test("the plan is optional; the need, the person and the thread are not", () => {
+    expect(parseUnblock(`--thread ${LINK} --for U0PAL000001 --need x`)).toMatchObject({ ok: true });
+    expect(parseUnblock(`--thread ${LINK} --for U0PAL000001`)).toMatchObject({ ok: false });
+    expect(parseUnblock(`--thread ${LINK} --need x`)).toMatchObject({ ok: false });
+    expect(parseUnblock(`--for U0PAL000001 --need x`)).toMatchObject({ ok: false });
+    expect(parseUnblock(`--thread ${LINK} --for U0PAL000001 --need x --nope y`)).toMatchObject({ ok: false });
+    expect(parseUnblock(`--thread ${LINK} --for U0PAL000001 --need`)).toMatchObject({ ok: false });
+  });
+
+  test("free text cannot fire a mention or a link", () => {
+    const r = parseUnblock(`--thread ${LINK} --for U0PAL000001 --need "ping <!channel> and <@U0OTHER0003>"`);
+    if (r.ok) expect(r.input.need).not.toMatch(/[<>]/);
+    else throw new Error(r.error);
+  });
+
+  test("the same thread and need are one key whatever the case and punctuation; another thread or need is another", () => {
+    const key = (need: string, link = LINK) => {
+      const r = parseUnblock(`--thread ${link} --for U0PAL000001 --need "${need}"`);
+      if (!r.ok) throw new Error(r.error);
+      return unblockKey(r.input);
+    };
+    expect(key("Needs the staging grant!")).toBe(key("needs the  staging grant"));
+    expect(key("needs the staging grant")).not.toBe(key("needs the prod grant"));
+    expect(key("x", LINK)).not.toBe(key("x", "https://team.slack.com/archives/C0TEST00001/p1795000999000000"));
+    expect(key("x").length).toBeLessThanOrEqual(80);
+  });
+});
+
+describe("a journey somebody else asked for", () => {
+  test("only a journey opened by a person other than the owner has a subject", () => {
+    expect(journeySubject({ createdBy: "U0PAL000001", permalink: LINK }, "U0OWNER0001")).toEqual({ user: "U0PAL000001", link: LINK });
+    expect(journeySubject({ createdBy: "U0OWNER0001", permalink: LINK }, "U0OWNER0001")).toBeUndefined();
+    expect(journeySubject({ createdBy: "jueki", permalink: LINK }, "U0OWNER0001")).toBeUndefined();
+    expect(journeySubject({ createdBy: "", permalink: "" }, "U0OWNER0001")).toBeUndefined();
+  });
+
+  test("the note says it is not the owner's own and how to raise it for that person", () => {
+    const note = otherJourneyNote({ user: "U0PAL000001", link: LINK }, "//bot");
+    expect(note).toContain("NOT the owner's own");
+    expect(note).toContain("--for U0PAL000001");
+    expect(note).toContain(`--thread ${LINK}`);
+    expect(otherJourneyNote({ user: "U0PAL000001", link: "" }, "//bot")).not.toContain("--thread");
+  });
+
+  test("the turn text tells Jueki not to start or drop another person's journey as the owner", () => {
+    const text = juekiTurnText("2026-11-27", false, emptyPicture, "//bot");
+    expect(text).toContain("NOT the owner's own");
+    expect(text).toContain("--for <user> --thread <link>");
   });
 });
