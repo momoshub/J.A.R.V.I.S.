@@ -10,12 +10,8 @@ const fake = (opts: { failures?: (call: number, op: string) => unknown } = {}) =
   const t0 = Date.now();
   let n = 0;
   const textOf = (v: StatusView): string => {
-    const lines = v.blocks.flatMap((b) => {
-      const block = b as unknown as { type: string; title?: string; elements?: { text: string }[]; tasks?: { status: string; title: string }[] };
-      if (block.type === "context") return [block.elements?.[0]?.text ?? ""];
-      return (block.tasks ?? []).map((t) => `${t.status}: ${t.title}`);
-    });
-    return lines.join("\n");
+    const [head, ...cards] = v.blocks as unknown as [{ elements: { text: string }[] }, ...{ status: string; title: string }[]];
+    return [head.elements[0]?.text ?? "", ...cards.map((t) => `${t.status}: ${t.title}`)].join("\n");
   };
   const hit = (op: Call["op"], ts: string | undefined, text: string): void => {
     const failure = opts.failures?.(++n, op);
@@ -127,7 +123,7 @@ describe("the status message while the turn runs", () => {
     const m = createStatusMessage({ api: f.api, ...FAST });
     m.thinking("working on it...");
     await Bun.sleep(15);
-    expect(f.calls[0]).toMatchObject({ op: "post", text: "in_progress: working on it..." });
+    expect(f.calls[0]).toMatchObject({ op: "post", text: "Burning token…\nin_progress: working on it..." });
     m.step({ id: "a", title: "A", state: "in_progress" });
     await Bun.sleep(80);
     expect(f.calls.at(-1)).toMatchObject({ op: "update", text: "Burning token… 1 step\nin_progress: A" });

@@ -564,7 +564,8 @@ describe("createHandler streaming truth table", () => {
     expect(r.status.posts).toHaveLength(1);
     expect(r.status.posts[0]).toMatchObject({ channel: "C1", thread_ts: "000.9" });
     const lastBlocks = JSON.stringify((r.status.updates.at(-1) ?? r.status.posts[0])?.blocks);
-    expect(lastBlocks).toContain('"type":"plan"');
+    expect(lastBlocks).toContain('"type":"task_card"');
+    expect(lastBlocks).not.toContain('"type":"plan"');
     expect(lastBlocks).toContain("(showing ");
   });
   test("a long answer still rolls over, and the steps take no room from it", async () => {
