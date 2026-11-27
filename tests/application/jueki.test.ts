@@ -32,7 +32,7 @@ const setup = (start = NOON, over: Partial<JuekiDeps> = {}) => {
   const journeys = createJourneyRepo(db);
   const clock = { t: start };
   const posts: { text: string; by?: string }[] = [];
-  const updates: { channel: string; ts: string; text: string; by?: string }[] = [];
+  const updates: { channel: string; ts: string; text: string; by?: string | null }[] = [];
   const asked: { text: string; ids: string[]; by?: string }[] = [];
   const settled: { channel: string; ts: string; text: string }[] = [];
   const turns: JuekiTurnRequest[] = [];
