@@ -238,6 +238,13 @@ const schema = z
     GITHUB_APP_ALLOWED_OWNERS: z.string().default(""),
     // Label that calls the app when added to an issue or PR.
     GITHUB_APP_LABEL: z.string().default("jarvis"),
+    // Seatbelt (macOS sandbox-exec) around every turn and Orca worker: no keychain, no gh login, no
+    // App key, no bot .env / databases, no Orca runtime token, no way to start a process outside
+    // it. GitHub and Orca are reached through the bot's ticketed proxy instead. Off (the
+    // default) changes nothing; "on" also needs the one-time steps in the README ("Sandbox").
+    SEATBELT: z.enum(["on", "off"]).default("off"),
+    // The secret that signs seatbelt sessions (created by bin/sandboxed.sh, read by the bot).
+    SEATBELT_SECRET_PATH: z.string().default(join(homedir(), ".config", "jarvis", "sandbox-secret")),
     // The bot's own merge gate (`merge-gate` action): when on, the bot merges a
     // PR itself, with the app's credential, once checks, review and verify hold
     // on the named sha, and `bin/merge-when-green.sh` holds only a ticket. Off
@@ -376,6 +383,8 @@ export type AppConfig = {
   restartTurnBudgetMs: number;
   /** Idle-worker reaper: sweep interval (0 = off), idle threshold, log-only mode. */
   orcaReap: { intervalMs: number; idleMs: number; dryRun: boolean };
+  /** The seatbelt (`SEATBELT=on`): every turn is started through `bin/sandboxed-claude.sh`, and the proxy checks sessions signed with `secretPath`. */
+  seatbelt: { enabled: boolean; secretPath: string };
   /** Stale-promise sweep: interval (0 = off), minimum age of the promise, look-back window, nudges per sweep. */
   stalePromise: { intervalMs: number; minAgeMs: number; windowMs: number; maxNudges: number };
   /** The coordinator (domain/coordinator.ts): its display name (what it signs with), tick interval (0 = off), stale journey age, prod blocker re-ask, quiet hours (local hours) and the zone's offset in minutes east of UTC. */
@@ -501,6 +510,7 @@ export const loadConfig = (source: Record<string, string | undefined> = process.
     },
     ...(env.OFFLINE_ALARM_CHANNEL ? { offlineAlarmChannel: env.OFFLINE_ALARM_CHANNEL } : {}),
     ...(env.SLASH_MIRROR_CHANNEL ? { slashMirrorChannel: env.SLASH_MIRROR_CHANNEL } : {}),
+    seatbelt: { enabled: env.SEATBELT === "on", secretPath: expandHome(env.SEATBELT_SECRET_PATH) },
     githubApp: {
       ...(env.GITHUB_APP_ID?.trim() ? { appId: env.GITHUB_APP_ID.trim() } : {}),
       privateKeyPath: env.GITHUB_APP_PRIVATE_KEY_PATH,

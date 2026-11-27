@@ -187,6 +187,26 @@ describe("dashboard static + api", () => {
     expect((await build().dash.handle(postJson("/api/github-app/action", { ticket: "t" }))).status).toBe(503);
   });
 
+  test("the exec proxy endpoint passes the command line on, relays the answer and reports refusals", async () => {
+    const seen: unknown[] = [];
+    const d = build({
+      execProxy: async (req) => {
+        seen.push(req);
+        return req.argv[0] === "merge" ? { ok: false, status: 403, error: "no merging" } : { ok: true, code: 0, stdout: "out", stderr: "" };
+      },
+    });
+    const ok = await d.dash.handle(postJson("/api/proxy/exec", { tool: "gh", bearer: "b", argv: ["pr", "view", "1"], repoHint: "o/r", stdin: "s", handle: "term_x" }));
+    expect(await ok.json()).toEqual({ ok: true, code: 0, stdout: "out", stderr: "" });
+    expect(seen[0]).toEqual({ bearer: "b", tool: "gh", argv: ["pr", "view", "1"], stdin: "s", repoHint: "o/r", handle: "term_x" });
+    const no = await d.dash.handle(postJson("/api/proxy/exec", { tool: "gh", bearer: "b", argv: ["merge"] }));
+    expect(no.status).toBe(403);
+    expect(((await no.json()) as { error: string }).error).toBe("no merging");
+    expect((await d.dash.handle(postJson("/api/proxy/exec", { tool: "sh", argv: [] }))).status).toBe(400);
+    expect((await d.dash.handle(postJson("/api/proxy/exec", { tool: "gh", argv: [1] }))).status).toBe(400);
+    expect(seen).toHaveLength(2);
+    expect((await build().dash.handle(postJson("/api/proxy/exec", { tool: "gh", argv: [] }))).status).toBe(503);
+  });
+
   test("without self-restart wired, it refuses rather than pretending", async () => {
     const res = await build().dash.handle(postJson("/api/restart", {}));
     expect(res.status).toBe(503);

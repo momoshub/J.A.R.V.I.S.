@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# `gh` inside the sandbox: the sandbox holds no GitHub login, so the command goes to
+# the bot, which runs the real gh with its own and returns the output.
+#
+# Allowed (the rest is refused with the reason): pr view|diff|list|checks|status,
+# issue view|list|status, run list|view, workflow list|view, repo view, api GET repos/...;
+# and, with a ticket that carries the grant, pr comment|review|edit|close|reopen|create
+# and issue comment. `pr merge` is never proxied. See src/domain/proxyPolicy.ts.
+set -uo pipefail
+HERE=$(cd "$(dirname "$0")" && pwd -P)
+# shellcheck source=_proxy.sh
+. "$HERE/_proxy.sh"
+
+# Help and version need no credential: run the real one right here.
+for a in "$@"; do
+  case "$a" in
+    --help | -h | --version) real=$(PATH=${PATH#"$HERE":} command -v gh) && exec "$real" "$@" ;;
+  esac
+done
+[ "${1:-}" = help ] && { real=$(PATH=${PATH#"$HERE":} command -v gh) && exec "$real" "$@"; }
+
+# `gh api` takes -F key=value fields, not files (and the proxy refuses them): leave its arguments alone.
+if [ "${1:-}" = api ]; then
+  REWRITTEN=("$@")
+  STDIN_FILE=""
+  TMP_STDIN=""
+else
+  rewrite_file_args "$@"
+fi
+trap '[ -z "${TMP_STDIN:-}" ] || rm -f "$TMP_STDIN"' EXIT
+proxy_exec gh "$STDIN_FILE" ${REWRITTEN[@]+"${REWRITTEN[@]}"}

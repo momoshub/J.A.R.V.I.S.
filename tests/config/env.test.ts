@@ -209,4 +209,11 @@ describe("loadConfig", () => {
       reviewer: "checker",
     });
   });
+
+  test("SEATBELT is off unless switched on, and the secret path expands ~", () => {
+    expect(loadConfig(base).seatbelt).toEqual({ enabled: false, secretPath: join(homedir(), ".config", "jarvis", "sandbox-secret") });
+    expect(loadConfig({ ...base, SEATBELT: "on", SEATBELT_SECRET_PATH: "~/s" }).seatbelt).toEqual({ enabled: true, secretPath: join(homedir(), "s") });
+    expect(loadConfig({ ...base, SEATBELT: "off" }).seatbelt.enabled).toBe(false);
+    expect(() => loadConfig({ ...base, SEATBELT: "yes" })).toThrow();
+  });
 });

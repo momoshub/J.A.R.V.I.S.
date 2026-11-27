@@ -1,0 +1,228 @@
+;; Seatbelt profile for every process that acts on a model's behalf (a turn, an
+;; Orca worker). Rendered by bin/sandboxed.sh, which fills in the words between two at-signs
+;; (paths are checked first: no quote or backslash in them) and starts the
+;; command under `sandbox-exec -p`. Evaluation is "last matching rule wins", so
+;; an allow written after a deny carves an exception out of it.
+;;
+;; The idea: the model's shell can do anything a person can, so the profile takes
+;; away every CREDENTIAL it knows of (the keychain, gh's login, the App key, the bot's .env and
+;; databases, the Orca runtime token, the SSH agent) and every way it knows to start
+;; something OUTSIDE the sandbox (launchd, LaunchServices, Apple Events, cron/at,
+;; files the host runs on login). KNOWN OPEN HOLES (see CLAUDE.md, "Seatbelt": do not switch it on yet): Claude's shell
+;; snapshots, other repos under ~/Workspaces, some home dot-files, package caches. The home folder is deny-by-default for reads and writes, with an
+;; allowlist; outside the home, and outside the bot's checkout, it is still a denylist. What a sandboxed caller still needs from those
+;; credentials goes through the bot's ticketed proxy (bin/sandbox-shims/*).
+;; The file is covered by tests/infrastructure/sandboxProfile.test.ts.
+(version 1)
+(allow default)
+
+;; --- the keychain: `security`, gh's stored token, Claude's own login ---------
+(deny mach-lookup
+  (global-name "com.apple.SecurityServer")
+  (global-name "com.apple.securityd.xpc")
+  (global-name "com.apple.security.agent"))
+
+;; --- starting something outside the sandbox ---------------------------------
+;; launchd (launchctl submit / bootstrap / kickstart), LaunchServices (open,
+;; osascript "tell application", Terminal), Apple Events.
+(deny mach-lookup
+  (global-name-prefix "com.apple.xpc.launchd")
+  (global-name-prefix "com.apple.coreservices")
+  (global-name-prefix "com.apple.lsd"))
+;; Scheduled and one-shot jobs run later, outside the sandbox.
+(deny process-exec
+  (literal "/usr/bin/crontab") (literal "/usr/bin/at") (literal "/usr/bin/atq") (literal "/usr/bin/atrm") (literal "/usr/bin/batch")
+  (literal "/usr/bin/osascript") (literal "/usr/bin/open") (literal "/bin/launchctl") (literal "/usr/bin/security"))
+
+;; --- agents that sign or fetch for the user ---------------------------------
+;; The ssh agent (a launchd Listeners socket or a password manager's agent.sock).
+(deny network-outbound
+  (remote unix-socket (path-regex #"^/(private/)?(var/run|tmp)/com\.apple\.launchd\.[^/]+/Listeners$"))
+  (remote unix-socket (path-regex #"/agent\.sock$"))
+  (remote unix-socket (path-literal "@SSH_AUTH_SOCK@")))
+;; Orca's runtime socket: through it a process can open an unsandboxed terminal and type into it.
+(deny network-outbound
+  (remote unix-socket (path-regex #"/Application Support/orca/")))
+
+;; --- the home is closed by default -------------------------------------------
+;; A denylist of secrets never ends (round after round of review found another credential
+;; store, another file the owner runs later). So the home is denied for reading AND writing,
+;; and only what a worker really uses is allowed back. The specific denies further down
+;; still win over these allows (last match wins).
+(deny file-read* (subpath "@HOME@"))
+(allow file-read*
+  (literal "@HOME@")
+  (regex #"^@HOME_RE@/\.[^/]*$")
+  (subpath "@HOME@/Workspaces")
+  (subpath "@HOME@/.jarvis/worker-home")
+  (subpath "@HOME@/.jarvis/briefs")
+  (subpath "@HOME@/.claude")
+  (subpath "@HOME@/.bun")
+  (subpath "@HOME@/.cache")
+  (subpath "@HOME@/.npm")
+  (subpath "@HOME@/.local")
+  (subpath "@HOME@/.cargo")
+  (subpath "@HOME@/.rustup")
+  (subpath "@HOME@/.nvm")
+  (subpath "@HOME@/.config/git")
+  (subpath "@HOME@/Library/Caches")
+  (subpath "@HOME@/Library/Preferences")
+  (subpath "@HOME@/Library/Logs")
+  (subpath "@HOME@/Library/Fonts"))
+;; ... but not what those folders hold that is a secret: Claude's own config carries MCP credentials, and
+;; shell rc and history files often hold exported tokens and typed passwords.
+(deny file-read*
+  (literal "@HOME@/.claude.json")
+  (regex #"^@HOME_RE@/\.claude\.json\.")
+  (subpath "@HOME@/.claude/dbhub")
+  (regex #"^@HOME_RE@/\.(zshrc|zshenv|zprofile|zlogin|bashrc|bash_profile|bash_login|profile)[^/]*$")
+  (regex #"^@HOME_RE@/\.[^/]*_history$")
+  (regex #"^@HOME_RE@/\.(viminfo|lesshst|psql_history|mysql_history|node_repl_history|python_history|wget-hsts|boto|s3cfg|pgpass|my\.cnf|git-credentials)$")
+  (subpath "@HOME@/.cache/gh")
+  (subpath "@HOME@/.config/github-copilot"))
+(deny file-write* (subpath "@HOME@"))
+(allow file-write*
+  (subpath "@HOME@/Workspaces")
+  (subpath "@HOME@/.claude")
+  (subpath "@HOME@/.bun/install/cache")
+  (subpath "@HOME@/.cache")
+  (subpath "@HOME@/.npm")
+  (subpath "@HOME@/Library/Caches")
+  (subpath "@HOME@/Library/Logs"))
+
+;; --- secrets nobody in the sandbox may read ---------------------------------
+(deny file-read*
+  (subpath "@HOME@/.jarvis/data")
+  (subpath "@HOME@/.jarvis/keys")
+  (regex #"^@REPO_RE@/\.env")
+  (subpath "@HOME@/.config/gh")
+  (subpath "@HOME@/.config/jarvis")
+  (subpath "@HOME@/.config/op")
+  (subpath "@HOME@/.ssh")
+  (subpath "@HOME@/.aws")
+  (subpath "@HOME@/.gnupg")
+  (subpath "@HOME@/.kube")
+  (literal "@HOME@/.netrc")
+  (literal "@HOME@/.npmrc")
+  (literal "@HOME@/.docker/config.json")
+  (literal "@HOME@/.claude/.credentials.json")
+  (subpath "@HOME@/Library/Keychains")
+  (subpath "/Library/Keychains")
+  ;; Orca, all of it: the runtime token and the terminal daemon's token and socket (a PTY owner), the account
+  ;; store and device keys, the shell wrappers new terminals source, hooks, its database and scrollback.
+  ;; Nothing inside needs it: `orca` goes through the proxy.
+  (subpath "@HOME@/Library/Application Support/orca")
+  ;; The bot: its .env and its databases (tokens, sessions, command log).
+  (literal "@REPO@/.env")
+  (regex #"^@REPO_RE@/data/[^/]*\.db"))
+;; A worker reads ITS OWN ticket file, named in its brief: the files are `<8 hex>`, the
+;; directory cannot be listed, so another worker's ticket cannot be found.
+(allow file-read*
+  (regex #"^@HOME_RE@/\.config/jarvis/worker-tickets/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]$"))
+(deny file-read-data (literal "@HOME@/.config/jarvis/worker-tickets"))
+
+;; --- no renaming, deleting or writing what may not be read -------------------
+;; A read deny alone is not enough: `mv .env /tmp/e && cat /tmp/e` would move the
+;; file out from under its path. Everything read-denied above is write-denied too,
+;; and so are the directories that hold it (a rename of the parent moves it all).
+(deny file-write*
+  (subpath "@HOME@/.config/gh")
+  (subpath "@HOME@/.config/jarvis")
+  (subpath "@HOME@/.config/op")
+  (subpath "@HOME@/.ssh")
+  (subpath "@HOME@/.aws")
+  (subpath "@HOME@/.gnupg")
+  (subpath "@HOME@/.kube")
+  (literal "@HOME@/.netrc")
+  (literal "@HOME@/.npmrc")
+  (literal "@HOME@/.docker/config.json")
+  (literal "@HOME@/.claude/.credentials.json")
+  (subpath "@HOME@/Library/Keychains")
+  (subpath "/Library/Keychains")
+  (subpath "@HOME@/Library/Application Support/orca")
+  (regex #"^@REPO_RE@/\.env")
+  (literal "@REPO@/.env")
+  (regex #"^@REPO_RE@/data/[^/]*\.db"))
+(deny file-write-unlink
+  (literal "@HOME@/.config")
+  (literal "@HOME@/.docker")
+  (literal "@HOME@/.claude")
+  (literal "@HOME@/Library")
+  (literal "@HOME@/Library/Application Support")
+  (literal "@HOME@/Library/Application Support/orca")
+  (literal "@REPO@")
+  (literal "@REPO@/data")
+  (literal "@REPO@/.git"))
+
+;; --- things the host runs later, outside the sandbox: no writing them ---------
+;; The bot's checkout is what the bot runs again at its next start: nothing in it is writable, except a
+;; worker's own worktrees (.claude/worktrees) and git's object store, which `git worktree add` and `git commit` need.
+(deny file-write* (subpath "@REPO@"))
+(allow file-write* (subpath "@REPO@/.claude/worktrees"))
+(allow file-write* (subpath "@REPO@/.git"))
+
+(deny file-write*
+  ;; shell startup files (every new terminal, including the owner's)
+  (regex #"^@HOME_RE@/\.(zshrc|zshenv|zprofile|zlogin|zlogout|bashrc|bash_profile|bash_login|profile)[^/]*$")
+  (subpath "@HOME@/.oh-my-zsh")
+  (subpath "@HOME@/.config/zsh")
+  ;; login items and agents
+  (subpath "@HOME@/Library/LaunchAgents")
+  ;; git config of the user (core.fsmonitor, hooksPath, aliases run on the next unsandboxed git)
+  (literal "@HOME@/.gitconfig")
+  (subpath "@HOME@/.config/git")
+  ;; the user's Claude settings, MCP servers and plugins: hooks and commands run in the owner's own sessions
+  (literal "@HOME@/.claude/settings.json")
+  (literal "@HOME@/.claude/settings.local.json")
+  (literal "@HOME@/.claude/CLAUDE.md")
+  (literal "@HOME@/.claude.json")
+  (subpath "@HOME@/.claude/hooks")
+  (subpath "@HOME@/.claude/plugins")
+  (subpath "@HOME@/.claude/skills")
+  (subpath "@HOME@/.claude/commands")
+  (subpath "@HOME@/.claude/agents")
+  (subpath "@HOME@/.claude/bin")
+  (subpath "@HOME@/.claude/dbhub")
+  (subpath "@HOME@/.cache/uv")
+  ;; programs the wrapper and the bot run unsandboxed (bun mints the session, gh answers the proxy)
+  (subpath "@HOME@/.bun/bin")
+  ;; Homebrew as a whole: /opt/homebrew/bin is a symlink farm, the programs (bun, gh) live in Cellar
+  (subpath "/opt/homebrew")
+  (subpath "/usr/local")
+  ;; Orca's agent hooks and status line, which the owner's own Claude settings run
+  (subpath "@HOME@/.orca")
+  ;; every entry directly in the home that starts with a dot: dotfiles the shell, git, editors and Claude read at start-up
+  ;; (.zshrc and what it sources, .p10k.zsh, .gitconfig, .claude.json, ...), and renaming a dot folder (~/.bun) to swap its contents
+  (regex #"^@HOME_RE@/\.[^/]*$")
+  (regex #"^@HOME_RE@/\.cache/p10k-")
+  ;; the bot's own state and scripts (launchd runs ~/.jarvis/bin/*.sh); the worker home is allowed back by the wrapper
+  (subpath "@HOME@/.jarvis")
+  ;; Orca's saved settings, where the per-agent launch command (this wrapper) is stored: covered above
+  ;; the bot's own checkout (see the blanket rule above)
+  (subpath "@REPO@/bin")
+  (subpath "@REPO@/src")
+  (subpath "@REPO@/web")
+  (subpath "@REPO@/node_modules")
+  (literal "@REPO@/package.json")
+  (literal "@REPO@/bun.lock")
+  (literal "@REPO@/bunfig.toml")
+  (literal "@REPO@/.mcp.json")
+  (subpath "@REPO@/.githooks")
+  ;; git reads its configuration (core.fsmonitor, hooksPath: code) from these on the next UNsandboxed git call
+  (literal "@REPO@/.git/config")
+  (literal "@REPO@/.git/config.worktree")
+  (literal "@REPO@/.git/commondir")
+  ;; what the owner's next pull, checkout or deploy trusts: the checkout's own HEAD and main branch
+  (literal "@REPO@/.git/HEAD")
+  (literal "@REPO@/.git/refs/heads/main")
+  (literal "@REPO@/.git/refs/heads/master")
+  (literal "@REPO@/.git/gitdir")
+  (subpath "@REPO@/.git/info")
+  (subpath "@REPO@/.git/hooks")
+  (literal "@REPO@/.claude/settings.json")
+  (literal "@REPO@/.claude/settings.local.json"))
+
+;; --- keystrokes into the terminal that started us ----------------------------
+;; TIOCSTI types into a terminal's input queue: the shell Orca leaves open after
+;; the agent exits would run it unsandboxed.
+(deny file-ioctl (ioctl-command TIOCSTI))

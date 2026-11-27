@@ -9,7 +9,7 @@
 // TODO(split): big file, deliberately not refactored in one go. Rule: split the part you
 //   touch into its own module; the markers below name where each section should go.
 import { writeGuides } from "./infrastructure/system/guideWriter.ts";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir, userInfo } from "node:os";
 import { loadConfig, modelLabel, WORKER_TICKET_DIR, type AppConfig } from "./config/env.ts";
@@ -141,6 +141,8 @@ import { commandPerm } from "./domain/permissions.ts";
 import { can as roleCan } from "./domain/roles.ts";
 import { logSourceOrder } from "./domain/investigation.ts";
 import { createDashboard } from "./infrastructure/dashboard/server.ts";
+import { createExecProxy } from "./application/execProxy.ts";
+import { createExecRunner } from "./infrastructure/system/execProxyRunner.ts";
 import { runForBrain } from "./application/brainRun.ts";
 import { dispatchCommand, isQuietCommand, listCommandInfo, startReview } from "./application/commands.ts";
 import type { ReviewApp } from "./application/commands/shared.ts";
@@ -206,6 +208,8 @@ const buildLlm = (
   config.llmProvider === "claude-cli"
     ? createClaudeCliLlm({
         binPath: config.claudeBin,
+        // SEATBELT=on: every turn, whatever its role, starts through the wrapper (docs: README "Seatbelt").
+        ...(config.seatbelt.enabled ? { seatbelt: { wrapper: join(import.meta.dir, "..", "bin", "sandboxed-claude.sh") } } : {}),
         model: config.claudeModel,
         skipPermissions: config.claudeSkipPermissions,
         cwd,
@@ -1009,6 +1013,31 @@ const main = async () => {
   };
 
   // TODO(split): move dashboard wiring to src/application/dashboardWiring.ts
+  // The exec proxy for sandboxed callers' `gh` and `orca` shims (SEATBELT=on). It needs no GitHub App:
+  // it runs the real `gh` with the bot's own login, so it is built whenever the seatbelt is on.
+  const execProxy = config.seatbelt.enabled
+    ? createExecProxy({
+        clock,
+        sessionSecret: () => {
+          try {
+            return readFileSync(config.seatbelt.secretPath, "utf8").trim() || undefined;
+          } catch {
+            return undefined;
+          }
+        },
+        peekTurn: (token) => {
+          const r = commandTickets.peek(token);
+          return r.ok ? { actor: r.ctx.actor, channel: r.ctx.channel } : undefined;
+        },
+        redeemWorker: workerTickets.redeem,
+        users,
+        roles,
+        allowedOwners: config.githubApp.allowedOwners,
+        audit: commandLog,
+        run: createExecRunner(),
+      })
+    : undefined;
+  console.log(`[seatbelt] ${config.seatbelt.enabled ? "on: turns start through bin/sandboxed-claude.sh, the exec proxy serves gh and orca" : "off"}`);
   // Set once the GitHub App is wired below; the dashboard reaches it through this.
   let githubApp: GithubApp | undefined;
   let githubActions: GithubActions | undefined;
@@ -1133,6 +1162,7 @@ const main = async () => {
         if (!githubActions) throw new Error("the GitHub App is not configured");
         return { ...(await githubActions.run(req)) };
       },
+      execProxy: async (req) => (execProxy ? execProxy.handle(req) : { ok: false as const, status: 503, error: "the sandbox proxy is off (SEATBELT=off)" }),
       slackProxy,
       ownerTickets,
     },
