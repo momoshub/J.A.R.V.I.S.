@@ -58,7 +58,6 @@ export const COORDINATOR_LANGS = ["vi", "en"] as const;
 export type CoordinatorLang = (typeof COORDINATOR_LANGS)[number];
 /** The owner talks to the bot in Vietnamese. */
 export const DEFAULT_LANG: CoordinatorLang = "vi";
-export const isCoordinatorLang = (v: string): v is CoordinatorLang => (COORDINATOR_LANGS as readonly string[]).includes(v);
 
 /** The fixed words of the coordinator's own lines (the ones code writes, not its turn), per language. */
 export type Words = {
