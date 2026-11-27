@@ -21,11 +21,15 @@
 // quiet until the worker has produced new output.
 // The reading itself is `orcaWorkerEvent` in src/domain/watch.ts; the hand-back
 // turn reads the printed line back to say which of the three happened.
+// A worker that finished or died and ended with a `worker-report` block also gets
+// `orca worker <id> report <json>` (src/domain/workerReport.ts), which the hand-back
+// reads as fields. No block: nothing is printed and the hand-back reads the prose.
 // A worker that finished or died also gets `orca worker <id> usage <json>`:
 // the tokens its Claude transcript used, priced (src/domain/workerUsage.ts),
 // which the hand-back names and the watcher stores. Best effort and bounded,
 // so a missing transcript never holds up the hand-back.
 import { orcaWorkerEvent, workerEventLine } from "../src/domain/watch.ts";
+import { findWorkerReport, workerReportLine } from "../src/domain/workerReport.ts";
 import { workerUsageLine } from "../src/domain/workerUsage.ts";
 import { measureWorker } from "../src/infrastructure/system/workerTranscript.ts";
 import { createOrcaCli } from "../src/infrastructure/system/orcaTerminal.ts";
@@ -74,6 +78,13 @@ if (ev.kind === "unknown") {
 }
 console.log(workerEventLine(id, ev));
 if (ev.kind !== "waiting") {
+  // The fenced `worker-report` block the worker ended with, wherever worker-show keeps its report.
+  try {
+    const found = findWorkerReport(JSON.parse(out));
+    if (found.ok) console.log(workerReportLine(id, found.report));
+  } catch (e) {
+    logAndIgnore("orca worker report")(e);
+  }
   const usage = await Promise.race([
     measureWorker(id, { orca: createOrcaCli(orca, USAGE_BUDGET_MS), shown: out }).catch(logAndIgnore("orca worker usage")),
     new Promise<undefined>((r) => setTimeout(() => r(undefined), USAGE_BUDGET_MS)),
