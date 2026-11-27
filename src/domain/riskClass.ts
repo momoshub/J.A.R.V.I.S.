@@ -230,7 +230,8 @@ const classifyFile = (file: ChangedFile): { risk: FileRisk; promptText: boolean 
   const test = TEST_PATH_RE.test(file.path);
   // A hunk cannot show whether a line is inside a multi-line template string: `/*` and `//` lines there are text, and a backtick on a changed line
   // can end the string and start code. A source patch with a backtick or a continued line (trailing backslash) therefore reads no line as a comment.
-  const fragile = SLASH_COMMENT_EXT_RE.test(file.path) && /`|\\$/m.test(file.patch);
+  // `${` runs code inside a template without a backtick, and in JSX a `{...}` between tags does too, so both count (JSX: any brace in the patch).
+  const fragile = SLASH_COMMENT_EXT_RE.test(file.path) && (/`|\\$|\$\{/m.test(file.patch) || (/\.[jt]sx$/.test(file.path) && /[{}]/.test(file.patch)));
   for (const { text, inBlock } of lines) {
     if (text.trim() === "") continue;
     if (PACKAGE_JSON_RE.test(file.path) && DEPENDENCY_LINE_RE.test(text)) {

