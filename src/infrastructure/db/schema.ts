@@ -125,7 +125,7 @@ export const migrate = (db: Database): void => {
   migrateStatusMessages(db);
   migrateMessageViaBot(db);
   migrateReviewRounds(db);
-  migrateJueki(db);
+  migrateCoordinator(db);
 };
 
 /**
@@ -1589,46 +1589,84 @@ const migrateReviewRounds = (db: Database): void => {
 };
 
 /**
- * Jueki's own state (domain/jueki.ts): the day's digest lines and dedupe marks
- * (`jueki_actions`), the one message the digest is edited on (`jueki_digest`)
- * and the walls it raised to the owner (`jueki_blockers`, one row per key, so
- * the same non-prod one is never put twice). New tables, so a rerun is a no-op.
+ * The coordinator's own state (domain/coordinator.ts): the day's digest lines and
+ * dedupe marks (`coordinator_actions`), the one message the digest is edited on
+ * (`coordinator_digest`) and the walls it raised to the owner
+ * (`coordinator_blockers`, one row per key, so the same non-prod one is never
+ * put twice).
+ *
+ * Migration v55. v54 created these as `<personal name>_actions` / `_digest` /
+ * `_blockers` before the feature was made generic, so on an upgrade the tables are
+ * RENAMED, rows and ids kept, and the old index names are replaced. Every step
+ * checks what exists, so a rerun is a no-op: no legacy table (a new database, or
+ * already renamed) only creates what is missing; both generations present (a rename
+ * that was cut short, or a database that was run by a build from before the rename)
+ * copies the legacy rows over by id and drops the legacy table.
  */
-const migrateJueki = (db: Database): void => {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS jueki_actions (
-      id    INTEGER PRIMARY KEY AUTOINCREMENT,
-      day   TEXT NOT NULL,
-      at    INTEGER NOT NULL,
-      kind  TEXT NOT NULL,
-      ref   TEXT NOT NULL DEFAULT '',
-      line  TEXT NOT NULL DEFAULT ''
-    );
-    CREATE INDEX IF NOT EXISTS idx_jueki_actions_day ON jueki_actions (day, id);
-    CREATE INDEX IF NOT EXISTS idx_jueki_actions_ref ON jueki_actions (kind, ref, at);
-    CREATE TABLE IF NOT EXISTS jueki_digest (
-      day     TEXT PRIMARY KEY,
-      channel TEXT NOT NULL,
-      ts      TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS jueki_blockers (
-      id             INTEGER PRIMARY KEY AUTOINCREMENT,
-      key            TEXT NOT NULL UNIQUE,
-      kind           TEXT NOT NULL,
-      prod           INTEGER NOT NULL DEFAULT 0,
-      text           TEXT NOT NULL,
-      state          TEXT NOT NULL DEFAULT 'pending',
-      notice_channel TEXT NOT NULL DEFAULT '',
-      notice_ts      TEXT NOT NULL DEFAULT '',
-      raised_count   INTEGER NOT NULL DEFAULT 0,
-      last_raised_at INTEGER NOT NULL DEFAULT 0,
-      handled_at     INTEGER NOT NULL DEFAULT 0,
-      created_at     INTEGER NOT NULL,
-      decided_at     INTEGER NOT NULL DEFAULT 0
-    );
-  `);
-  const { user_version } = db.query<{ user_version: number }, []>("PRAGMA user_version").get() ?? {
-    user_version: 0,
-  };
-  if (user_version < 54) db.exec("PRAGMA user_version = 54;");
+const LEGACY_COORDINATOR_TABLES = [
+  ["jueki_actions", "coordinator_actions"],
+  ["jueki_digest", "coordinator_digest"],
+  ["jueki_blockers", "coordinator_blockers"],
+] as const;
+
+const migrateCoordinator = (db: Database): void => {
+  const tableExists = (name: string): boolean =>
+    db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name = ?").get(name)?.n === 1;
+
+  db.exec("BEGIN");
+  try {
+    for (const [legacy, current] of LEGACY_COORDINATOR_TABLES) {
+      if (!tableExists(legacy)) continue;
+      if (!tableExists(current)) {
+        db.exec(`ALTER TABLE ${legacy} RENAME TO ${current};`);
+        continue;
+      }
+      // Both exist: keep the rows of both. The ids of the legacy table win on a clash only when the
+      // current one has no such id (INSERT OR IGNORE), so nothing already in the new table is touched.
+      db.exec(`INSERT OR IGNORE INTO ${current} SELECT * FROM ${legacy};`);
+      db.exec(`DROP TABLE ${legacy};`);
+    }
+    db.exec(`
+      DROP INDEX IF EXISTS idx_jueki_actions_day;
+      DROP INDEX IF EXISTS idx_jueki_actions_ref;
+      CREATE TABLE IF NOT EXISTS coordinator_actions (
+        id    INTEGER PRIMARY KEY AUTOINCREMENT,
+        day   TEXT NOT NULL,
+        at    INTEGER NOT NULL,
+        kind  TEXT NOT NULL,
+        ref   TEXT NOT NULL DEFAULT '',
+        line  TEXT NOT NULL DEFAULT ''
+      );
+      CREATE INDEX IF NOT EXISTS idx_coordinator_actions_day ON coordinator_actions (day, id);
+      CREATE INDEX IF NOT EXISTS idx_coordinator_actions_ref ON coordinator_actions (kind, ref, at);
+      CREATE TABLE IF NOT EXISTS coordinator_digest (
+        day     TEXT PRIMARY KEY,
+        channel TEXT NOT NULL,
+        ts      TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS coordinator_blockers (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        key            TEXT NOT NULL UNIQUE,
+        kind           TEXT NOT NULL,
+        prod           INTEGER NOT NULL DEFAULT 0,
+        text           TEXT NOT NULL,
+        state          TEXT NOT NULL DEFAULT 'pending',
+        notice_channel TEXT NOT NULL DEFAULT '',
+        notice_ts      TEXT NOT NULL DEFAULT '',
+        raised_count   INTEGER NOT NULL DEFAULT 0,
+        last_raised_at INTEGER NOT NULL DEFAULT 0,
+        handled_at     INTEGER NOT NULL DEFAULT 0,
+        created_at     INTEGER NOT NULL,
+        decided_at     INTEGER NOT NULL DEFAULT 0
+      );
+    `);
+    const { user_version } = db.query<{ user_version: number }, []>("PRAGMA user_version").get() ?? {
+      user_version: 0,
+    };
+    if (user_version < 55) db.exec("PRAGMA user_version = 55;");
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
 };

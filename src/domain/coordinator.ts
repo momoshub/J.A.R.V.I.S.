@@ -1,24 +1,31 @@
 /**
- * Jueki: the housekeeping coordinator that lives only in the owner's DM.
+ * the coordinator: the housekeeping coordinator that lives only in the owner's DM.
  *
  * The owner forgets open work: journeys go quiet for days, a worker ticket
  * lapses under a worker that is still going, a watch runs out, a PR waits on a
- * reviewer. Jueki is a recurring tick (not a process) that rebuilds its picture
+ * reviewer. the coordinator is a recurring tick (not a process) that rebuilds its picture
  * from the bot's own records every time, acts on what it can inside the owner's
  * role, and raises to the owner only what really needs them.
  *
  * Everything here is pure: when it is quiet, which journey needs what, which
  * ticket to renew, how a blocker is routed (the prod rule included), and the
- * words of the digest and of a blocker. The tick is `application/jueki.ts`, the
- * rows are `infrastructure/db/juekiRepo.ts`.
+ * words of the digest and of a blocker. The tick is `application/coordinator.ts`, the
+ * rows are `infrastructure/db/coordinatorRepo.ts`.
  */
 import { ciStatusOf, type RollupEntry } from "./ciGate.ts";
 import { cleanLine } from "./journey.ts";
 import { humanDuration, watchesWorker } from "./watch.ts";
 import { WORKER_LIFETIME_MAX_MS } from "./workerTicket.ts";
 
-/** Every message Jueki posts is signed with this (normal threads sign "Jarvis"). */
-export const JUEKI_NAME = "Jueki";
+/**
+ * What the coordinator is called when `COORDINATOR_NAME` is not set. Every instance
+ * is personalized through config, so the name it signs with and answers to is a
+ * setting, never a constant (normal threads sign "Jarvis").
+ */
+export const DEFAULT_COORDINATOR_NAME = "Coordinator";
+
+/** The configured display name, or the neutral default when it is blank. */
+export const coordinatorName = (configured?: string): string => configured?.trim() || DEFAULT_COORDINATOR_NAME;
 
 export const MINUTE_MS = 60_000;
 export const HOUR_MS = 60 * MINUTE_MS;
@@ -249,7 +256,7 @@ export const parseOwnPrs = (stdout: string, authors: readonly string[]): OwnPr[]
 
 // ---------------------------------------------------------------- blockers
 
-/** What kind of wall Jueki hit. */
+/** What kind of wall the coordinator hit. */
 export const BLOCKER_KINDS = ["permission", "prod-write", "decision", "repeat-failure", "other"] as const;
 export type BlockerKind = (typeof BLOCKER_KINDS)[number];
 export const isBlockerKind = (v: string): v is BlockerKind => (BLOCKER_KINDS as readonly string[]).includes(v);
@@ -293,14 +300,14 @@ export const isLowRisk = (f: BlockerFacts): boolean => f.reversible && !f.dataWr
 
 /**
  * The prod exception: a prod blocker that is BOTH urgent AND low-risk is fixed
- * by Jueki itself, inside the owner's role. Something past the owner's role or
+ * by the coordinator itself, inside the owner's role. Something past the owner's role or
  * that only the owner can decide is never self-fixed, however urgent.
  */
 export const mayFixProdItself = (f: BlockerFacts): boolean =>
   f.prod && isUrgent(f) && isLowRisk(f) && !f.beyondRole && !f.ownerDecision;
 
 export type BlockerRow = {
-  /** `fixed`: Jueki fixed it itself under the prod rule; a later recurrence of the key is a new blocker. */
+  /** `fixed`: the coordinator fixed it itself under the prod rule; a later recurrence of the key is a new blocker. */
   readonly state: "pending" | "approved" | "rejected" | "fixed";
   /** Stored as prod. A non-prod row raised again as prod is asked at once under the prod rule, however recently it was asked as non-prod. */
   readonly prod: boolean;
@@ -328,7 +335,7 @@ export const routeBlocker = (
   now: number,
   opts: { readonly quiet: boolean; readonly repingMs?: number },
 ): BlockerRoute => {
-  // Fixed by Jueki: the wall is gone, a new one under the same key starts from nothing.
+  // Fixed by the coordinator: the wall is gone, a new one under the same key starts from nothing.
   const prior = stored?.state === "fixed" ? undefined : stored;
   if (prior && (prior.state === "approved" || prior.state === "rejected")) return { route: "hold", why: "decided" };
   if (f.prod) {
@@ -421,10 +428,32 @@ export const parseBlockerArgs = (
   return { ok: true, key, kind, text, facts };
 };
 
-/** Buttons are code-handled: the press never reaches a model (`application/juekiApproval.ts`). */
-export const JUEKI_ACTION_PREFIX = "jv:jueki:";
-export const JUEKI_APPROVE_ACTION = `${JUEKI_ACTION_PREFIX}approve`;
-export const JUEKI_REJECT_ACTION = `${JUEKI_ACTION_PREFIX}reject`;
+/** Buttons are code-handled: the press never reaches a model (`application/coordinatorApproval.ts`). */
+export const COORDINATOR_ACTION_PREFIX = "jv:coordinator:";
+export const COORDINATOR_APPROVE_ACTION = `${COORDINATOR_ACTION_PREFIX}approve`;
+export const COORDINATOR_REJECT_ACTION = `${COORDINATOR_ACTION_PREFIX}reject`;
+
+/**
+ * The ids this feature's buttons carried before it was made generic. A blocker
+ * message posted back then still has them in Slack, so a press on one keeps working:
+ * the listener matches both prefixes and `coordinatorPressKind` reads either.
+ * Nothing posts these any more.
+ */
+export const LEGACY_ACTION_PREFIX = "jv:jueki:";
+const LEGACY_APPROVE_ACTION = `${LEGACY_ACTION_PREFIX}approve`;
+const LEGACY_REJECT_ACTION = `${LEGACY_ACTION_PREFIX}reject`;
+
+/** Whether `actionId` belongs to a coordinator blocker button, current or legacy. */
+export const isCoordinatorAction = (actionId: string): boolean =>
+  actionId.startsWith(COORDINATOR_ACTION_PREFIX) || actionId.startsWith(LEGACY_ACTION_PREFIX);
+
+/** What a press means, whichever generation of id it carries; undefined for anything else. */
+export const coordinatorPressKind = (actionId: string): "approve" | "reject" | undefined =>
+  actionId === COORDINATOR_APPROVE_ACTION || actionId === LEGACY_APPROVE_ACTION
+    ? "approve"
+    : actionId === COORDINATOR_REJECT_ACTION || actionId === LEGACY_REJECT_ACTION
+      ? "reject"
+      : undefined;
 
 /** A key names one wall: `lowercase-words-and-dashes`, so the same one is recognised again. */
 export const cleanKey = (v: string): string =>
@@ -434,9 +463,9 @@ export const cleanKey = (v: string): string =>
     .replace(/^-+|-+$/g, "")
     .slice(0, 80);
 
-export const blockerText = (b: { id: number; kind: BlockerKind; prod: boolean; text: string }, repeat: number): string =>
+export const blockerText = (name: string, b: { id: number; kind: BlockerKind; prod: boolean; text: string }, repeat: number): string =>
   [
-    `*${JUEKI_NAME}* - ${b.prod ? "🚨 prod blocker" : "blocker"} #${b.id} (${b.kind})${repeat > 0 ? `, asked ${repeat + 1} times` : ""}`,
+    `*${name}* - ${b.prod ? "🚨 prod blocker" : "blocker"} #${b.id} (${b.kind})${repeat > 0 ? `, asked ${repeat + 1} times` : ""}`,
     b.text,
     b.prod
       ? "_Prod: I keep asking until you act. Approve = go ahead as you; Reject = leave it._"
@@ -444,13 +473,14 @@ export const blockerText = (b: { id: number; kind: BlockerKind; prod: boolean; t
   ].join("\n");
 
 export const settledBlockerText = (
+  name: string,
   b: { id: number; kind: BlockerKind; prod: boolean; text: string },
   verdict: "approved" | "rejected",
   by: string,
-): string => `*${JUEKI_NAME}* - blocker #${b.id} (${b.kind}): ${b.text}\n_${verdict === "approved" ? "Approved" : "Rejected"} by <@${by}>._`;
+): string => `*${name}* - blocker #${b.id} (${b.kind}): ${b.text}\n_${verdict === "approved" ? "Approved" : "Rejected"} by <@${by}>._`;
 
-export const selfFixDmText = (key: string, line: string): string =>
-  `*${JUEKI_NAME}* - fixed a prod item myself (urgent and low-risk, inside your role): ${cleanLine(line, MAX_LINE)} (\`${key}\`)`;
+export const selfFixDmText = (name: string, key: string, line: string): string =>
+  `*${name}* - fixed a prod item myself (urgent and low-risk, inside your role): ${cleanLine(line, MAX_LINE)} (\`${key}\`)`;
 
 // ---------------------------------------------------------------- digest
 
@@ -460,11 +490,11 @@ export type DigestLine = { readonly at: number; readonly text: string };
 export const digestLine = (text: string): string => cleanLine(text, MAX_LINE);
 
 /** The whole day's message, edited in place through the day. */
-export const renderDigest = (day: string, lines: readonly DigestLine[], offsetMin: number, blockers: number): string => {
+export const renderDigest = (name: string, day: string, lines: readonly DigestLine[], offsetMin: number, blockers: number): string => {
   const shown = lines.slice(-DIGEST_MAX_LINES);
   const folded = lines.length - shown.length;
   return [
-    `*${JUEKI_NAME}* - housekeeping digest, ${day}`,
+    `*${name}* - housekeeping digest, ${day}`,
     ...(folded > 0 ? [`_${folded} earlier line${folded === 1 ? "" : "s"} not shown_`] : []),
     ...shown.map((l) => `- ${localClock(l.at, offsetMin)} ${l.text}`),
     ...(blockers > 0 ? [`_${blockers} blocker${blockers === 1 ? "" : "s"} waiting on you, asked above_`] : []),
@@ -509,12 +539,12 @@ const section = (title: string, items: readonly PictureItem[]): string[] =>
   items.length === 0 ? [] : [`${title}:`, ...items.map((i) => `- ${i.ref}: ${i.line}`), ""];
 
 /**
- * The text of one Jueki turn. It starts cold (a fresh session per day), so
+ * The text of one the coordinator turn. It starts cold (a fresh session per day), so
  * everything it needs is here or in the journeys, never in carried context.
  */
-export const juekiTurnText = (day: string, quiet: boolean, p: Picture, prefix: string): string =>
+export const coordinatorTurnText = (name: string, day: string, quiet: boolean, p: Picture, prefix: string): string =>
   [
-    `[jueki ${day}] You are ${JUEKI_NAME}, the owner's housekeeping coordinator. This is a scheduled tick, nobody typed it, and you live only in the owner's DM. Your state is the journeys, watches, Orca runs, open PRs and threads, never memory: read them back (\`${prefix} journey list\`, \`${prefix} journey show <id>\`) before you act.`,
+    `[coordinator ${day}] You are ${name}, the owner's housekeeping coordinator. This is a scheduled tick, nobody typed it, and you live only in the owner's DM. Your state is the journeys, watches, Orca runs, open PRs and threads, never memory: read them back (\`${prefix} journey list\`, \`${prefix} journey show <id>\`) before you act.`,
     "",
     "The picture below is what code could not settle by itself. Work through it, acting inside the owner's existing role:",
     "- stale journey: read it, then close it if it is done (`journey done`), resume it (start or steer the work), or `journey update --now` with what you found. Never leave it as it was.",
@@ -526,14 +556,14 @@ export const juekiTurnText = (day: string, quiet: boolean, p: Picture, prefix: s
     "- approved blocker: the owner said go ahead, do it.",
     "",
     "Rules that do not bend:",
-    `- You never grant yourself anything beyond the owner's role and never write to prod. A blocker that needs a grant beyond the role, a prod write, a decision only the owner can make, or the same fix failing twice goes through \`${prefix} jueki blocker <key> --kind <permission|prod-write|decision|repeat-failure|other> "<what, in one or two sentences>"\` and nowhere else: code puts it to the owner once (prod ones again and again). Add \`--prod\` when it touches prod, then state the facts it asks for.`,
-    `- A prod item that is urgent and low-risk is the one thing code lets you fix yourself: \`jueki blocker\` answers \`self-fix\` only then. After you fix it run \`${prefix} jueki fixed <key> "<what you did>"\`.`,
-    `- Every action you take is one short line: \`${prefix} jueki act "<what you did>"\`. That is the digest; do not post anywhere yourself, and do not post in this thread.`,
+    `- You never grant yourself anything beyond the owner's role and never write to prod. A blocker that needs a grant beyond the role, a prod write, a decision only the owner can make, or the same fix failing twice goes through \`${prefix} coordinator blocker <key> --kind <permission|prod-write|decision|repeat-failure|other> "<what, in one or two sentences>"\` and nowhere else: code puts it to the owner once (prod ones again and again). Add \`--prod\` when it touches prod, then state the facts it asks for.`,
+    `- A prod item that is urgent and low-risk is the one thing code lets you fix yourself: \`coordinator blocker\` answers \`self-fix\` only then. After you fix it run \`${prefix} coordinator fixed <key> "<what you did>"\`.`,
+    `- Every action you take is one short line: \`${prefix} coordinator act "<what you did>"\`. That is the digest; do not post anywhere yourself, and do not post in this thread.`,
     quiet
       ? "- It is quiet hours: do not message anyone, comment on GitHub or ping a person. Work that pings waits for morning."
       : "- Ping people sparingly: one chase per PR, no repeats.",
     "- Never repeat a blocker already raised: code refuses it.",
-    `- Sign nothing as Jarvis: everything you write on the owner's behalf in the DM is ${JUEKI_NAME}.`,
+    `- Sign nothing as Jarvis: everything you write on the owner's behalf in the DM is ${name}.`,
     "- When you are done end with NO_REPLY.",
     "",
     ...section("Stale or finished-looking journeys", p.staleJourneys),

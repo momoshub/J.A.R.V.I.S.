@@ -5,7 +5,7 @@ import type { ReviewGuard } from "../reviewGuard.ts";
 import type { ReviewRounds } from "../reviewRounds.ts";
 import type { WorkerUsagePort } from "../workerCost.ts";
 import type { WorkerTickets } from "../workerTickets.ts";
-import type { Jueki } from "../jueki.ts";
+import type { Coordinator } from "../coordinator.ts";
 import type { InternalKind } from "../../domain/internalMessages.ts";
 import { DEFAULT_BOT_NAME } from "../../domain/personality.ts";
 import { ALWAYS_ON_BUDGET } from "../../domain/adapterCheck.ts";
@@ -135,8 +135,8 @@ export type CommandDeps = {
   reminders?: ReminderRepo;
   /** The bot's own record of its work, for the `journey` command. */
   journeys?: JourneyRepo;
-  /** Jueki, the housekeeping coordinator of the owner's DM, for the internal `jueki` command. */
-  jueki?: Jueki;
+  /** the coordinator, the housekeeping coordinator of the owner's DM, for the internal `coordinator` command. */
+  coordinator?: Coordinator;
   /** The bug reports the bot raised about itself, for the `bug-report` command. */
   bugReports?: BugReportRepo;
   /** The inner child's queue of issues, for the open count in `inner-child`. */

@@ -13,7 +13,7 @@ import {
   isLowRisk,
   isUrgent,
   journeyAction,
-  juekiTurnText,
+  coordinatorTurnText,
   lapsedWorkerDispatch,
   localClock,
   localDay,
@@ -31,7 +31,16 @@ import {
   ticketAction,
   type BlockerFacts,
   type OwnPr,
-} from "../../src/domain/jueki.ts";
+  COORDINATOR_APPROVE_ACTION,
+  COORDINATOR_REJECT_ACTION,
+  coordinatorName,
+  coordinatorPressKind,
+  DEFAULT_COORDINATOR_NAME,
+  isCoordinatorAction,
+  blockerText,
+  selfFixDmText,
+  settledBlockerText,
+} from "../../src/domain/coordinator.ts";
 import { WORKER_LIFETIME_MAX_MS } from "../../src/domain/workerTicket.ts";
 
 /** 2026-11-27 00:00 in Asia/Ho_Chi_Minh (UTC+7) = 2026-11-26 17:00 UTC. */
@@ -274,7 +283,7 @@ describe("routeBlocker", () => {
     expect(routeBlocker(facts({ prod: true }), { ...prior, prod: true }, NOW, { quiet: true })).toEqual({ route: "hold", why: "not-due" });
   });
 
-  test("a blocker Jueki fixed itself is gone: the same key, raised again, starts from nothing", () => {
+  test("a blocker the coordinator fixed itself is gone: the same key, raised again, starts from nothing", () => {
     expect(routeBlocker(facts(), { state: "fixed", prod: false, lastRaisedAt: NOW - HOUR_MS }, NOW, open)).toEqual({ route: "raise", repeat: false });
     expect(routeBlocker(facts({ prod: true }), { state: "fixed", prod: true, lastRaisedAt: NOW - 1 }, NOW, open)).toEqual({ route: "raise", repeat: true });
   });
@@ -293,7 +302,7 @@ describe("routeBlocker", () => {
     expect(routeBlocker(prod, { state: "pending", prod: true, lastRaisedAt: NOW - 10 * MINUTE_MS }, NOW, { quiet: false, repingMs: 5 * MINUTE_MS })).toEqual({ route: "raise", repeat: true });
   });
 
-  test("prod, urgent and low-risk: Jueki fixes it itself, quiet hours or not", () => {
+  test("prod, urgent and low-risk: the coordinator fixes it itself, quiet hours or not", () => {
     const f = facts({ prod: true, customerImpact: true, reversible: true });
     expect(routeBlocker(f, undefined, NOW, open)).toEqual({ route: "self-fix" });
     expect(routeBlocker(f, undefined, NOW, { quiet: true })).toEqual({ route: "self-fix" });
@@ -344,28 +353,63 @@ describe("parseBlockerArgs", () => {
 
 describe("digest and turn text", () => {
   test("one message per day: header, time-stamped lines on the owner's clock, a waiting count", () => {
-    const text = renderDigest("2026-11-27", [{ at: at(9, 5), text: "closed journey #4" }], 420, 2);
-    expect(text).toContain("*Jueki* - housekeeping digest, 2026-11-27");
+    const text = renderDigest("Aide", "2026-11-27", [{ at: at(9, 5), text: "closed journey #4" }], 420, 2);
+    expect(text).toContain("*Aide* - housekeeping digest, 2026-11-27");
     expect(text).toContain("- 09:05 closed journey #4");
     expect(text).toContain("2 blockers waiting on you");
   });
   test("a long day folds its oldest lines into a count", () => {
     const lines = Array.from({ length: 45 }, (_, i) => ({ at: at(8) + i * MINUTE_MS, text: `line ${i}` }));
-    const text = renderDigest("2026-11-27", lines, 420, 0);
+    const text = renderDigest("Aide", "2026-11-27", lines, 420, 0);
     expect(text).toContain("5 earlier lines not shown");
     expect(text).toContain("line 44");
     expect(text).not.toContain("line 0\n");
   });
-  test("the turn text names Jueki, the rules and only the sections that have items", () => {
-    const text = juekiTurnText("2026-11-27", false, { ...emptyPicture, staleJourneys: [{ ref: "journey #3", line: "quiet 4d" }] }, "//bot");
-    expect(text).toContain("You are Jueki");
-    expect(text).toContain("//bot jueki blocker");
-    expect(text).toContain("//bot jueki fixed");
+  test("the turn text names the configured name, the rules and only the sections that have items", () => {
+    const text = coordinatorTurnText("Aide", "2026-11-27", false, { ...emptyPicture, staleJourneys: [{ ref: "journey #3", line: "quiet 4d" }] }, "//bot");
+    expect(text).toContain("You are Aide");
+    expect(text).toContain("//bot coordinator blocker");
+    expect(text).toContain("//bot coordinator fixed");
     expect(text).toContain("Stale or finished-looking journeys:\n- journey #3: quiet 4d");
     expect(text).not.toContain("Own PRs with red CI");
     expect(text).toContain("never write to prod");
   });
   test("in quiet hours the turn is told not to message anyone", () => {
-    expect(juekiTurnText("d", true, emptyPicture, "//bot")).toContain("quiet hours");
+    expect(coordinatorTurnText("Aide", "d", true, emptyPicture, "//bot")).toContain("quiet hours");
+  });
+});
+
+describe("the display name comes from config", () => {
+  test("blank or missing falls back to the neutral default", () => {
+    expect(DEFAULT_COORDINATOR_NAME).toBe("Coordinator");
+    expect(coordinatorName(undefined)).toBe("Coordinator");
+    expect(coordinatorName("  ")).toBe("Coordinator");
+    expect(coordinatorName(" Aide ")).toBe("Aide");
+  });
+  test("every text the coordinator writes carries the name it was given", () => {
+    const b = { id: 7, kind: "permission" as const, prod: false, text: "needs a grant" };
+    expect(blockerText("Aide", b, 0)).toStartWith("*Aide* - blocker #7");
+    expect(settledBlockerText("Aide", b, "approved", "U1")).toStartWith("*Aide* - blocker #7");
+    expect(selfFixDmText("Aide", "k", "did it")).toStartWith("*Aide* - fixed a prod item");
+    expect(renderDigest("Coordinator", "2026-11-27", [], 420, 0)).toStartWith("*Coordinator* - housekeeping digest");
+  });
+});
+
+describe("button ids", () => {
+  test("the current ids are recognised", () => {
+    expect(COORDINATOR_APPROVE_ACTION).toBe("jv:coordinator:approve");
+    expect(coordinatorPressKind(COORDINATOR_APPROVE_ACTION)).toBe("approve");
+    expect(coordinatorPressKind(COORDINATOR_REJECT_ACTION)).toBe("reject");
+    expect(isCoordinatorAction(COORDINATOR_REJECT_ACTION)).toBe(true);
+  });
+  test("ids posted before the rename still work, so a press on an old blocker message is not dead", () => {
+    expect(isCoordinatorAction("jv:jueki:approve")).toBe(true);
+    expect(coordinatorPressKind("jv:jueki:approve")).toBe("approve");
+    expect(coordinatorPressKind("jv:jueki:reject")).toBe("reject");
+  });
+  test("anything else is not a coordinator press", () => {
+    expect(isCoordinatorAction("jv:loop:approve")).toBe(false);
+    expect(coordinatorPressKind("jv:coordinator:other")).toBeUndefined();
+    expect(coordinatorPressKind("jv:jueki:other")).toBeUndefined();
   });
 });
