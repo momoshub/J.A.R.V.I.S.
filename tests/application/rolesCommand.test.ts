@@ -104,8 +104,9 @@ describe("custom roles end to end", () => {
     await run(deps, owner(), "role create tiny");
     expect(await run(deps, owner(), "role grant tiny command:definitely-not")).toContain("Not a permission");
     expect(await run(deps, owner(), "role grant tiny")).toContain("role grant <role>");
-    expect(await run(deps, owner(), "role grant tiny github:*")).toContain("`github:pr-merge`");
-    expect(roleRepo.book.get("tiny")?.grants.filter((g) => g.startsWith("github:"))).toHaveLength(12);
+    expect(await run(deps, owner(), "role grant tiny github:*")).toContain("13 permissions");
+    expect(roleRepo.book.get("tiny")?.grants.filter((g) => g.startsWith("github:"))).toHaveLength(13);
+    expect(roleRepo.book.get("tiny")?.grants).toEqual(expect.arrayContaining(["github:pr-merge", "github:merge-gate"]));
     expect(await run(deps, owner(), "role grant owner command:ping")).toContain("cannot be edited");
     expect(await run(deps, owner(), "role create Bad Name")).toBeDefined();
     expect(await run(deps, owner(), "role create owner")).toContain("built in");
