@@ -110,6 +110,10 @@ const build = (opts: {
   withBriefs?: boolean;
   /** Muted threads, for the mute drop. */
   mutes?: MuteRepo;
+  /** Messages Slack would hand back for `conversations.replies`, by ts (what the turn posted itself). */
+  stored?: Record<string, { text?: string; blocks?: Record<string, unknown>[] }>;
+  /** `conversations.replies` fails, as it does on a rate limit. */
+  repliesThrows?: boolean;
 }) => {
   const db = openDatabase(":memory:");
   const users = createUserRepo(db);
@@ -162,6 +166,17 @@ const build = (opts: {
       if (opts.statusThrows) throw new Error("session_not_found");
       return {};
     },
+    ...(opts.stored || opts.repliesThrows
+      ? {
+          conversations: {
+            replies: async (a: Record<string, unknown>) => {
+              if (opts.repliesThrows) throw new Error("ratelimited");
+              const found = opts.stored?.[String(a.latest)];
+              return { messages: found ? [{ ts: String(a.latest), ...found }] : [] };
+            },
+          },
+        }
+      : {}),
     chat: {
       postMessage: async (a) => {
         status.posts.push(a);
@@ -997,7 +1012,8 @@ describe("createHandler streaming truth table", () => {
         return final;
       },
     });
-    const turnBuild = (selfPosts: SelfPosts, llm: LlmPort, streamUpdates = true) => build({ llm, streamUpdates, selfPosts });
+    const turnBuild = (selfPosts: SelfPosts, llm: LlmPort, streamUpdates = true, extra: { stored?: Record<string, { text?: string; blocks?: Record<string, unknown>[] }>; repliesThrows?: boolean } = {}) =>
+      build({ llm, streamUpdates, selfPosts, ...extra });
 
     test("the real Vietnamese reword is dropped without ever streaming, the posted one stays, the drop is logged", async () => {
       const selfPosts = createSelfPosts();
@@ -1025,6 +1041,82 @@ describe("createHandler streaming truth table", () => {
       expect(r.deletes).toHaveLength(0);
       expect(r.updates).toHaveLength(0);
       expect(r.said).toHaveLength(0);
+    });
+
+    describe("the footer of a turn that posted its own answer (bug #24)", () => {
+      const footerOf = (u: Record<string, unknown>) => (u.blocks as { block_id?: string; elements?: { text: string }[] }[]).filter((b) => b.block_id === "jv_footer");
+      const twoPosts = (selfPosts: SelfPosts): LlmPort => ({
+        complete: async () => "NO_REPLY",
+        stream: async (p) => {
+          if (p.runTicket) {
+            selfPost(selfPosts, p.runTicket, ANSWER, "000.9", "333.1");
+            selfPost(selfPosts, p.runTicket, ANSWER, "000.9", "333.3");
+          }
+          return "NO_REPLY";
+        },
+      });
+
+      test("the last own post gets the footer, blocks kept, the closing reply stays dropped", async () => {
+        const selfPosts = createSelfPosts();
+        const blocks = [{ type: "section", text: { type: "mrkdwn", text: "board" } }];
+        const r = turnBuild(selfPosts, twoPosts(selfPosts), true, { stored: { "333.1": { text: "first", blocks }, "333.3": { text: ANSWER, blocks } } });
+        await r.handle(r.msg("is staging green", "000.9"));
+        expect(r.updates).toHaveLength(1);
+        const [u] = r.updates;
+        expect(u?.ts).toBe("333.3");
+        expect((u?.blocks as unknown[]).slice(0, 1)).toEqual(blocks);
+        expect(footerOf(u as Record<string, unknown>)).toHaveLength(1);
+        expect(footerOf(u as Record<string, unknown>)[0]?.elements?.[0]?.text).toContain("Jarvis");
+        expect(r.said).toHaveLength(0);
+        expect(r.deletes).toHaveLength(0);
+      });
+
+      test("a plain text post is rebuilt as blocks with the footer", async () => {
+        const selfPosts = createSelfPosts();
+        const r = turnBuild(selfPosts, postingLlm(selfPosts, ANSWER, "NO_REPLY"), true, { stored: { "333.3": { text: ANSWER } } });
+        await r.handle(r.msg("is staging green", "000.9"));
+        expect(r.updates).toHaveLength(1);
+        expect(r.updates[0]?.text).toBe(ANSWER);
+        expect(footerOf(r.updates[0] as Record<string, unknown>)).toHaveLength(1);
+      });
+
+      test("a post that already has a footer is left untouched", async () => {
+        const selfPosts = createSelfPosts();
+        const footed = [{ type: "markdown", text: VI_POST }, { type: "context", block_id: "jv_footer", elements: [{ type: "mrkdwn", text: "Jarvis" }] }];
+        const r = turnBuild(selfPosts, postingLlm(selfPosts, VI_POST, VI_REPLY), true, { stored: { "333.3": { text: VI_POST, blocks: footed } } });
+        await r.handle(r.msg("is staging green", "000.9"));
+        expect(r.updates).toHaveLength(0);
+      });
+
+      test("a post already at 50 blocks keeps the cap: content is clipped for the footer", async () => {
+        const selfPosts = createSelfPosts();
+        const full = Array.from({ length: 50 }, (_, i) => ({ type: "section", text: { type: "mrkdwn", text: `s${i}` } }));
+        const r = turnBuild(selfPosts, postingLlm(selfPosts, ANSWER, "NO_REPLY"), true, { stored: { "333.3": { text: ANSWER, blocks: full } } });
+        await r.handle(r.msg("is staging green", "000.9"));
+        const blocks = r.updates[0]?.blocks as { block_id?: string }[];
+        expect(blocks).toHaveLength(50);
+        expect(blocks.at(-1)?.block_id).toBe("jv_footer");
+      });
+
+      test("a failed read or a refused update is logged and never breaks the turn", async () => {
+        const a = createSelfPosts();
+        const read = turnBuild(a, postingLlm(a, ANSWER, "NO_REPLY"), true, { repliesThrows: true });
+        await read.handle(read.msg("is staging green", "000.9"));
+        expect(read.updates).toHaveLength(0);
+        expect(read.logs.some((l) => l.includes("footer for the turn's own post failed"))).toBe(true);
+        const b = createSelfPosts();
+        const refused = build({ llm: postingLlm(b, ANSWER, "NO_REPLY"), streamUpdates: true, selfPosts: b, stored: { "333.3": { text: ANSWER } }, updateThrows: true });
+        await refused.handle(refused.msg("is staging green", "000.9"));
+        expect(refused.logs.some((l) => l.includes("footer for the turn's own post failed"))).toBe(true);
+      });
+
+      test("a quiet turn with no post of its own stays as it is", async () => {
+        const selfPosts = createSelfPosts();
+        const r = turnBuild(selfPosts, { complete: async () => "NO_REPLY", stream: async () => "NO_REPLY" }, true, { stored: { "333.3": { text: ANSWER } } });
+        await r.handle(r.msg("hello", "000.9"));
+        expect(r.updates).toHaveLength(0);
+        expect(r.said).toHaveLength(0);
+      });
     });
 
     test("narration streamed before the post stays shown until the end, then goes; the closing reply after the post never streams", async () => {
