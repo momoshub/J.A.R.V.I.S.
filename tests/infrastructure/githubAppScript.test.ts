@@ -119,6 +119,7 @@ describe("github-app.sh", () => {
     expect((await run(["pr-edit", "o/r", "5", "--title", "N"])).json()).toMatchObject({ action: "pr-edit", title: "N" });
     expect((await run(["pr-close", "o/r", "5"])).json()).toMatchObject({ action: "pr-close", number: 5 });
     expect((await run(["pr-merge", "o/r", "5", "--method", "squash"])).json()).toMatchObject({ method: "squash" });
+    expect((await run(["merge-gate", "o/r", "5", "--sha", "0".repeat(40)])).json()).toMatchObject({ action: "merge-gate", number: 5, sha: "0".repeat(40) });
     expect((await run(["labels-add", "o/r", "5", "a", "b c"])).json()).toMatchObject({ labels: ["a", "b c"] });
     expect((await run(["reviewers-request", "o/r", "5", "bob", "team:core"])).json()).toMatchObject({ reviewers: ["bob", "team:core"] });
   }, SLOW);

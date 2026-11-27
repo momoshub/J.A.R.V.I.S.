@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { expandHome } from "../domain/dbPath.ts";
 import { parseAllowedOwners } from "../domain/githubApp.ts";
+import { DEFAULT_REQUIRED_CHECKS, parseGateList } from "../domain/mergeGate.ts";
 import {
   DEFAULT_MAX_NUDGES,
   DEFAULT_MIN_AGE_MS,
@@ -231,6 +232,16 @@ const schema = z
     GITHUB_APP_ALLOWED_OWNERS: z.string().default(""),
     // Label that calls the app when added to an issue or PR.
     GITHUB_APP_LABEL: z.string().default("jarvis"),
+    // The bot's own merge gate (`merge-gate` action): when on, the bot merges a
+    // PR itself, with the app's credential, once checks, review and verify hold
+    // on the named sha, and `bin/merge-when-green.sh` holds only a ticket. Off
+    // (the default) keeps the script on the human token until the host is ready.
+    MERGE_GATE: z.enum(["on", "off"]).default("off"),
+    // Checks that must be green on the head sha (comma list).
+    MERGE_GATE_REQUIRED_CHECKS: z.string().default(DEFAULT_REQUIRED_CHECKS.join(",")),
+    // Accounts whose `[review round N]` / `[verify]` words count (comma list);
+    // empty: anyone except the PR's author and the app itself.
+    MERGE_GATE_ATTESTERS: z.string().default(""),
 
     // Slack bot ids (comma separated) whose messages are answered as the person
     // they post for. Such a bot posts with a person's user token, so its messages
@@ -364,6 +375,7 @@ export type AppConfig = {
     slug: string;
     allowedOwners: string[];
     label: string;
+    mergeGate: { enabled: boolean; requiredChecks: string[]; attesters: string[] };
   };
   /** Who opens the bot's own PRs and who reviews and merges them; unset is one account. */
   selfPrAccounts?: SelfPrAccounts;
@@ -476,6 +488,11 @@ export const loadConfig = (source: Record<string, string | undefined> = process.
       slug: env.GITHUB_APP_SLUG.trim(),
       allowedOwners: parseAllowedOwners(env.GITHUB_APP_ALLOWED_OWNERS),
       label: env.GITHUB_APP_LABEL.trim(),
+      mergeGate: {
+        enabled: env.MERGE_GATE === "on",
+        requiredChecks: parseGateList(env.MERGE_GATE_REQUIRED_CHECKS, DEFAULT_REQUIRED_CHECKS),
+        attesters: parseGateList(env.MERGE_GATE_ATTESTERS),
+      },
     },
     ...((accounts) => (accounts ? { selfPrAccounts: accounts } : {}))(
       parseSelfPrAccounts(env.SELF_PR_AUTHOR, env.SELF_PR_REVIEWER),

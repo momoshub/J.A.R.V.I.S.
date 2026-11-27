@@ -26,6 +26,7 @@ import type { AllowedUser } from "../domain/types.ts";
 import type { CommandLogRepo } from "../infrastructure/db/commandLogRepo.ts";
 import { isWorkerToken, parseTtl, RENEW_ACTION, WORKER_TTL_DEFAULT_MS } from "../domain/workerTicket.ts";
 import { logAndIgnore } from "./ignoredError.ts";
+import { type MergeGateConfig, runMergeGate } from "./mergeGate.ts";
 import type { Clock } from "./ports.ts";
 import { type WorkerRedeem, type WorkerRenewal, renewalSummary } from "./workerTickets.ts";
 
@@ -70,6 +71,8 @@ export type GithubActionDeps = {
   allowedOwners: readonly string[];
   /** The app's slug (`GITHUB_APP_SLUG`); its commit identity is `<slug>[bot]`. */
   slug: string;
+  /** The `merge-gate` action's rules (`MERGE_GATE*`). Absent = off: the action answers `disabled` and the script keeps its old path. */
+  mergeGate?: Omit<MergeGateConfig, "botLogin">;
 };
 
 export type GithubActionResult = { url?: string; number?: number; github: unknown };
@@ -102,6 +105,7 @@ const describe = (req: ActionRequest): string =>
     req.base && `base=${String(req.base)}`,
     req.event,
     req.method,
+    req.action === "merge-gate" && typeof req.sha === "string" && `sha=${req.sha.slice(0, 7)}`,
     typeof req.ttl === "string" && req.ttl && `ttl=${req.ttl.slice(0, 12)}`,
     req.action === "pr-create" && `draft=${req.draft === true}`,
     typeof req.title === "string" && req.title && `title=${req.title.length}ch`,
@@ -246,6 +250,18 @@ export const createGithubActions = (deps: GithubActionDeps): GithubActions => {
               : await gitAuth(installation);
           log(true, `git-auth ${plan.repo}`);
           return { github: auth };
+        }
+        if (plan.action === "merge-gate") {
+          // The decision is the bot's, made here with the app's token; the caller gets the verdict, never the token.
+          const outcome = await runMergeGate(
+            { enabled: false, requiredChecks: [], attesters: [], ...deps.mergeGate, botLogin: botName },
+            (method, path, body) => deps.github.request(installation, method, path, body),
+            plan.repo,
+            Number(req.number),
+            String(req.sha).trim(),
+          );
+          log(outcome.decision === "merged", `merge-gate ${outcome.decision}${"reasons" in outcome ? `: ${outcome.reasons.join("; ")}` : ""}`);
+          return { number: Number(req.number), github: outcome };
         }
         const outs: unknown[] = [];
         for (const c of plan.calls) outs.push(await deps.github.request(installation, c.method, c.path, c.body));

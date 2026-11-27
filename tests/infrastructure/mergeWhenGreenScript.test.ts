@@ -66,12 +66,12 @@ exit 1
   return dir;
 };
 
-const run = async (dir: string, args: string[]) => {
+const run = async (dir: string, args: string[], extraEnv: Record<string, string> = {}) => {
   const proc = Bun.spawn({
     cmd: ["bash", SCRIPT, ...args],
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, MERGE_POLL_SECONDS: "0", MERGE_HEAD_SHA: SHA },
+    env: { ...process.env, PATH: `${dir}:${process.env.PATH}`, MERGE_POLL_SECONDS: "0", MERGE_HEAD_SHA: SHA, JARVIS_RUN_TICKET: "", JARVIS_RUN_TICKET_FILE: "", ...extraEnv },
   });
   const [stdout, stderr, code] = await Promise.all([
     new Response(proc.stdout).text(),
@@ -248,5 +248,104 @@ describe("merge-when-green.sh", () => {
     expect(r.stderr).toContain("merges cleanly");
     expect(r.approved).toBeNull();
     expect(r.merged).toBeNull();
+  });
+});
+
+const FULL_SHA = "0123456789abcdef0123456789abcdef01234567";
+
+/**
+ * A stand-in `github-app.sh`: answers one canned bot reply per call (the last repeats) and
+ * records its arguments, so the bot-side gate is tested without a bot. `gh` is a stub that
+ * fails the test if the script touches it (a merge by the human token).
+ */
+const fakeBot = (answers: string[]) => {
+  const dir = fakeGh([{ checks: [ci("pass")], head: FULL_SHA }]);
+  writeFileSync(join(dir, "gh"), `#!/usr/bin/env bash\necho "$@" >> "${dir}/gh-used"\nexit 1\n`);
+  answers.forEach((a, i) => writeFileSync(join(dir, `bot.${i}`), a));
+  writeFileSync(
+    join(dir, "bot.sh"),
+    `#!/usr/bin/env bash
+n=$(cat "${dir}/bot-count" 2>/dev/null || echo 0)
+[ "$n" -gt ${answers.length - 1} ] && n=${answers.length - 1}
+echo "$@" >> "${dir}/bot-args"
+echo $((n + 1)) > "${dir}/bot-count"
+cat "${dir}/bot.$n"
+[ "$(jq -r '.ok' "${dir}/bot.$n")" = "true" ]
+`,
+  );
+  chmodSync(join(dir, "bot.sh"), 0o755);
+  return dir;
+};
+const reply = (github: unknown) => JSON.stringify({ ok: true, github });
+const gateEnv = (dir: string) => ({
+  JARVIS_RUN_TICKET: "jvwk_test",
+  GITHUB_APP_SH: join(dir, "bot.sh"),
+  MERGE_REPO: "o/r",
+  MERGE_HEAD_SHA: FULL_SHA,
+});
+const seen = (dir: string, name: string) => (existsSync(join(dir, name)) ? readFileSync(join(dir, name), "utf8") : "");
+
+describe("merge-when-green.sh with a ticket (the bot decides)", () => {
+  test("the bot merges: exit 0, asked for this PR and this exact sha, the human gh never touched", async () => {
+    const dir = fakeBot([reply({ decision: "merged", sha: FULL_SHA, mergedSha: "feed" })]);
+    const r = await run(dir, ["42"], gateEnv(dir));
+    expect(r.code).toBe(0);
+    expect(r.stdout).toContain("merged by the bot: feed");
+    expect(seen(dir, "bot-args")).toContain(`merge-gate o/r 42 --sha ${FULL_SHA}`);
+    expect(seen(dir, "gh-used")).toBe("");
+  });
+
+  test("pending is polled again until the bot merges", async () => {
+    const dir = fakeBot([reply({ decision: "pending", reasons: ["required check checks is still running"], sha: FULL_SHA }), reply({ decision: "merged", sha: FULL_SHA })]);
+    const r = await run(dir, ["42"], gateEnv(dir));
+    expect(r.code).toBe(0);
+    expect(seen(dir, "bot-count").trim()).toBe("2");
+  });
+
+  test("pending past the timeout -> exit 3 with the reason", async () => {
+    const dir = fakeBot([reply({ decision: "pending", reasons: ["checks still running"], sha: FULL_SHA })]);
+    const r = await run(dir, ["42", "0"], gateEnv(dir));
+    expect(r.code).toBe(3);
+    expect(r.stderr).toContain("checks still running");
+  });
+
+  test("refused -> exit 1 with every reason, no retry, no human merge", async () => {
+    const dir = fakeBot([reply({ decision: "refused", reasons: ["check checks: failure", "no `[verify]` comment"], sha: FULL_SHA })]);
+    const r = await run(dir, ["42"], gateEnv(dir));
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("check checks: failure");
+    expect(r.stderr).toContain("no `[verify]` comment");
+    expect(seen(dir, "bot-count").trim()).toBe("1");
+    expect(seen(dir, "gh-used")).toBe("");
+  });
+
+  test("conflict -> exit 4", async () => {
+    const dir = fakeBot([reply({ decision: "conflict", reasons: ["conflicts"], sha: FULL_SHA })]);
+    expect((await run(dir, ["42"], gateEnv(dir))).code).toBe(4);
+  });
+
+  test("a bot error (ticket refused, merge action not granted) -> exit 1, never a fallback to the human token", async () => {
+    const dir = fakeBot([JSON.stringify({ ok: false, error: "this worker ticket does not allow merge-gate" })]);
+    const r = await run(dir, ["42"], gateEnv(dir));
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("no usable answer");
+    expect(seen(dir, "gh-used")).toBe("");
+  });
+
+  test("the bot's gate is off (disabled) -> the old human path runs", async () => {
+    const dir = fakeBot([reply({ decision: "disabled", reasons: ["off"], sha: FULL_SHA })]);
+    // the old path reads `gh`: give it a green PR at the same sha
+    const gh = fakeGh([{ checks: [ci("pass"), guardian], head: FULL_SHA }]);
+    const r = await run(gh, ["42"], { ...gateEnv(dir), PATH: `${gh}:${process.env.PATH}` });
+    expect(r.code).toBe(0);
+    expect(r.stderr).toContain("merge gate is off");
+    expect(r.merged).toContain(`pr merge 42 --merge --match-head-commit ${FULL_SHA}`);
+  });
+
+  test("a short sha is refused before asking the bot", async () => {
+    const dir = fakeBot([reply({ decision: "merged", sha: SHA })]);
+    const r = await run(dir, ["42"], { ...gateEnv(dir), MERGE_HEAD_SHA: SHA });
+    expect(r.code).toBe(1);
+    expect(seen(dir, "bot-args")).toBe("");
   });
 });

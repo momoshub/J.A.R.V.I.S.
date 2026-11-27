@@ -23,6 +23,13 @@ export const ACTIONS = [
   "labels-remove",
   "reviewers-request",
   /**
+   * Not one REST call: the bot's own merge decision (`application/mergeGate.ts`).
+   * The caller names the PR and the head sha it built; the bot merges only if
+   * the rules of `domain/mergeGate.ts` hold on that sha, with a credential the
+   * caller never holds. This, not `pr-merge`, is what a writer's ticket may carry.
+   */
+  "merge-gate",
+  /**
    * Not a REST call: hands the helper what a local `git` needs to act as the
    * app on one repo (installation token + bot name and email). It is what
    * `bin/github-app.sh git|push` asks for.
@@ -73,6 +80,8 @@ export type ActionRequest = {
   draft?: unknown;
   event?: unknown;
   method?: unknown;
+  /** `merge-gate` only: the head commit the caller built and tested. */
+  sha?: unknown;
   labels?: unknown;
   reviewers?: unknown;
   /** `ticket-renew` only: how long to extend for, like `3h`. */
@@ -157,6 +166,11 @@ export const planAction = (req: ActionRequest): Plan => {
       const method = str(req.method).trim() || "merge";
       if (!(MERGE_METHODS as readonly string[]).includes(method)) return fail(`merge method must be ${MERGE_METHODS.join(", ")}`);
       return done([{ method: "PUT", path: `${pull}/merge`, body: { merge_method: method } }]);
+    }
+    case "merge-gate": {
+      const sha = str(req.sha).trim();
+      if (!/^[0-9a-fA-F]{40}$/.test(sha)) return fail("merge-gate needs the full 40-hex head sha");
+      return done([]);
     }
     case "labels-add": {
       const labels = strList(req.labels);

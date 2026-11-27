@@ -105,6 +105,9 @@ Required / notable env (see `.env.example`):
 | `GITHUB_APP_SLUG` | app slug, `@<slug>` calls it (default `jarvis`) |
 | `GITHUB_APP_ALLOWED_OWNERS` | repo owners the app acts for, comma list (default empty: the app acts for no owner until set) |
 | `GITHUB_APP_LABEL` | label that calls it on an issue/PR (default `jarvis`) |
+| `MERGE_GATE` | `on`: the bot merges the PR itself, with the app's credential, once the gate holds (see [Who merges](#who-merges-one-principal-per-job)); `off` (default) keeps `bin/merge-when-green.sh` on the human token |
+| `MERGE_GATE_REQUIRED_CHECKS` | checks that must be green on the head sha, comma list (default `checks,gitleaks`) |
+| `MERGE_GATE_ATTESTERS` | accounts whose `[review round N]` / `[verify]` words count, comma list (default empty: anyone but the PR's author and the app) |
 | `SELF_PR_AUTHOR` / `SELF_PR_REVIEWER` | gh logins for the bot's own PRs: the author opens the PR and answers reviews, the reviewer posts its reviews (request changes or approve) and merges. Both or neither, and not the same login (otherwise: one account) |
 | `ACCEPTED_BOT_IDS` | Slack bot ids, comma list, whose messages are answered as the person they post for. A bot that posts with a person's user token carries both a `bot_id` and that person's `user`; with its id listed the message is handled as that user speaking, authorized through the normal access check (exactly that person's role, never more). A bot message without a `user` is still ignored, and after 3 accepted-bot turns in a row in one thread with no person writing, the bot stops answering bots there until a person does. The turn's context marks such a message `via bot` next to the person. Default empty: every bot message is ignored |
 | `REVIEW_ROUNDS_MAX` | review rounds a PR is followed for, the review that was asked for included (default `5`; `0` turns following off). See [Review rounds](#review-rounds) |
@@ -1254,6 +1257,7 @@ bin/github-app.sh review <owner/repo> <n> APPROVE|REQUEST_CHANGES|COMMENT [body-
 bin/github-app.sh pr-edit <owner/repo> <n> [--title <t>] [--body-file <f>]
 bin/github-app.sh pr-close|pr-reopen <owner/repo> <n>
 bin/github-app.sh pr-merge <owner/repo> <n> [--method merge|squash|rebase]
+bin/github-app.sh merge-gate <owner/repo> <n> --sha <40-hex head>   # the bot decides; see "Who merges"
 bin/github-app.sh labels-add|labels-remove <owner/repo> <n> <label>...
 bin/github-app.sh reviewers-request <owner/repo> <n> <login|team:slug>...
 bin/github-app.sh git <owner/repo> <local-repo-dir> -- <git args>...
@@ -1288,7 +1292,7 @@ brain's own run bridge, so a typed line, a schedule, an errand or the menu never
 mint one):
 
 ```
-worker-ticket <owner/repo> pending [pr-create|comment|pr-edit|push|labels-add|reviewers-request ...] [--ttl 3h]
+worker-ticket <owner/repo> pending [pr-create|comment|pr-edit|push|labels-add|reviewers-request|merge-gate ...] [--ttl 3h]
 worker-ticket bind <id> <ctx_...>      # after worker-start prints the dispatch id
 worker-ticket revoke <id|ctx_...>
 worker-ticket renew <id|ctx_...> [--ttl 3h]   # admin; also revives one that lapsed but was never revoked
@@ -1300,7 +1304,7 @@ is written once to a mode-0600 file in a 0700 folder
 path, to `export` before `bin/github-app.sh` (the helper reads the first line of
 that file; the brain never reads, prints or posts it, and the file is deleted
 when the ticket ends). The ticket works for that one repo and those actions only
-(default `pr-create`, `comment`, `pr-edit` and the app's commit identity; never review, merge or close), cannot
+(default `pr-create`, `comment`, `pr-edit` and the app's commit identity; never review, raw merge or close; `merge-gate` only when named on the mint, see [Who merges](#who-merges-one-principal-per-job)), cannot
 run any command, is checked against the minting person's role on every call,
 expires in 3 hours (max 6) and ends when the worker finishes or dies (the turn's
 `watch worker`), on `worker-ticket revoke`, or at expiry. Tickets are rows in
@@ -1368,6 +1372,81 @@ both work, as do `/github/setup` and `/setup`. Deliveries are verified with
 `X-Hub-Signature-256`, answered 202 at once, deduped on `X-GitHub-Delivery`,
 and only acted on for repositories owned by `GITHUB_APP_ALLOWED_OWNERS`.
 Bots, the app itself included, never trigger it.
+
+### Who merges: one principal per job
+
+The writer pushes a branch and holds nothing else; the reviewer cannot merge; the
+merge is decided by the bot, in code, with the GitHub App's credential that no
+model session ever sees. That is the `merge-gate` action (`domain/mergeGate.ts`
+for the rules, `application/mergeGate.ts` for the GitHub reads and the one merge
+call). `bin/merge-when-green.sh` calls it with the worker's ticket instead of
+approving and merging with a human admin's `gh` token:
+
+```
+bin/github-app.sh merge-gate <owner/repo> <n> --sha <40-hex head>
+```
+
+The bot merges (a merge commit, pinned to the sha, so a push that lands meanwhile
+is refused by GitHub) only when **all** of this holds on that exact sha:
+
+- the PR is open, not a draft, and mergeable (a conflict answers `conflict`: exit 4);
+- every required check (`MERGE_GATE_REQUIRED_CHECKS`, default `checks` and `gitleaks`) is green and no other check is red; one not yet reported or still running answers `pending` (exit 3, run it again);
+- for a PR that touches runtime code (anything that is not `*.md`, `docs/`, `web/`, `.claude/skills/`, `data/prompt-guides/`, `.env.example`; `.github/`, `bin/`, `tests/` and prompt text in `.ts` count as runtime): the latest `[review round N]` review was written on this head and ends `VERDICT: clean`, and the latest `[verify]` comment ends `VERDICT: verified` and names the head sha;
+- those review and verify words come from an account that is neither the PR's author nor the app itself (`<slug>[bot]`), and, if `MERGE_GATE_ATTESTERS` is set, one of those accounts. The writer can comment as the app, so its own `VERDICT: clean` counts for nothing.
+
+Anything else answers `refused` with every reason (exit 1). Exit codes of the
+script are unchanged: 0 merged, 1 refused or red, 2 usage, 3 not finished yet,
+4 conflict. A worker ticket never carries `pr-merge`; `merge-gate` is the one
+merge it may ask for, only when named on the mint (`worker-ticket <owner/repo>
+pending merge-gate`), on the **writer's** ticket. A reviewer or verifier is
+started without one, so it cannot merge, and a ticket without it is refused.
+
+`MERGE_GATE=off` (the default) makes the bot answer `disabled`, and the script
+then falls back to the old human-token path with a warning, so nothing breaks
+before the host is ready. So does a shell with no ticket at all (a person at a
+terminal). That fallback is only as strong as the human token is out of reach:
+once it is gone from the host the fallback has nothing to merge with.
+
+**What the owner still does by hand to finish the wall** (none of it can be done
+by the bot or a worker, by design):
+
+1. **Let the app merge.** In the GitHub App's settings give it *Repository
+   permissions -> Contents: Read and write* (it has Pull requests: write
+   already), then accept the new permission on the installation for
+   `momoshub` (Settings -> Applications -> the app -> Review request). Until
+   then the merge call returns 403.
+2. **Stop asking for an approval nobody can give.** The app opens the PR, and
+   GitHub never lets an author approve its own PR, so with *1 required
+   approving review* on `main` only a human could unblock a docs-only PR (it has
+   no reviewer). The gate replaces that rule (it demands the review and the
+   verify for runtime code, and the checks for all): set it to 0, keeping the
+   required checks and `enforce_admins`:
+   `gh api -X PATCH repos/momoshub/J.A.R.V.I.S./branches/main/protection/required_pull_request_reviews -F required_approving_review_count=0`
+   (run by an admin, once). Alternatively keep 1 and give the bot a second app
+   identity to approve with; that is not built here.
+3. **Make the bot the only thing that can merge.** Branch protection can restrict
+   who may push to `main`, and a merge is a push. On an org repo:
+   `gh api -X PATCH repos/momoshub/J.A.R.V.I.S./branches/main/protection` cannot set it in
+   place, so use the full `PUT` once with `restrictions` naming only the app
+   (`{"users":[],"teams":[],"apps":["<app-slug>"]}`) next to the current
+   `required_status_checks` (`checks`, `gitleaks`) and `enforce_admins: true`.
+   Then not even an admin's token can merge by hand without lifting the rule first.
+4. **Take the human merger out of the writer's reach.** The writer's shell can
+   read every `gh` login on the host. Log the admin account out of `gh` on the
+   host (`gh auth logout -u <admin-login>`) and keep only a *non-admin* login for
+   the reviewer and verifier (`SELF_PR_REVIEWER`: write or triage access, enough
+   to post reviews and comments, not to merge or to edit protection) and for the
+   writer's one-shot push (`SELF_PR_AUTHOR`/the push account: write access, and
+   protected branches stop it pushing to `main`). Keep the admin token off the
+   host entirely (a password manager, used by hand when protection must change).
+   The reviewer and verifier tokens stay readable by the writer's shell, which is
+   why `MERGE_GATE_ATTESTERS` can pin the accounts that count, but a forged
+   `VERDICT: clean` needs one of them; a separate reviewer **host** or a second
+   GitHub App for reviews would close that last gap, and is not built here.
+5. **Turn it on.** Set `MERGE_GATE=on` in the bot's `.env` and restart Jarvis when
+   idle. Check with a docs-only PR: `bin/merge-when-green.sh <n>` from its
+   worktree should print `merged by the bot`. From then on the script never
+   uses the human path when the bot answers.
 
 ## Reviews that start by themselves
 
@@ -1669,7 +1748,7 @@ A permission is an id; `role perms [filter]` and the Roles page list them all:
 | permission | grants |
 | --- | --- |
 | `command:<name>` | running that command (a command's `minRole` in code is only where its grant is seeded) |
-| `github:<action>` | acting on GitHub as the App: `pr-create`, `comment`, `review`, `pr-edit`, `pr-close`, `pr-reopen`, `pr-merge`, `labels-add`, `labels-remove`, `reviewers-request`, `git` (commit as the App), `push` (push a branch with its token) |
+| `github:<action>` | acting on GitHub as the App: `pr-create`, `comment`, `review`, `pr-edit`, `pr-close`, `pr-reopen`, `pr-merge`, `merge-gate` (the bot's own merge decision), `labels-add`, `labels-remove`, `reviewers-request`, `git` (commit as the App), `push` (push a branch with its token) |
 | `mcp:<server>` | using an MCP server in a chat turn: `notion`, `datadog`, each `DB_MCP_SERVERS` entry, plus any server named on the Roles page. A server a role lacks the grant for is denied by name |
 | `tools:full-access` | chat turns run the CLI with full access (real shell, writes, the normal cwd) - the owner alone as seeded. Without it the role is sandboxed: an explicit `--allowedTools` allow-list in a fixed scratch dir, with no permission bypass and `--permission-mode dontAsk` |
 | `tools:code` | the sandboxed code tools: clone into the scratch dir, edit, commit, push a branch, open a PR, the `Agent`/`Task` tool for parallel or long work, and the browser tools (the dashboard's code-tier tool list replaces the read-only base) |

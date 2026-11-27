@@ -48,7 +48,7 @@ export const mcpPerm = (server: string): string => `mcp:${server.replace(/^mcp__
 
 /** GitHub App actions a role can be granted. `git` and `push` both mint the installation token (`git-auth`). */
 export const GITHUB_PERMISSION_ACTIONS = [
-  "pr-create", "comment", "review", "pr-edit", "pr-close", "pr-reopen", "pr-merge",
+  "pr-create", "comment", "review", "pr-edit", "pr-close", "pr-reopen", "pr-merge", "merge-gate",
   "labels-add", "labels-remove", "reviewers-request", "git", "push",
 ] as const;
 

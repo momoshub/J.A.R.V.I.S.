@@ -1483,6 +1483,7 @@ const main = async () => {
       audit: commandLog,
       allowedOwners: config.githubApp.allowedOwners,
       slug: config.githubApp.slug,
+      mergeGate: config.githubApp.mergeGate,
     });
     // A ticket that ends (revoked, worker done, expired) takes its GitHub token with it.
     workerTickets.onEnd((id) => {
