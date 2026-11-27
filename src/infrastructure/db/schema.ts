@@ -1601,13 +1601,76 @@ const migrateReviewRounds = (db: Database): void => {
  * checks what exists, so a rerun is a no-op: no legacy table (a new database, or
  * already renamed) only creates what is missing; both generations present (a rename
  * that was cut short, or a database that was run by a build from before the rename)
- * copies the legacy rows over by id and drops the legacy table.
+ * moves the legacy rows into the new tables without losing any, then drops the legacy
+ * tables: a pre-rename build recreates its tables empty, so its AUTOINCREMENT ids start
+ * again from 1 and clash with ids the new tables already hold. Digest lines get fresh
+ * ids (nothing points at an action id); a blocker keeps its id when it is free and
+ * takes a fresh one when not (a posted button is matched on its message channel and ts
+ * as well as its id, so a moved id is refused, never applied to another blocker); a key
+ * the new table already has stays as it is, except that a prod flag is never lost; the
+ * digest message of a day the new table already has stays.
  */
 const LEGACY_COORDINATOR_TABLES = [
   ["jueki_actions", "coordinator_actions"],
   ["jueki_digest", "coordinator_digest"],
   ["jueki_blockers", "coordinator_blockers"],
 ] as const;
+
+type LegacyBlockerRow = {
+  id: number;
+  key: string;
+  kind: string;
+  prod: number;
+  text: string;
+  state: string;
+  notice_channel: string;
+  notice_ts: string;
+  raised_count: number;
+  last_raised_at: number;
+  handled_at: number;
+  created_at: number;
+  decided_at: number;
+};
+
+/** Both generations exist: move the legacy rows over (see the comment above for the rules). */
+const mergeLegacyCoordinatorRows = (db: Database, legacy: string): void => {
+  if (legacy === "jueki_actions") {
+    db.exec("INSERT INTO coordinator_actions (day, at, kind, ref, line) SELECT day, at, kind, ref, line FROM jueki_actions ORDER BY id;");
+  } else if (legacy === "jueki_digest") {
+    db.exec("INSERT OR IGNORE INTO coordinator_digest (day, channel, ts) SELECT day, channel, ts FROM jueki_digest;");
+  } else {
+    const byKey = db.query<{ id: number; prod: number }, [string]>("SELECT id, prod FROM coordinator_blockers WHERE key = ?");
+    const byId = db.query<{ id: number }, [number]>("SELECT id FROM coordinator_blockers WHERE id = ?");
+    const raiseProd = db.query("UPDATE coordinator_blockers SET prod = 1 WHERE id = ?");
+    const insert = db.query(
+      `INSERT INTO coordinator_blockers
+         (id, key, kind, prod, text, state, notice_channel, notice_ts, raised_count, last_raised_at, handled_at, created_at, decided_at)
+       VALUES ($id, $key, $kind, $prod, $text, $state, $notice_channel, $notice_ts, $raised_count, $last_raised_at, $handled_at, $created_at, $decided_at)`,
+    );
+    for (const r of db.query<LegacyBlockerRow, []>("SELECT * FROM jueki_blockers ORDER BY id").all()) {
+      const same = byKey.get(r.key);
+      if (same) {
+        if (r.prod > same.prod) raiseProd.run(same.id);
+        continue;
+      }
+      insert.run({
+        $id: byId.get(r.id) ? null : r.id,
+        $key: r.key,
+        $kind: r.kind,
+        $prod: r.prod,
+        $text: r.text,
+        $state: r.state,
+        $notice_channel: r.notice_channel,
+        $notice_ts: r.notice_ts,
+        $raised_count: r.raised_count,
+        $last_raised_at: r.last_raised_at,
+        $handled_at: r.handled_at,
+        $created_at: r.created_at,
+        $decided_at: r.decided_at,
+      });
+    }
+  }
+};
 
 const migrateCoordinator = (db: Database): void => {
   const tableExists = (name: string): boolean =>
@@ -1621,9 +1684,7 @@ const migrateCoordinator = (db: Database): void => {
         db.exec(`ALTER TABLE ${legacy} RENAME TO ${current};`);
         continue;
       }
-      // Both exist: keep the rows of both. The ids of the legacy table win on a clash only when the
-      // current one has no such id (INSERT OR IGNORE), so nothing already in the new table is touched.
-      db.exec(`INSERT OR IGNORE INTO ${current} SELECT * FROM ${legacy};`);
+      mergeLegacyCoordinatorRows(db, legacy);
       db.exec(`DROP TABLE ${legacy};`);
     }
     db.exec(`

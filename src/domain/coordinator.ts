@@ -1,9 +1,9 @@
 /**
- * the coordinator: the housekeeping coordinator that lives only in the owner's DM.
+ * The coordinator: the housekeeping coordinator that lives only in the owner's DM.
  *
  * The owner forgets open work: journeys go quiet for days, a worker ticket
  * lapses under a worker that is still going, a watch runs out, a PR waits on a
- * reviewer. the coordinator is a recurring tick (not a process) that rebuilds its picture
+ * reviewer. It is a recurring tick (not a process) that rebuilds its picture
  * from the bot's own records every time, acts on what it can inside the owner's
  * role, and raises to the owner only what really needs them.
  *
@@ -539,7 +539,7 @@ const section = (title: string, items: readonly PictureItem[]): string[] =>
   items.length === 0 ? [] : [`${title}:`, ...items.map((i) => `- ${i.ref}: ${i.line}`), ""];
 
 /**
- * The text of one the coordinator turn. It starts cold (a fresh session per day), so
+ * The text of one coordinator turn. It starts cold (a fresh session per day), so
  * everything it needs is here or in the journeys, never in carried context.
  */
 export const coordinatorTurnText = (name: string, day: string, quiet: boolean, p: Picture, prefix: string): string =>

@@ -1,5 +1,5 @@
 /**
- * the coordinator's state, in the database and never in a session (see domain/coordinator.ts):
+ * The coordinator's state, in the database and never in a session (see domain/coordinator.ts):
  * the digest's lines and the marks that keep an item from being nudged twice,
  * the message the digest lives on, and the blockers put to the owner.
  */
@@ -79,7 +79,7 @@ export type CoordinatorRepo = {
   setNotice: (id: number, channel: string, ts: string) => void;
   /** Record that it was put to the owner (again). */
   raised: (id: number, at: number) => void;
-  /** the coordinator fixed it itself under the prod rule: closes a still pending row; false when it was not pending. */
+  /** The coordinator fixed it itself under the prod rule: closes a still pending row; false when it was not pending. */
   close: (id: number, at: number) => boolean;
   /** First decision wins; false when it was already decided. */
   decide: (id: number, state: "approved" | "rejected", at: number) => boolean;

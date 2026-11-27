@@ -125,7 +125,7 @@ export type HandleMessageDeps = {
   reminders?: ReminderRepo;
   /** The bot's own record of its work, for the `journey` command. */
   journeys?: JourneyRepo;
-  /** the coordinator, the owner's housekeeping coordinator, for the internal `coordinator` command. */
+  /** The coordinator, the owner's housekeeping coordinator, for the internal `coordinator` command. */
   coordinator?: Coordinator;
   /** The bug reports the bot raised about itself, for the `bug-report` command. */
   bugReports?: BugReportRepo;

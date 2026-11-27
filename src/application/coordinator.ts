@@ -1,5 +1,5 @@
 /**
- * the coordinator's tick (see domain/coordinator.ts for the why and the rules).
+ * The coordinator's tick (see domain/coordinator.ts for the why and the rules).
  *
  * Every `COORDINATOR_INTERVAL_MS`, outside any turn, it rebuilds its picture from the
  * bot's own records - journeys, worker tickets, watches, Orca tasks, open PRs,
@@ -189,7 +189,7 @@ export const createCoordinator = (deps: CoordinatorDeps): Coordinator => {
 
   const quietNow = (): boolean => inQuietHours(deps.clock(), deps.offsetMinutes(), deps.quiet.startHour, deps.quiet.endHour);
   /**
-   * the coordinator's day starts when quiet hours end (05:00), not at midnight: what happens at 23:00 belongs to
+   * The coordinator's day starts when quiet hours end (05:00), not at midnight: what happens at 23:00 belongs to
    * the day that began that morning, so a line held for quiet hours is posted with that day's digest
    * instead of being stranded by the calendar rolling over. Without quiet hours it is the calendar day.
    */

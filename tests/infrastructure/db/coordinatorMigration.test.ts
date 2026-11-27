@@ -97,18 +97,46 @@ describe("migration v55: the v54 tables are renamed, nothing is lost", () => {
     expect(tables(db)).toEqual(NEW_TABLES);
   });
 
-  test("both generations present (a cut-short rename): the rows of both are kept, the old tables go", () => {
+  test("both generations present: every row of the old build survives, ids that clash get fresh ones", () => {
     const db = legacyDb();
     migrate(db);
-    // A build from before the rename ran against the same file again and recreated its tables, with two rows:
-    // one whose id is already taken in the new table, one that is not.
+    const before = createCoordinatorRepo(db);
+    before.addLine("2026-11-27", 6, "new build line");
+    // A build from before the rename ran against the same file again. Its tables were recreated empty, so its
+    // AUTOINCREMENT ids start at 1 and clash with ids the new tables already hold.
     db.exec(V54);
-    db.exec("INSERT INTO jueki_actions (id, day, at, kind, ref, line) VALUES (1, 'x', 1, 'line', '', 'clash'), (50, '2026-11-28', 6, 'line', '', 'late line');");
+    db.exec(`
+      INSERT INTO jueki_actions (day, at, kind, ref, line) VALUES ('2026-11-28', 7, 'line', '', 'old build line');
+      INSERT INTO jueki_digest (day, channel, ts) VALUES ('2026-11-27', 'D9', '9.9'), ('2026-11-28', 'D1', '10.1');
+      INSERT INTO jueki_blockers (key, kind, prod, text, state, notice_channel, notice_ts, created_at)
+        VALUES ('pg-full', 'prod-write', 1, 'disk is full', 'pending', 'D1', '11.1', 8);
+      INSERT INTO jueki_blockers (key, kind, prod, text, state, created_at) VALUES ('purge', 'prod-write', 1, 'again', 'pending', 9);
+    `);
+    db.exec("INSERT INTO coordinator_blockers (key, kind, prod, text, created_at) VALUES ('keep', 'decision', 0, 'x', 5);");
     migrate(db);
     expect(tables(db)).toEqual(NEW_TABLES);
     const r = createCoordinatorRepo(db);
-    expect(r.lines("2026-11-27")).toEqual([{ at: 5, text: "closed journey #4" }]);
-    expect(r.lines("2026-11-28")).toEqual([{ at: 6, text: "late line" }]);
-    expect(r.lines("x")).toEqual([]);
+    expect(r.lines("2026-11-27").map((l) => l.text)).toEqual(["closed journey #4", "new build line"]);
+    expect(r.lines("2026-11-28")).toEqual([{ at: 7, text: "old build line" }]);
+    // The digest message of a day the new table has stays; a day only the old build had is kept.
+    expect(r.digest("2026-11-27")).toEqual({ channel: "D1", ts: "7.7" });
+    expect(r.digest("2026-11-28")).toEqual({ channel: "D1", ts: "10.1" });
+    // The pending prod blocker of the old build is found by key, kept pending with its notice, and not mistaken for #1.
+    const moved = r.blockerByKey("pg-full");
+    expect(moved).toMatchObject({ prod: true, state: "pending", noticeChannel: "D1", noticeTs: "11.1" });
+    expect(moved!.id).not.toBe(r.blockerByKey("purge")!.id);
+    expect(r.pending().map((b) => b.key).sort()).toEqual(["keep", "pg-full", "purge"]);
+    // A key both generations have stays one row (UNIQUE key), the original's text kept.
+    expect(r.blockerByKey("purge")).toMatchObject({ id: 1, text: "purge the table", prod: true });
+  });
+
+  test("a same-key blocker never loses its prod flag in the merge", () => {
+    const db = new Database(":memory:");
+    migrate(db);
+    db.exec("INSERT INTO coordinator_blockers (key, kind, prod, text, created_at) VALUES ('k', 'decision', 0, 'x', 1);");
+    db.exec(V54);
+    db.exec("INSERT INTO jueki_blockers (key, kind, prod, text, created_at) VALUES ('k', 'decision', 1, 'x', 2);");
+    migrate(db);
+    expect(createCoordinatorRepo(db).blockerByKey("k")).toMatchObject({ prod: true });
   });
 });
