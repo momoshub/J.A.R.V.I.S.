@@ -107,6 +107,7 @@ import { DEFAULT_MCP_SCHEMA_CACHE_DIR } from "./infrastructure/llm/mcpConfig.ts"
 import { createSettingsRepo, modelKey, SETTING_KEYS } from "./infrastructure/db/settingsRepo.ts";
 import { agentModelEnv, agentModelsOf, builtinAgentOverrides } from "./domain/agentModels.ts";
 import { workerMcpEnv } from "./domain/workerMcp.ts";
+import { parseRoleMcpDeny } from "./domain/workerRoles.ts";
 import { loadBotProfile } from "./application/botProfile.ts";
 import { seedOwner } from "./infrastructure/db/seed.ts";
 import { createAnthropicLlm } from "./infrastructure/llm/anthropic.ts";
@@ -342,6 +343,14 @@ const main = async () => {
     }
     // A name that matches no server excludes nothing from the workers, and a typo is silent.
     const unknown = unknownMcpServers(createClaudeJsonReader()(), config.workerMcpDeny);
+    const roleDeny = parseRoleMcpDeny(config.workerRoleMcpDeny);
+    const roleUnknown = Object.values(roleDeny.deny).flatMap((names) => unknownMcpServers(createClaudeJsonReader()(), names));
+    if (roleUnknown.length > 0) {
+      activity.line(`WARNING: WORKER_ROLE_MCP_DENY names no user-scope MCP server in ~/.claude.json (it excludes nothing): ${[...new Set(roleUnknown)].join(", ")}`);
+    }
+    if (roleDeny.unknown.length > 0) {
+      activity.line(`WARNING: WORKER_ROLE_MCP_DENY names no worker role (it excludes nothing): ${roleDeny.unknown.join(", ")}`);
+    }
     if (unknown.length > 0) {
       activity.line(`WARNING: WORKER_MCP_DENY names no user-scope MCP server in ~/.claude.json (it excludes nothing): ${unknown.join(", ")}`);
     }
@@ -460,11 +469,14 @@ const main = async () => {
   // Reads a claude.ai artifact by opening a full session, which has the tool a
   // `-p` spawn does not.
   const artifactScript = join(import.meta.dir, "..", "bin", "artifact-read.sh");
-  const restartScript = join(import.meta.dir, "..", "bin", "jarvis-restart.sh");
   // Posts a turn's answer to the GitHub issue its thread was opened for, as the app.
   const githubCommentScript = join(import.meta.dir, "..", "bin", "github-app-comment.sh");
   const githubAppScript = join(import.meta.dir, "..", "bin", "github-app.sh");
-  const repoPath = join(import.meta.dir, "..");
+  // Under the release supervisor this process runs from an immutable per-commit
+  // folder with no .git; the checkout the self-fix flow pulls into and restarts
+  // from is the source repo, and so is the restart helper.
+  const repoPath = config.sourceRepo ?? join(import.meta.dir, "..");
+  const restartScript = join(repoPath, "bin", "jarvis-restart.sh");
   const stuckWorkProbe = createStuckWorkProbe({
     orca: createOrcaCli(),
     gh: defaultRunner(repoPath),
@@ -504,7 +516,7 @@ const main = async () => {
       githubCommentScript,
       githubAppScript,
       models: modelsForRoles(),
-      protectedPaths: [repoPath],
+      protectedPaths: config.releasesDir ? [repoPath, config.releasesDir] : [repoPath],
       dbServers: config.dbMcpServers,
       executerDbServers: config.executerDbMcpServers,
       sandboxTools: config.sandboxTools,
@@ -574,7 +586,7 @@ const main = async () => {
     BOT_MCP_CLI: join(import.meta.dir, "..", "bin", "mcp.ts"),
     JARVIS_SLACK_API_URL: `http://127.0.0.1:${config.dashboardPort}/api/slack`,
     // The servers kept out of Orca workers and the helper the worker-start prompts run first.
-    ...workerMcpEnv(config.workerMcpDeny, workerMcpTrimScript, workerHome),
+    ...workerMcpEnv(config.workerMcpDeny, workerMcpTrimScript, workerHome, config.workerRoleMcpDeny),
   });
   // A turn's environment is the bot's without its secrets. Names only, never values.
   const withheld = scrubSecretEnv(process.env, new Set(config.turnEnvPassthrough)).removed;
@@ -1513,6 +1525,7 @@ const main = async () => {
       audit: commandLog,
       allowedOwners: config.githubApp.allowedOwners,
       slug: config.githubApp.slug,
+      mergeGate: config.githubApp.mergeGate,
     });
     // A ticket that ends (revoked, worker done, expired) takes its GitHub token with it.
     workerTickets.onEnd((id) => {

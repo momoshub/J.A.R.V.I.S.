@@ -104,5 +104,6 @@ Delivery, each PR shippable alone:
   version behind). An independent review found it needs data moved out of the
   repo, per-sha release folders, a database safe for two writers and fencing
   for sessions before it can work, and phase 2 gets most of the value with a
-  single writer
+  single writer. The per-sha release folders now exist (`docs/releases.md`), but
+  only one version runs at a time and the rest of that list is still missing
 - moving a turn between versions mid-flight: a turn finishes where it started

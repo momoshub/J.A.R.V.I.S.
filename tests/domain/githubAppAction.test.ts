@@ -84,6 +84,14 @@ describe("planAction request shapes", () => {
     expect(ok({ action: "pr-merge", repo, number: 5 })[0]).toEqual({ method: "PUT", path: `repos/${repo}/pulls/5/merge`, body: { merge_method: "merge" } });
     expect(ok({ action: "pr-merge", repo, number: 5, method: "squash" })[0]?.body).toEqual({ merge_method: "squash" });
   });
+  test("merge-gate plans no REST call itself (the bot decides) and needs the full 40-hex sha", () => {
+    const sha = "0123456789abcdef0123456789abcdef01234567";
+    expect(ok({ action: "merge-gate", repo, number: 5, sha })).toEqual([]);
+    for (const bad of [undefined, "", "abc123", `${sha}0`, "z".repeat(40)]) {
+      expect(planAction({ action: "merge-gate", repo, number: 5, sha: bad })).toMatchObject({ ok: false });
+    }
+    expect(planAction({ action: "merge-gate", repo, sha })).toMatchObject({ ok: false });
+  });
   test("labels and reviewers", () => {
     expect(ok({ action: "labels-add", repo, number: 5, labels: ["a", "b"] })[0]).toEqual({
       method: "POST",

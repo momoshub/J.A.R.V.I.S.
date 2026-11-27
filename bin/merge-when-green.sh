@@ -28,9 +28,24 @@
 # account, and a rerun after exit 3 finds its own. A later request-changes, or a
 # dismissed approval, does not count. A failed approval stops the merge (exit 1).
 #
+# THE BOT DECIDES. When this shell holds a ticket (JARVIS_RUN_TICKET, or
+# JARVIS_RUN_TICKET_FILE for an Orca worker) that names `merge-gate`, the merge is
+# not made here at all: the script asks the bot (`github-app.sh merge-gate`) and
+# the bot merges, with the app's own credential, only if the PR head is this
+# commit, the required checks are green on it and, for runtime code, the latest
+# review is `VERDICT: clean` and a `[verify]` comment says `VERDICT: verified`
+# naming it. The writer's shell then needs no merge token. The bot answers
+# merged (exit 0), pending (poll again), conflict (exit 4), refused (the reasons,
+# exit 1) or disabled (the bot's MERGE_GATE is off, or the bot predates the gate and answers `unknown action`): only `disabled`, or no ticket
+# at all, runs the old path below with the human `gh` login. Remove that login
+# from the host and the old path has nothing to merge with. MERGE_GATE_REQUIRED=1
+# (set it in the writer's environment once the bot's gate is on) closes the
+# fallback: no ticket, or a gate that is off, is then an error (exit 1), never
+# the human path.
+#
 # The default timeout stays under the 10 minute ceiling of a foreground tool
-# call; give that call a timeout to match. Exit codes: 0 merged, 1 red CI or a
-# failed approval, 2 usage, 3 "not finished yet" (run it again), 4 the PR
+# call; give that call a timeout to match. Exit codes: 0 merged, 1 red CI, a refused
+# gate or a failed approval, 2 usage, 3 "not finished yet" (run it again), 4 the PR
 # conflicts with its base (resolve first, rerunning alone never helps).
 set -uo pipefail
 
@@ -41,6 +56,57 @@ REQUIRED=${REQUIRED_CHECK:-checks}
 [ -n "$PR" ] || { echo "usage: merge-when-green.sh <pr> [timeout-seconds]" >&2; exit 2; }
 SHA=${MERGE_HEAD_SHA:-$(git rev-parse HEAD 2>/dev/null)}
 [ -n "$SHA" ] || { echo "cannot tell which commit to merge: run it from the PR's worktree" >&2; exit 2; }
+
+# The gate: ask the bot until it merges, refuses, sees a conflict, or time is up.
+# Returns 10 when the bot's gate is off (use the old path); anything else is final.
+GITHUB_APP_SH=${GITHUB_APP_SH:-$(dirname "$0")/github-app.sh}
+gate() {
+  local repo answer decision reasons dl why=""
+  repo=${MERGE_REPO:-$(git remote get-url origin 2>/dev/null | sed -E -e 's#\.git$##' -e 's#^.*github\.com[:/]##')}
+  [ -n "$repo" ] || { echo "cannot tell which repository this is: set MERGE_REPO=owner/name" >&2; return 1; }
+  [ ${#SHA} -eq 40 ] || { echo "the merge gate needs the full head sha, got '$SHA'" >&2; return 1; }
+  dl=$(( $(date +%s) + TIMEOUT ))
+  while :; do
+    answer=$("$GITHUB_APP_SH" merge-gate "$repo" "$PR" --sha "$SHA" 2>&1)
+    decision=$(printf '%s' "$answer" | jq -r '.github.decision // empty' 2>/dev/null)
+    reasons=$(printf '%s' "$answer" | jq -r '(.github.reasons // [])[]' 2>/dev/null)
+    # A bot that predates the gate (not restarted since) answers `unknown action`: no gate there, same as `disabled`.
+    case "$(printf '%s' "$answer" | jq -r '.error // empty' 2>/dev/null)" in
+      "unknown action"*) decision=disabled ;;
+    esac
+    case "$decision" in
+      merged)
+        echo "merged by the bot: $(printf '%s' "$answer" | jq -r '.github.mergedSha // .github.sha')"
+        return 0
+        ;;
+      disabled)
+        echo "the bot has no merge gate on (MERGE_GATE off, or a bot older than the gate): using the human token" >&2
+        return 10
+        ;;
+      conflict)
+        echo "PR $PR conflicts with its base, merge the base in and resolve first - not merging" >&2
+        return 4
+        ;;
+      refused)
+        echo "the merge gate refused PR $PR:" >&2
+        printf '%s\n' "$reasons" >&2
+        return 1
+        ;;
+      pending) why=$(printf '%s' "$reasons" | paste -sd ';' - | sed 's/;/; /g') ;;
+      *)
+        echo "the merge gate gave no usable answer for PR $PR - not merging:" >&2
+        printf '%s\n' "$answer" | head -c 600 >&2
+        echo >&2
+        return 1
+        ;;
+    esac
+    if [ "$(date +%s)" -ge "$dl" ]; then
+      echo "not merged within ${TIMEOUT}s: ${why:-pending}. run it again" >&2
+      return 3
+    fi
+    sleep "$INTERVAL"
+  done
+}
 
 lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]'; }
 
@@ -73,8 +139,21 @@ approve() {
   echo "approved by $me on ${SHA:0:7}"
 }
 
-deadline=$(( $(date +%s) + TIMEOUT ))
 why=""
+if [ -n "${JARVIS_RUN_TICKET:-}${JARVIS_RUN_TICKET_FILE:-}" ]; then
+  gate
+  rc=$?
+  if [ "$rc" -eq 10 ] && [ "${MERGE_GATE_REQUIRED:-}" = 1 ]; then
+    echo "MERGE_GATE_REQUIRED=1: the bot's merge gate is off, so there is no merge path - not merging" >&2
+    exit 1
+  fi
+  [ "$rc" -eq 10 ] || exit "$rc"
+elif [ "${MERGE_GATE_REQUIRED:-}" = 1 ]; then
+  echo "MERGE_GATE_REQUIRED=1 and this shell holds no ticket (JARVIS_RUN_TICKET_FILE): the human-token path is closed - not merging" >&2
+  exit 1
+fi
+
+deadline=$(( $(date +%s) + TIMEOUT ))
 while :; do
   head=$(gh pr view "$PR" --json headRefOid -q .headRefOid 2>/dev/null)
   if [ "$head" != "$SHA" ]; then

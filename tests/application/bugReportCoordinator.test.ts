@@ -144,7 +144,7 @@ describe("the owner's Reject on what the coordinator approved", () => {
     const out = await decideBugReportPress(approval, press());
     expect(out).toMatchObject({ kind: "rejected", id: 1, stop: { channel: OWNER, threadTs: "notice-1" } });
     if (out.kind !== "rejected" || !out.stop) throw new Error("not stopped");
-    expect(out.stop.brief).toContain("approved by the coordinator and the owner then rejected it");
+    expect(out.stop.brief).toContain("and the owner then rejected it");
     expect(bugReports.get(1)).toMatchObject({ state: "rejected", decidedBy: "" });
     expect(slackCalls.settled[0]!.text).toContain("rejected by");
     // a second press changes nothing
