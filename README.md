@@ -25,7 +25,7 @@ The codebase is generic - the bot's identity (name, persona, labels) lives in th
 - **macOS first.** It is developed and run on a Mac. These parts are Mac-only:
   - **desktop control** (`bin/desktop.ts`, `bin/mac-ui.js`: `osascript` and the Accessibility permission, see [Desktop access](#desktop-access));
   - **Keychain token key mode** (`TOKEN_KEY_SOURCE=keychain`; the default `file` mode works anywhere);
-  - **restart via launchd**: `bin/jarvis-restart.sh` asks the running bot to exit once idle and relies on a supervisor to start it again. The repo ships no launchd plist; on a Mac write a LaunchAgent with `KeepAlive`, elsewhere use anything that restarts the process on exit (systemd `Restart=always`, a container restart policy, ...).
+  - **restart via launchd**: `bin/jarvis-restart.sh` asks the running bot to exit once idle and relies on a supervisor to start it again. On a Mac the repo ships a LaunchAgent template (`launchd/com.example.jarvis.plist`) that runs the release supervisor `bin/jarvis-release.sh` instead of `bun` directly: each restart is built and checked in its own per-commit folder, health-checked after the start and rolled back by itself, with `jarvis-release.sh rollback` as the way back that needs neither the bot nor CI (see `docs/releases.md`, including the one-time manual install). Elsewhere use anything that restarts the process on exit (systemd `Restart=always`, a container restart policy, ...); `jarvis-restart.sh` then checks the checkout in place, as before.
 - **On Linux** everything else runs (Slack, memory, dashboard, commands, GitHub App, reviews). Desktop control is unavailable, keychain mode is unavailable (stay on `file`), and restarts need your own supervisor.
 - **Orca is optional.** It is the multi-agent IDE the owner's turns use for background workers; with it missing or stopped, turns get no `ORCA_TERMINAL_HANDLE` and fall back to the Agent tool. Turn it off with `ORCA_TERMINAL_WORKTREE=off`.
 
@@ -911,6 +911,24 @@ running:
 
 It answers `503` when deaf, so an uptime check sees an outage instead of a
 process that happens to be alive.
+
+### Releases and the way back
+
+A restart after a merged change is built **outside the live checkout**: HEAD is
+exported to `~/.jarvis/releases/<sha>`, typechecked, tested and bundled there
+(`bin/jarvis-restart.sh` still refuses on red, and still drains), and only then
+does the supervisor's `current` link move. After the start the supervisor waits
+for `GET /health` to say `ok: true`; a release that does not come up in
+`RELEASE_HEALTH_TIMEOUT_S` (180) or exits first is undone by itself and the last
+known good one runs again. By hand, when the bot is too broken to help:
+
+```bash
+~/.jarvis/releases/bin/jarvis-release.sh status
+~/.jarvis/releases/bin/jarvis-release.sh rollback        # last known good, restarts at once
+```
+
+It needs only bash and `launchctl`. Installing the supervisor is a one-time
+manual step (the LaunchAgent lives outside the repo): `docs/releases.md`.
 
 ## Stuck work
 
@@ -1888,6 +1906,20 @@ bun bin/probe-harness.ts --base old/SKILL.md --candidate new/SKILL.md --runs 3 -
 Each case is a past user message written without private content (no Slack ids, no names, no urls: the repo is public) and the traits a good answer shows. The answering calls are sandboxed: the text under test is the whole system prompt, there are no tools, no MCP servers and no Slack, no saved session, no user or project settings (no hooks, plugins or CLAUDE.md of the host), an empty working folder, and an environment holding only what the CLI needs to log in. So it measures how the model writes to a message, not what it does with tools. Before any call the script prints an estimate of the token spend (default run: 5 cases x 2 runs x 2 versions + 10 judgements = 30 calls, roughly 35k input and 10k output tokens for a near-empty text; every answer call carries the whole text, so a long one adds about 1k input tokens per 4k chars per call - trust the printed estimate), and after the run the real figure.
 
 The report gives the totals (candidate wins, base wins, ties), a row per case, and what each version did in the judge's words for every pair that was not a tie. A handful of pairs is a signal, not a measurement: read the contrasts, and rerun with a higher `--runs` before a close call. Paste the report in the PR body of every docs, prompt-text or skill change (the `jarvis-source` skill step follows this PR: the skill lives in the DB). Add a case in `docs/probe-cases/` when a voice or behaviour rule keeps slipping.
+
+## Briefing a verifier
+
+A verifier briefed from the PR description exercises what the writer says it fixed. `bin/verify-brief.ts` builds the brief from the diff's paths instead, so it does not depend on the writer:
+
+```bash
+bun bin/verify-brief.ts brief --pr 123 --out brief.md            # or --base origin/main --head <sha>; --no-gh skips past review blockers
+bun bin/verify-brief.ts agent --model sonnet                      # `eval` it: VERIFIER_AGENT / VERIFIER_MODEL / VERIFIER_NOTE
+bun bin/verify-brief.ts check --brief brief.md --comment verify.md  # exit 1 when the [verify] comment leaves a required item out
+```
+
+`--pr` takes the PR's head, base and file list from GitHub (paged, so a very large diff works), never from the checkout you run in. The policy docs and the contracts are read at the merge base, so a PR that edits `SECURITY.md` cannot feed its own words into the brief (the edit is flagged as a change to scrutinise instead).
+
+The brief lists the boundaries the changed paths cross (tickets, roles, commands, Slack, merge gates, scripts, databases, env, prompts, watches, web) with adversarial and escalation cases to try beyond the happy path, the policy paragraphs that govern them, the regression history of the same files (fix, bug and revert merges, the tests they touched, past `[review round]` blockers) and the contracts (tests, system-model tests, command fixtures, `.env.example`). The verifier's `[verify]` comment names the items it exercised (`Exercised: ticket.1, command.2`, `n/a <id>: <reason>`). `agent` starts the verifier on another model family (`codex`, then `antigravity`) when its CLI is on the host, and on `claude` with a note when none is. See `.claude/skills/verify/SKILL.md`.
 
 ## Testing
 

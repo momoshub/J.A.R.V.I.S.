@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>__LABEL__</string>
+
+  <!-- The supervisor, not the bot. It starts the release `current` points at
+       (a per-commit folder under __RELEASES_DIR__), health-checks a release that
+       is not last-good yet, and goes back to last-good by itself when the check
+       fails. It is a copy kept OUTSIDE the repo (`jarvis-release.sh install`), so
+       a broken commit cannot break the way back. Bun loads .env from the release
+       folder, which links to the checkout's, so no secrets live in here. -->
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>__RELEASES_DIR__/bin/jarvis-release.sh</string>
+    <string>launch</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__SOURCE_REPO__</string>
+
+  <!-- The CLI shells out to claude, gh and git, and the supervisor to bun,
+       so Homebrew has to be on PATH. Add any other variable the bot needs here
+       (the old plist's EnvironmentVariables carry over unchanged). -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <!-- Do not hammer Slack if it is crash-looping on a bad config. -->
+  <key>ThrottleInterval</key>
+  <integer>15</integer>
+
+  <key>StandardOutPath</key>
+  <string>__SOURCE_REPO__/logs/jarvis.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>__SOURCE_REPO__/logs/jarvis.err.log</string>
+</dict>
+</plist>

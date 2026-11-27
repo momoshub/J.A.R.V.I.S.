@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, setDefaultTimeout, test } from "bun:test";
-import { chmodSync, cpSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -52,7 +52,13 @@ describe.skipIf(!HAS_GITLEAKS && !process.env.CI)("leak guard", () => {
     // the files HEAD holds, not the checkout: node_modules and .git are not the repo
     const tree = mkdtempSync(join(tmpdir(), "leakguard-tree-"));
     dirs.push(tree);
-    expect(sh(ROOT, `git archive HEAD | tar -x -C '${tree}'`).code).toBe(0);
+    if (existsSync(join(ROOT, ".git"))) {
+      expect(sh(ROOT, `git archive HEAD | tar -x -C '${tree}'`).code).toBe(0);
+    } else {
+      // a release folder is already an export, with deps and the host's state linked in beside the files
+      const skip = new Set(["node_modules", "dist", ".env", "data", "logs"].map((n) => n));
+      cpSync(ROOT, tree, { recursive: true, filter: (src) => !skip.has(src.slice(ROOT.length + 1).split("/").at(-1) ?? "") || src === ROOT });
+    }
     const r = sh(tree, `'${join(ROOT, "bin", "leak-scan.sh")}' dir . --no-banner --redact -v`);
     expect(r.out).toContain("no leaks found");
     expect(r.code).toBe(0);

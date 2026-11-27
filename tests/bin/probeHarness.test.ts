@@ -56,7 +56,14 @@ describe("bin/probe-harness.ts", () => {
     expect(r.err).toContain("cannot read cases");
   });
   test("--path reads the base from git at a ref", () => {
-    const repo = resolve(import.meta.dir, "..", "..");
+    // its own throwaway repo: the suite also runs inside a release folder (a `git archive` export, no .git)
+    const repo = join(dir, "gitrepo");
+    mkdirSync(repo, { recursive: true });
+    writeFileSync(join(repo, "package.json"), "{}\n");
+    const git = (...a: string[]) => Bun.spawnSync(["git", "-C", repo, "-c", "user.name=t", "-c", "user.email=t@t", ...a], { env: { PATH: process.env.PATH, HOME: dir, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_SYSTEM: "/dev/null" } });
+    git("init", "-q", "-b", "main");
+    git("add", "-A");
+    git("commit", "-q", "-m", "one");
     const r = Bun.spawnSync(["bun", script, "--path", "package.json", "--base-ref", "HEAD", "--cases", cases, "--dry-run"], { cwd: repo, env: { PATH: process.env.PATH, HOME: dir } });
     expect(r.exitCode).toBe(0);
     expect(new TextDecoder().decode(r.stdout)).toContain("package.json@HEAD");

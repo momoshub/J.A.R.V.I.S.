@@ -41,6 +41,29 @@ jobs:
       - run: bun run build
         working-directory: web
 
+  # A release folder is a `git archive` export: no .git. jarvis-restart.sh runs `bun test` inside
+  # one, so a test that needs git history in the repo root would refuse every restart there.
+  release-export:
+    if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3 # same as the host; bump together
+      - name: install gitleaks
+        env:
+          GITLEAKS_VERSION: 8.30.1 # same as the gitleaks job; bump together
+        run: curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" | tar -xz -C /usr/local/bin gitleaks
+      - name: export HEAD without .git and run the suite there
+        run: |
+          mkdir "$RUNNER_TEMP/release"
+          git archive HEAD | tar -x -C "$RUNNER_TEMP/release"
+          cd "$RUNNER_TEMP/release"
+          bun install --frozen-lockfile
+          bun test
+
   # Secret scan with the gitleaks CLI (the action needs a licence for organisations).
   # Push (any branch or tag): every public ref (--all), their names and every tag. Pull request: only the commits it adds. Both scan the diffs and,
   # separately, the commit messages, file paths, ref names and annotated tag names and messages, which gitleaks git

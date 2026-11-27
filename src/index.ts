@@ -465,11 +465,14 @@ const main = async () => {
   // Reads a claude.ai artifact by opening a full session, which has the tool a
   // `-p` spawn does not.
   const artifactScript = join(import.meta.dir, "..", "bin", "artifact-read.sh");
-  const restartScript = join(import.meta.dir, "..", "bin", "jarvis-restart.sh");
   // Posts a turn's answer to the GitHub issue its thread was opened for, as the app.
   const githubCommentScript = join(import.meta.dir, "..", "bin", "github-app-comment.sh");
   const githubAppScript = join(import.meta.dir, "..", "bin", "github-app.sh");
-  const repoPath = join(import.meta.dir, "..");
+  // Under the release supervisor this process runs from an immutable per-commit
+  // folder with no .git; the checkout the self-fix flow pulls into and restarts
+  // from is the source repo, and so is the restart helper.
+  const repoPath = config.sourceRepo ?? join(import.meta.dir, "..");
+  const restartScript = join(repoPath, "bin", "jarvis-restart.sh");
   const stuckWorkProbe = createStuckWorkProbe({
     orca: createOrcaCli(),
     gh: defaultRunner(repoPath),
@@ -509,7 +512,7 @@ const main = async () => {
       githubCommentScript,
       githubAppScript,
       models: modelsForRoles(),
-      protectedPaths: [repoPath],
+      protectedPaths: config.releasesDir ? [repoPath, config.releasesDir] : [repoPath],
       dbServers: config.dbMcpServers,
       executerDbServers: config.executerDbMcpServers,
       sandboxTools: config.sandboxTools,
