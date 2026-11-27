@@ -112,6 +112,7 @@ Required / notable env (see `.env.example`):
 | `DB_MCP_SERVERS` | names of the local database MCP servers on this host (as `claude mcp list` shows them, e.g. `pg-prod,clickhouse-ro`), comma list. **Security setting:** each is denied by name to every role that may not use databases (pal, executer, side questions), and a denial has to name the server, so a server missing here is reachable by EVERY role. Default empty denies nothing - list every database server you configure (at boot the activity log warns about local servers in `~/.claude.json` that are not listed) |
 | `EXECUTER_DB_MCP_SERVERS` | the subset of `DB_MCP_SERVERS` the executer role may query; list only servers whose credential is read-only on the server side. Default empty: executers get none |
 | `WORKER_MCP_DENY` | user-scope MCP servers (names as `claude mcp list` shows them) kept out of the Orca workers the bot starts, comma list. Default empty: every worker loads every server, as before. See "Keeping MCP servers out of workers" |
+| `WHISPER_BIN`, `WHISPER_MODEL_PATH`, `FFMPEG_BIN`, `WHISPER_TIMEOUT_MS` | voice messages are transcribed locally (ffmpeg, then whisper.cpp's `whisper-cli`, language auto-detected). Defaults: `/opt/homebrew/bin/whisper-cli`, `~/.local/share/whisper-models/ggml-large-v3-turbo-q5_0.bin`, `/opt/homebrew/bin/ffmpeg`, 120000 ms per step. A missing binary or model never drops the clip: the turn starts with a note that it could not be transcribed |
 | `WORKER_HOME_DIR` | the one folder every Orca worker starts in (`--worktree path:<it>`); the MCP exclusion is written there and never into a folder you work in. Default `~/.jarvis/worker-home`, created at boot and registered with Orca (as a plain folder) the first time a worker is about to start. See "Keeping MCP servers out of workers" |
 | `DASHBOARD_PORT` | dashboard port (local, loopback-only, no auth) |
 | `DASHBOARD_ALLOWED_ORIGINS` | extra browser origins allowed to POST (proxy/tunnel access) |
@@ -151,6 +152,7 @@ The **Console** tab additionally needs read scopes to list and open conversation
 - It tags people with their Slack `<@id>` when they are in the conversation
 - For workspace questions it calls the Slack Web API through the bot (a helper that presents a per-turn ticket; the bot token itself is never in a turn's environment), never a third-party connector
 - **It opens what you share.** Links in a message (or earlier in the thread) are fetched before it answers, and attachments - screenshots, logs, documents - are downloaded and read. It will not ask you to paste something it could have opened, and if something genuinely cannot be read it says so rather than answering around it
+- **It hears voice messages.** A Slack voice clip (audio, no text) starts a turn like a typed message: the clip is transcribed on the host (whisper.cpp, nothing leaves the machine), the transcript is marked as such, and it answers in text plus a spoken clip of the reply. If the audio cannot be transcribed it says so instead of staying silent
 
 ### Commands
 

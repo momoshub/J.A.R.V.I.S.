@@ -18,6 +18,7 @@
  */
 
 import { isAcceptedBot } from "./acceptedBots.ts";
+import { hasAudio, type RawAudioFile } from "./voiceMessage.ts";
 
 /** The slice of a Slack message this decision needs. */
 export type FollowCandidate = {
@@ -25,6 +26,8 @@ export type FollowCandidate = {
   readonly bot_id?: string;
   readonly user?: string;
   readonly text?: string;
+  /** A voice message has a clip and no text, and is still somebody talking. */
+  readonly files?: readonly RawAudioFile[];
   readonly channel_type?: string;
   readonly ts: string;
   readonly thread_ts?: string;
@@ -71,7 +74,7 @@ export const followSkipReason = (
   // Edits, joins, deletions and other subtypes are not somebody talking.
   if (!isSpeech(m.subtype)) return `subtype:${m.subtype}`;
   if (m.bot_id && !isAcceptedBot(m, acceptedBotIds, botUserId)) return "bot";
-  if (!m.user || !m.text?.trim()) return "empty";
+  if (!m.user || (!m.text?.trim() && !hasAudio(m.files))) return "empty";
   // DMs already get answered; this is for channels.
   if (m.channel_type === "im") return "dm";
   // Only a REPLY, never the parent itself.
@@ -80,7 +83,7 @@ export const followSkipReason = (
   if (botUserId && m.user === botUserId) return "self";
   // A tagged message is handled by the mention event; following it here too
   // would answer the same message twice.
-  if (mentionsBot(m.text, botUserId)) return "tagged";
+  if (mentionsBot(m.text ?? "", botUserId)) return "tagged";
   return undefined;
 };
 
