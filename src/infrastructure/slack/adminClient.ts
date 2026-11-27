@@ -79,9 +79,9 @@ const mapPool = async <T, R>(items: T[], n: number, fn: (item: T) => Promise<R>)
 export const createSlackAdmin = (client: WebClient): SlackAdminPort => {
   const nameCache = new Map<string, string>();
   /** The grey signature line every post carries; `undefined` (`by` of `UNSIGNED`) for a message outside the turn's own thread. */
-  const signature = (by?: string, usage?: FooterUsage, trigger?: InternalKind): string =>
-    footerLine(by ?? SIGNATURES.jarvis, usage ? usageFooter(usage) : undefined, trigger);
-  const footer = (by?: string | null, usage?: FooterUsage, trigger?: InternalKind): string | undefined =>
+  const signature = (by?: string, usage?: FooterUsage | string, trigger?: InternalKind): string =>
+    footerLine(by ?? SIGNATURES.jarvis, typeof usage === "string" ? usage : usage ? usageFooter(usage) : undefined, trigger);
+  const footer = (by?: string | null, usage?: FooterUsage | string, trigger?: InternalKind): string | undefined =>
     by === UNSIGNED ? undefined : signature(by, usage, trigger);
   let botUserId: string | undefined;
   let workspace: string | undefined;
@@ -262,13 +262,13 @@ export const createSlackAdmin = (client: WebClient): SlackAdminPort => {
       return workspace;
     },
 
-    update: async (channel, ts, text, by) => {
+    update: async (channel, ts, text, by, usage) => {
       // Blocks every time: an edit that sent only text would keep the old
       // blocks on screen, footer and all, and change nothing anyone sees.
       // A refused markdown block is retried as sections; a refused rewrite
       // (a stopped stream's block_mismatch, say) still edits the words,
       // text-only, as before.
-      const line = footer(by);
+      const line = footer(by, usage);
       await client.chat
         .update({ channel, ts, ...signedText(text, line) })
         .catch(() => client.chat.update({ channel, ts, ...signedSections(text, line) }))
@@ -340,13 +340,13 @@ export const createSlackAdmin = (client: WebClient): SlackAdminPort => {
       return open.channel?.id;
     },
 
-    postDm: async (userId, text, by, trigger) => {
+    postDm: async (userId, text, by, trigger, usage) => {
       const open = (await client.conversations.open({ users: userId })) as { channel?: { id?: string } };
       const channel = open.channel?.id;
       if (!channel) return undefined;
       const body = toMrkdwn(text);
       const posted = (await client.chat
-        .postMessage({ channel, ...signedText(body, footer(by, undefined, trigger)) })
+        .postMessage({ channel, ...signedText(body, footer(by, usage, trigger)) })
         .catch(() => client.chat.postMessage({ channel, text: body }))) as { ts?: string };
       return posted.ts ? { channel, ts: posted.ts } : undefined;
     },

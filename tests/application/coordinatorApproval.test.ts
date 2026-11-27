@@ -21,6 +21,7 @@ const setup = () => {
     clock: () => 77,
     ownerSlackId: OWNER,
     name: "Aide",
+    lang: "en",
     onApproved: () => void approved++,
   };
   const press = (over: Partial<Parameters<typeof decideCoordinatorPress>[1]> = {}) =>
