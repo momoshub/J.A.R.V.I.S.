@@ -36,7 +36,7 @@
 # review is `VERDICT: clean` and a `[verify]` comment says `VERDICT: verified`
 # naming it. The writer's shell then needs no merge token. The bot answers
 # merged (exit 0), pending (poll again), conflict (exit 4), refused (the reasons,
-# exit 1) or disabled (the bot's MERGE_GATE is off): only `disabled`, or no ticket
+# exit 1) or disabled (the bot's MERGE_GATE is off, or the bot predates the gate and answers `unknown action`): only `disabled`, or no ticket
 # at all, runs the old path below with the human `gh` login. Remove that login
 # from the host and the old path has nothing to merge with. MERGE_GATE_REQUIRED=1
 # (set it in the writer's environment once the bot's gate is on) closes the
@@ -70,13 +70,17 @@ gate() {
     answer=$("$GITHUB_APP_SH" merge-gate "$repo" "$PR" --sha "$SHA" 2>&1)
     decision=$(printf '%s' "$answer" | jq -r '.github.decision // empty' 2>/dev/null)
     reasons=$(printf '%s' "$answer" | jq -r '(.github.reasons // [])[]' 2>/dev/null)
+    # A bot that predates the gate (not restarted since) answers `unknown action`: no gate there, same as `disabled`.
+    case "$(printf '%s' "$answer" | jq -r '.error // empty' 2>/dev/null)" in
+      "unknown action"*) decision=disabled ;;
+    esac
     case "$decision" in
       merged)
         echo "merged by the bot: $(printf '%s' "$answer" | jq -r '.github.mergedSha // .github.sha')"
         return 0
         ;;
       disabled)
-        echo "the bot's merge gate is off (MERGE_GATE): using the human token" >&2
+        echo "the bot has no merge gate on (MERGE_GATE off, or a bot older than the gate): using the human token" >&2
         return 10
         ;;
       conflict)

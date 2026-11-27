@@ -15,7 +15,7 @@
  * from an account named in `attesters` (`MERGE_GATE_ATTESTERS`) that is neither
  * the PR's author nor the app itself: the writer can comment as the app, and the
  * repo is public, so anyone-but-the-author would let any GitHub user vouch. A
- * `[verify]` comment edited after it was posted is ignored, and a rename out of a
+ * `[verify]` comment edited after it was posted refuses the merge, and a rename out of a
  * runtime path counts as touching it.
  */
 
@@ -44,7 +44,8 @@ export type GatePr = {
   /** GitHub's `mergeable_state` (`dirty` = conflicts, `unknown` = not computed yet). */
   mergeState: string;
 };
-export type GateCheck = { name: string; status: string; conclusion: string | null };
+/** `id`: GitHub's check-run id, which grows with every run, so the biggest of a name is its latest. */
+export type GateCheck = { name: string; status: string; conclusion: string | null; id?: number };
 export type GateReview = { login: string; body: string; commitId: string };
 /** `edited`: the comment's `updated_at` is not its `created_at`. Anyone with write access can edit another's issue comment, keeping its author, so an edited `[verify]` proves nothing. */
 export type GateComment = { login: string; body: string; edited?: boolean };
@@ -71,6 +72,21 @@ export type GateDecision =
 
 const lc = (s: string): string => s.toLowerCase();
 const GOOD = new Set(["success", "neutral", "skipped"]);
+
+/**
+ * What a check name stands for on this sha. CI cancels a run when a newer push supersedes it, so a head usually
+ * carries a `cancelled` run next to the green one (13 of the last 15 PR heads did): only the latest run that was not
+ * cancelled or skipped decides. Nothing but cancelled runs is red (a cancelled-only `checks` never passed); nothing but
+ * skipped ones is fine.
+ */
+const verdictOf = (runs: readonly GateCheck[]): "good" | "running" | { red: string } => {
+  const ordered = runs.map((c, i) => ({ c, id: c.id ?? i })).sort((a, b) => a.id - b.id).map((x) => x.c);
+  const decisive = ordered.filter((c) => !(c.status === "completed" && (c.conclusion === "cancelled" || c.conclusion === "skipped")));
+  const last = decisive[decisive.length - 1];
+  if (!last) return ordered.some((c) => c.conclusion === "cancelled") ? { red: "cancelled" } : "good";
+  if (last.status !== "completed") return "running";
+  return GOOD.has(last.conclusion ?? "") ? "good" : { red: last.conclusion ?? "unknown" };
+};
 
 /** The last non-empty line of a body: where a verdict lives. */
 const lastLine = (body: string): string =>
@@ -111,8 +127,10 @@ const reviewProblem = (input: GateInput): string | undefined => {
 };
 
 const verifyProblem = (input: GateInput): string | undefined => {
-  const latest = [...input.comments].reverse().find((c) => /^\s*\[verify\]/.test(c.body) && !c.edited && counts(c.login, input));
-  if (!latest) return "no unedited `[verify]` comment from a named attester (MERGE_GATE_ATTESTERS; never the PR author or the app)";
+  const latest = [...input.comments].reverse().find((c) => /^\s*\[verify\]/.test(c.body) && counts(c.login, input));
+  if (!latest) return "no `[verify]` comment from a named attester (MERGE_GATE_ATTESTERS; never the PR author or the app)";
+  // Not skipped in favour of an older one: a verifier who said `verified`, then `not verified`, must not be undone by editing the second.
+  if (latest.edited) return "the latest `[verify]` comment was edited after it was posted";
   if (!/^VERDICT:\s*verified\s*$/i.test(lastLine(latest.body))) return "the latest `[verify]` comment does not end `VERDICT: verified`";
   if (!namesSha(latest.body, input.sha)) return `the latest \`[verify]\` comment does not name the head ${input.sha.slice(0, 7)}`;
   return undefined;
@@ -127,14 +145,13 @@ export const evaluateGate = (input: GateInput): GateDecision => {
 
   const refused: string[] = [];
   const pending: string[] = [];
-  const bad = input.checks.filter((c) => c.status === "completed" && !GOOD.has(c.conclusion ?? ""));
-  for (const c of bad) refused.push(`check ${c.name}: ${c.conclusion}`);
-  for (const name of input.requiredChecks) {
-    const runs = input.checks.filter((c) => c.name === name);
-    if (runs.length === 0) pending.push(`required check ${name} has not appeared yet`);
-    else if (runs.some((c) => c.status !== "completed")) pending.push(`required check ${name} is still running`);
+  const names = [...new Set(input.checks.map((c) => c.name))];
+  for (const name of names) {
+    const v = verdictOf(input.checks.filter((c) => c.name === name));
+    if (typeof v === "object") refused.push(`check ${name}: ${v.red}`);
+    else if (v === "running") pending.push(`check ${name} is still running`);
   }
-  if (input.checks.some((c) => c.status !== "completed")) pending.push("checks still running");
+  for (const name of input.requiredChecks) if (!names.includes(name)) pending.push(`required check ${name} has not appeared yet`);
 
   const runtime = touchesRuntime(input.files);
   if (input.files.length === 0) refused.push("the PR changes no files");

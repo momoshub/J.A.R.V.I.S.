@@ -69,6 +69,23 @@ describe("evaluateGate", () => {
     refusedWith(base({ checks: [{ name: "checks", status: "completed", conclusion: "cancelled" }, base().checks[1]!] }), "checks: cancelled");
   });
 
+  test("a superseded cancelled run next to a green one does not make the check red (CI cancels on every new push)", () => {
+    const run = (id: number, status: string, conclusion: string | null) => ({ name: "checks", status, conclusion, id });
+    const gl = { name: "gitleaks", status: "completed", conclusion: "success", id: 9 };
+    // the very shape this PR's head returned from GitHub: success, cancelled, skipped for `checks`
+    expect(evaluateGate(base({ checks: [run(1, "completed", "success"), run(2, "completed", "cancelled"), run(3, "completed", "skipped"), gl] })).decision).toBe("merge");
+    expect(evaluateGate(base({ checks: [run(2, "completed", "cancelled"), run(5, "completed", "success"), gl] })).decision).toBe("merge");
+  });
+
+  test("only cancelled runs is red, a later failure after a success is red, a later running rerun waits, only skipped is fine", () => {
+    const run = (id: number, status: string, conclusion: string | null) => ({ name: "checks", status, conclusion, id });
+    const gl = { name: "gitleaks", status: "completed", conclusion: "success", id: 9 };
+    refusedWith(base({ checks: [run(1, "completed", "cancelled"), gl] }), "checks: cancelled");
+    refusedWith(base({ checks: [run(1, "completed", "success"), run(2, "completed", "failure"), gl] }), "checks: failure");
+    expect(evaluateGate(base({ checks: [run(1, "completed", "success"), run(2, "in_progress", null), gl] })).decision).toBe("pending");
+    expect(evaluateGate(base({ checks: [run(1, "completed", "skipped"), gl] })).decision).toBe("merge");
+  });
+
   test("a required check missing or still running waits; skipped and neutral count as green", () => {
     expect(evaluateGate(base({ checks: [base().checks[0]!] })).decision).toBe("pending");
     expect(evaluateGate(base({ checks: [{ name: "checks", status: "in_progress", conclusion: null }, base().checks[1]!] })).decision).toBe("pending");
@@ -117,9 +134,10 @@ describe("evaluateGate", () => {
 
   test("an edited [verify] comment proves nothing (anyone with write access can edit it, keeping its author)", () => {
     const edited = { login: "rev", body: `[verify] ${SHA}\nVERDICT: verified`, edited: true };
-    refusedWith(base({ comments: [edited] }), "unedited `[verify]`");
-    // an older untouched verify is still found behind an edited newer one only if it is itself good
-    expect(evaluateGate(base({ comments: [{ ...edited, edited: false }, edited] })).decision).toBe("merge");
+    refusedWith(base({ comments: [edited] }), "was edited");
+    // not skipped in favour of an older good one: `verified`, then `not verified`, then the second edited back must not pass
+    refusedWith(base({ comments: [{ ...edited, edited: false }, edited] }), "was edited");
+    expect(evaluateGate(base({ comments: [edited, { ...edited, edited: false }] })).decision).toBe("merge");
   });
 
   test("verify: must exist, say verified, and name the head", () => {

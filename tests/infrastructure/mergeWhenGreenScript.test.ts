@@ -338,8 +338,18 @@ describe("merge-when-green.sh with a ticket (the bot decides)", () => {
     const gh = fakeGh([{ checks: [ci("pass"), guardian], head: FULL_SHA }]);
     const r = await run(gh, ["42"], { ...gateEnv(dir), PATH: `${gh}:${process.env.PATH}` });
     expect(r.code).toBe(0);
-    expect(r.stderr).toContain("merge gate is off");
+    expect(r.stderr).toContain("merge gate on");
     expect(r.merged).toContain(`pr merge 42 --merge --match-head-commit ${FULL_SHA}`);
+  });
+
+  test("a bot older than the gate answers `unknown action`: same as disabled, the old path runs (and MERGE_GATE_REQUIRED=1 still stops it)", async () => {
+    const dir = fakeBot([JSON.stringify({ ok: false, error: 'unknown action "merge-gate"; one of pr-create, comment' })]);
+    const gh = fakeGh([{ checks: [ci("pass"), guardian], head: FULL_SHA }]);
+    const r = await run(gh, ["42"], { ...gateEnv(dir), PATH: `${gh}:${process.env.PATH}` });
+    expect(r.code).toBe(0);
+    expect(r.merged).toContain(`pr merge 42 --merge --match-head-commit ${FULL_SHA}`);
+    const strict = await run(gh, ["42"], { ...gateEnv(dir), MERGE_GATE_REQUIRED: "1", PATH: `${gh}:${process.env.PATH}` });
+    expect(strict.code).toBe(1);
   });
 
   test("MERGE_GATE_REQUIRED=1: a gate that is off is an error, never the human path", async () => {

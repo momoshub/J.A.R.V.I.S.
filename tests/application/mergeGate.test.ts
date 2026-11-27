@@ -9,7 +9,7 @@ const config: MergeGateConfig = { enabled: true, requiredChecks: ["checks", "git
 type World = {
   pull?: Record<string, unknown>;
   files?: ({ filename: string; previous_filename?: string } | string)[];
-  checks?: { name: string; status: string; conclusion: string | null }[];
+  checks?: { name: string; status: string; conclusion: string | null; id?: number }[];
   reviews?: { user: { login: string }; body: string; commit_id: string }[];
   comments?: { user: { login: string }; body: string; created_at?: string; updated_at?: string }[];
   mergeFails?: Error;
@@ -61,6 +61,20 @@ describe("runMergeGate", () => {
     expect(g.calls.some((c) => c.startsWith("PUT"))).toBe(false);
   });
 
+  test("real shape: GitHub returns a cancelled and a skipped `checks` run next to the green one, and the PR merges", async () => {
+    const g = github({
+      checks: [
+        { id: 11, name: "checks", status: "completed", conclusion: "success" },
+        { id: 12, name: "gitleaks", status: "completed", conclusion: "success" },
+        { id: 7, name: "checks", status: "completed", conclusion: "cancelled" },
+        { id: 8, name: "gitleaks", status: "completed", conclusion: "success" },
+        { id: 3, name: "checks", status: "completed", conclusion: "skipped" },
+        { id: 4, name: "gitleaks", status: "completed", conclusion: "success" },
+      ],
+    });
+    expect(await runMergeGate(config, g.request, "o/r", 9, SHA)).toMatchObject({ decision: "merged" });
+  });
+
   test("checks still running -> pending", async () => {
     const g = github({ checks: [{ name: "checks", status: "in_progress", conclusion: null }] });
     expect(await runMergeGate(config, g.request, "o/r", 9, SHA)).toMatchObject({ decision: "pending" });
@@ -91,7 +105,7 @@ describe("runMergeGate", () => {
     expect(g.calls.some((c) => c.startsWith("PUT"))).toBe(false);
   });
 
-  test("a [verify] comment edited after it was posted does not count", async () => {
+  test("an edited [verify] comment refuses, even with an older good one behind it", async () => {
     const g = github({ comments: [{ user: { login: "rev" }, body: `[verify] ${SHA}\nVERDICT: verified`, created_at: "t1", updated_at: "t2" }] });
     expect(await runMergeGate(config, g.request, "o/r", 9, SHA)).toMatchObject({ decision: "refused" });
   });
