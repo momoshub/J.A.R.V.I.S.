@@ -1,7 +1,10 @@
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, setDefaultTimeout, test } from "bun:test";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+
+// each case shells out to the script many times (git, tar, bash); a loaded host needs more than 5s
+setDefaultTimeout(60_000);
 
 const script = resolve(import.meta.dir, "..", "..", "bin", "jarvis-release.sh");
 const template = resolve(import.meta.dir, "..", "..", "launchd", "com.example.jarvis.plist");
