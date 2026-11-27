@@ -125,6 +125,7 @@ export const migrate = (db: Database): void => {
   migrateStatusMessages(db);
   migrateMessageViaBot(db);
   migrateReviewRounds(db);
+  migrateJueki(db);
 };
 
 /**
@@ -1585,4 +1586,49 @@ const migrateReviewRounds = (db: Database): void => {
     user_version: 0,
   };
   if (user_version < 53) db.exec("PRAGMA user_version = 53;");
+};
+
+/**
+ * Jueki's own state (domain/jueki.ts): the day's digest lines and dedupe marks
+ * (`jueki_actions`), the one message the digest is edited on (`jueki_digest`)
+ * and the walls it raised to the owner (`jueki_blockers`, one row per key, so
+ * the same non-prod one is never put twice). New tables, so a rerun is a no-op.
+ */
+const migrateJueki = (db: Database): void => {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS jueki_actions (
+      id    INTEGER PRIMARY KEY AUTOINCREMENT,
+      day   TEXT NOT NULL,
+      at    INTEGER NOT NULL,
+      kind  TEXT NOT NULL,
+      ref   TEXT NOT NULL DEFAULT '',
+      line  TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX IF NOT EXISTS idx_jueki_actions_day ON jueki_actions (day, id);
+    CREATE INDEX IF NOT EXISTS idx_jueki_actions_ref ON jueki_actions (kind, ref, at);
+    CREATE TABLE IF NOT EXISTS jueki_digest (
+      day     TEXT PRIMARY KEY,
+      channel TEXT NOT NULL,
+      ts      TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS jueki_blockers (
+      id             INTEGER PRIMARY KEY AUTOINCREMENT,
+      key            TEXT NOT NULL UNIQUE,
+      kind           TEXT NOT NULL,
+      prod           INTEGER NOT NULL DEFAULT 0,
+      text           TEXT NOT NULL,
+      state          TEXT NOT NULL DEFAULT 'pending',
+      notice_channel TEXT NOT NULL DEFAULT '',
+      notice_ts      TEXT NOT NULL DEFAULT '',
+      raised_count   INTEGER NOT NULL DEFAULT 0,
+      last_raised_at INTEGER NOT NULL DEFAULT 0,
+      handled_at     INTEGER NOT NULL DEFAULT 0,
+      created_at     INTEGER NOT NULL,
+      decided_at     INTEGER NOT NULL DEFAULT 0
+    );
+  `);
+  const { user_version } = db.query<{ user_version: number }, []>("PRAGMA user_version").get() ?? {
+    user_version: 0,
+  };
+  if (user_version < 54) db.exec("PRAGMA user_version = 54;");
 };

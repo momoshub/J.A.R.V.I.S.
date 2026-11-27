@@ -43,6 +43,8 @@ no classes.
   |    idleReaper (closes finished, idle Orca worker sessions, 30 min)      |
   |    stalePromiseSweep (steers a thread whose last bot message promised   |
   |      work nothing is doing, 15 min)                                     |
+  |    jueki (owner-DM housekeeping: journeys, tickets, watches, PRs, one   |
+  |      daily digest message, 30 min)                                      |
   |                                                                         |
   |  dashboard + JSON API (Bun.serve, loopback), /api/commands/run,         |
   |    /api/github-app/comment, /api/slack/proxy + /api/slack/file          |
@@ -213,6 +215,25 @@ no classes.
   watches first, and the watcher
   re-reads the row after its check, so a watch cancelled meanwhile stays quiet.
   None of them hold a session or a queue slot while they wait.
+- **Jueki.** `jueki` (`application/jueki.ts`, rules in `domain/jueki.ts`,
+  state in `db/juekiRepo.ts`, `JUEKI_INTERVAL_MS`, default 30 min, 0 = off) is
+  the owner's housekeeping coordinator and lives only in the owner's DM; every
+  message it posts is signed "Jueki". It is a tick, not a process, and it keeps
+  nothing in a session: each tick rebuilds its picture from the journeys, bound
+  worker tickets, watches, the stuck-work probe, `gh pr list` and the owner's
+  unanswered threads. Code settles what it can (closes a journey at 100%,
+  renews a worker ticket about to lapse under a watched worker, arms a lapsed
+  `watch worker` again) and the rest goes to one held turn per tick, a fresh
+  session per Jueki day (the day starts when quiet hours end), run as the owner
+  with the owner's role and nothing beyond it. Every action is one line of a
+  single digest message edited with `chat.update` through the day. A wall the
+  owner must knock down goes through `jueki blocker` and is routed in code: a
+  non-prod blocker is put once ever with `jv:jueki:` Approve / Reject buttons
+  (decided in code, never by a model) and waits out quiet hours (22:00-05:00
+  Asia/Ho_Chi_Minh); a prod blocker is asked again every `JUEKI_PROD_REPING_MS`
+  until the owner acts, quiet hours or not, unless it is both urgent and
+  low-risk and inside the owner's role, which Jueki fixes itself and reports in
+  the digest and one direct line. See "Jueki" in CLAUDE.md.
 - **Followed threads: debounce and gate.** An untagged message in a thread the bot
   follows (the `asked` and `own-thread` routes; tagged messages, DMs, one-on-one
   threads and command lines skip all of this) is not a turn yet. `app.ts` hands it
@@ -321,6 +342,7 @@ No I/O, no frameworks. Just data shapes and functions of their inputs.
 - `threadFollow.ts`, `followGate.ts` - which untagged thread messages the bot answers, and the pure rules of the gate in front of a followed thread (settings, bypass, batch windows, verdict parsing, the gate's prompt)
 - `voiceMessage.ts` (domain), `voiceTranscript.ts` (application), `infrastructure/system/whisper.ts` - a voice message (an audio clip, no text) starts a turn: the clip is fetched with the bot token, converted by ffmpeg and transcribed by local whisper.cpp, and the transcript becomes the message text with a note to reply in text plus a spoken clip; a failure becomes a note in the text, never a dropped clip
 - `bugReport.ts` - the internal `bug-report` command's pure parts: flag parsing, the Slack-link check, the fingerprint that dedupes, the owner's DM text, the `jv:bug-report:` button ids (the prefix is code-handled: `application/bugReportApproval.ts` decides a press, owner only, on the stored notice channel/ts, and only an approve starts the fix turn)
+- `jueki.ts` - Jueki's pure rules: quiet hours and the owner's day, what a journey or worker ticket needs, own PRs from `gh`, urgent / low-risk / the prod self-fix rule, how a blocker is routed, the digest and the turn's text
 - `journey.ts` - the bot's own work log: statuses, flag parsing for the internal `journey` command (run only by the brain's own turn, never typed), the one-line and help text
 - `watch.ts`, `reminder.ts`, `loop.ts`, `selfUpdate.ts`, `runControl.ts`, `threadBackground.ts`, `backgroundJobs.ts` - waits, reminders, draining restart, stopping a turn and the background agents its thread started
 - `stalePromise.ts`, `tellPrompt.ts` - the stale-promise rules (bilingual promise heuristic, the model's yes/no question, which threads may be nudged, the per-thread record) and the internal steer text shared by `tell` and the sweep
@@ -351,6 +373,7 @@ Orchestrates the domain and depends on **ports**, not concrete adapters.
 - `learningApproval.ts` (+ `domain/learning.ts`) - learnings need the owner's approval: only the owner's own typed `learn` is saved active; a member's `learn`, the agent's `learn` and every `POST /api/learnings` are stored pending (`learnings.status`, migration v35), kept out of every prompt (`injectedLearnings` is the one place the injection reads, active only) and put to the owner with `jv:learning:approve|reject` buttons - in the thread of the turn that proposed it when that is the owner's DM or a thread they started (source recorded in `learnings.source_*`, migration v39), otherwise in the owner's DM with a link to that thread - a press is honoured only on the notice exactly as last rendered (`domain/noticeFingerprint.ts` over its text and buttons, stored in `learnings.notice_fingerprint`, migration v40; `slackProxy` also refuses a turn's `chat.update` on any stored notice) - decided in code in `slack/app.ts` like `jv:loop:` and never handed to the model; after a decision the notice keeps its buttons (`updateInteractive`: the pressed one relabelled `Approved by` / `Rejected by`, the other flips the decision, which `LearningsRepo.decide` allows), unlike the other approval notices, which are settled with `settleInteractive`. Each learning also has an optional scope (`learnings.scope_channels`, migration v45; empty = global, the default and every older row): `injectedLearnings(repo, channelId)` injects a channel-scoped learning only into turns in its channels, the API takes `scope` (`global` | `channel` | channel id list), the owner's notice shows it and `learn approve <id> global|<channel ids>` changes it, and in adapter mode a scoped fact is filed into the channel's own note.
 - `threadQueue.ts`, `runRegistry.ts` - one turn per thread (what a person queues behind it is merged into one turn), and stopping the running one
 - `followGate.ts` (application), `followGateModel.ts` - the per-thread buffer for a followed thread (a quiet window, a hard cap, injectable timers) and the cheap pal-model call that says reply, skip or wait
+- `jueki.ts`, `juekiApproval.ts` (application) - Jueki's tick (picture, deterministic actions, the daily turn, the digest, blockers) and the owner's code-decided Approve / Reject on a blocker
 - `ciGate.ts` (application) - the CI gate of `quick-review`: idempotent request-changes and approve against GitHub's own state, the watcher row for a running CI, and its poll
 - `watcher.ts`, `reminders.ts`, `loops.ts`, `reviewInbox.ts`, `reviewRounds.ts`, `reviewGuard.ts`, `innerChild.ts`, `learningHarvest.ts`, `offlineAlarm.ts`, `orcaQuestions.ts`, `idleReaper.ts`, `stuckSweeper.ts`, `stalePromiseSweep.ts` - the timers (`orcaQuestions` also sits on the tool-trace sink, linking each Orca worker to the thread that started it)
 - `githubApp.ts` - calls from the GitHub App: dedupe/queue, identity mapping, the turn, the answer back

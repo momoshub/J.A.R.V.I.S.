@@ -24,6 +24,11 @@ export type TurnRequest = {
   workerLane?: boolean;
   loop?: boolean;
   hold?: boolean;
+  /**
+   * With `hold`: answer `{ text, ran }` always, where `ran` says the turn really ran (a reply, a silent NO_REPLY
+   * included) and not that it was ignored or cut for a restart, which `hold` alone reports as nothing, like a silence.
+   */
+  reportRan?: boolean;
   /** What the bot's own sender is, for the reply's footer. */
   trigger?: InternalKind;
   /** A fired watch the owner created in their own turn: where its turn may write (`domain/writeTargets.ts`). */
@@ -38,7 +43,7 @@ export const createTurnRunner =
     /** The model a loop's fire runs on. */
     loopModel: () => string | undefined;
   }) =>
-  async ({ channelId, threadTs, slackUserId, text, keepSession, autoContinue, unprompted, workerLane, loop, hold, trigger, watchGrant }: TurnRequest) => {
+  async ({ channelId, threadTs, slackUserId, text, keepSession, autoContinue, unprompted, workerLane, loop, hold, reportRan, trigger, watchGrant }: TurnRequest) => {
     const result = await d.respond({
       channelId,
       slackUserId,
@@ -60,6 +65,9 @@ export const createTurnRunner =
     // answering; posted, it reads as the whole reply.
     // A loop's fire: the runner posts it (with its header and its own
     // `triggered by loop`) or not at all.
+    if (hold && reportRan) {
+      return { text: result.kind === "ignored" ? "" : (loopReplyOf(result.text)?.text ?? ""), ran: result.kind !== "ignored" };
+    }
     if (hold) return result.kind === "ignored" ? undefined : loopReplyOf(result.text);
     if (result.kind !== "ignored" && result.text.trim() && !isSilenceNote(result.text)) {
       // Signed with what the turn cost, as a reply streamed live would be.

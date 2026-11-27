@@ -53,3 +53,27 @@ describe("via bot mark", () => {
     expect(b).not.toHaveProperty("viaBot");
   });
 });
+
+describe("endedOnUser", () => {
+  const repo = () => createMessageRepo(openDatabase(":memory:"));
+  const add = (r: ReturnType<typeof repo>, role: "user" | "assistant", who: string, threadTs: string, at: number, viaBot = false) =>
+    r.append({ channelId: "C1", slackUserId: who, role, content: "x", threadTs, viaBot }, at);
+
+  test("lists threads whose newest turn is this person's own, oldest first, inside the window", () => {
+    const r = repo();
+    add(r, "user", "U1", "1.1", 100); // unanswered
+    add(r, "user", "U1", "2.2", 100);
+    add(r, "assistant", "assistant", "2.2", 150); // answered
+    add(r, "user", "U2", "3.3", 120); // someone else's
+    add(r, "user", "U1", "4.4", 50); // unanswered, older
+    add(r, "user", "U1", "5.5", 900); // too recent
+    expect(r.endedOnUser("U1", 0, 500, 10).map((t) => [t.threadTs, t.lastAt])).toEqual([["4.4", 50], ["1.1", 100]]);
+    expect(r.endedOnUser("U1", 60, 500, 10).map((t) => t.threadTs)).toEqual(["1.1"]);
+  });
+
+  test("a turn the bot wrote to itself under the person's id is not their message", () => {
+    const r = repo();
+    add(r, "user", "U1", "1.1", 100, true);
+    expect(r.endedOnUser("U1", 0, 500, 10)).toEqual([]);
+  });
+});

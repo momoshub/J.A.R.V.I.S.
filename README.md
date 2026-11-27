@@ -95,6 +95,7 @@ Required / notable env (see `.env.example`):
 | `RESTART_TURN_BUDGET_MS` | while a restart waits, new messages still run, each turn on this budget (default `120000`); past it the thread is told to hold on and the turn is cut, then picked up again on the same session after the restart |
 | `DRAIN_NOTICE_CHANNEL` | channel for the one restart notice listing waiting threads (unset: silent); also where the inner child logs voice drift unless `inner_child_drift_channel` is set, and where a press on Slack's stop button is reported (the stopped thread is not told) |
 | `OFFLINE_ALARM_CHANNEL` | channel told when the host loses its connection, via a Slack scheduled message kept armed; a channel id, not a name (unset: no alarm) |
+| `JUEKI_INTERVAL_MS`, `JUEKI_STALE_JOURNEY_MS`, `JUEKI_PROD_REPING_MS`, `JUEKI_QUIET_START_HOUR`, `JUEKI_QUIET_END_HOUR`, `JUEKI_TZ_OFFSET_MIN` | Jueki, the housekeeping coordinator that lives only in the owner's DM: tick every 30 min (0 = off), journeys stale after 3 days, an undecided prod blocker asked again every 30 min, quiet hours 22 -> 5 in UTC+7 (prod blockers excepted); see "Jueki" in CLAUDE.md |
 | `SLASH_MIRROR_CHANNEL` | channel for the owner's copy of other people's slash commands, one thread per run; a channel id (unset: the owner's DM) |
 | `GITHUB_APP_ID` | GitHub App id (unset: `app.json` beside the private key) - see [Calling it from GitHub](#calling-it-from-github) |
 | `GITHUB_APP_PRIVATE_KEY_PATH` | app private key (default `~/.config/jarvis/github-app/private-key.pem`) |

@@ -15,6 +15,14 @@ import {
   DEFAULT_SWEEP_INTERVAL_MS,
   DEFAULT_WINDOW_MS,
 } from "../domain/stalePromise.ts";
+import {
+  DEFAULT_INTERVAL_MS,
+  DEFAULT_OFFSET_MIN,
+  DEFAULT_PROD_REPING_MS,
+  DEFAULT_QUIET_END_HOUR,
+  DEFAULT_QUIET_START_HOUR,
+  DEFAULT_STALE_JOURNEY_MS,
+} from "../domain/jueki.ts";
 import { DEFAULT_REAP_IDLE_MS, DEFAULT_REAP_INTERVAL_MS } from "../domain/idleWorkers.ts";
 import { DEFAULT_REVIEW_IDLE_DAYS, DEFAULT_REVIEW_ROUNDS } from "../domain/reviewRounds.ts";
 import { parseSelfPrAccounts, RESTART_TURN_BUDGET_MS, type SelfPrAccounts } from "../domain/selfUpdate.ts";
@@ -158,6 +166,19 @@ const schema = z
     STALE_PROMISE_WINDOW_MS: z.coerce.number().int().min(60_000).default(DEFAULT_WINDOW_MS),
     // Most threads nudged in one sweep. Default 3.
     STALE_PROMISE_MAX_NUDGES: z.coerce.number().int().min(1).default(DEFAULT_MAX_NUDGES),
+    // Jueki, the housekeeping coordinator that lives only in the owner's DM: how
+    // often (ms) its tick rebuilds the picture (journeys, worker tickets, watches,
+    // Orca, own PRs, unanswered threads) and acts. 0 turns it off. Default 30 min.
+    JUEKI_INTERVAL_MS: z.coerce.number().int().min(0).default(DEFAULT_INTERVAL_MS),
+    // An open journey untouched this long (ms) is stale and handed to Jueki's turn. Default 3 days.
+    JUEKI_STALE_JOURNEY_MS: z.coerce.number().int().min(60_000).default(DEFAULT_STALE_JOURNEY_MS),
+    // A prod blocker nobody decided is put to the owner again after this long (ms). Default 30 min.
+    JUEKI_PROD_REPING_MS: z.coerce.number().int().min(60_000).default(DEFAULT_PROD_REPING_MS),
+    // Quiet hours (no pings, prod blockers excepted) as local hours, in the zone JUEKI_TZ_OFFSET_MIN
+    // names (minutes east of UTC; Asia/Ho_Chi_Minh is 420). Equal hours: never quiet. Default 22 -> 5.
+    JUEKI_QUIET_START_HOUR: z.coerce.number().int().min(0).max(23).default(DEFAULT_QUIET_START_HOUR),
+    JUEKI_QUIET_END_HOUR: z.coerce.number().int().min(0).max(23).default(DEFAULT_QUIET_END_HOUR),
+    JUEKI_TZ_OFFSET_MIN: z.coerce.number().int().min(-720).max(840).default(DEFAULT_OFFSET_MIN),
     // Channel the offline alarm reports to: a notice armed on Slack's side
     // that posts by itself if the host loses its connection, and is edited to
     // "back online" when it returns. Unset: no alarm. An id, not a name: the
@@ -317,6 +338,8 @@ export type AppConfig = {
   orcaReap: { intervalMs: number; idleMs: number; dryRun: boolean };
   /** Stale-promise sweep: interval (0 = off), minimum age of the promise, look-back window, nudges per sweep. */
   stalePromise: { intervalMs: number; minAgeMs: number; windowMs: number; maxNudges: number };
+  /** Jueki (domain/jueki.ts): tick interval (0 = off), stale journey age, prod blocker re-ask, quiet hours (local hours) and the zone's offset in minutes east of UTC. */
+  jueki: { intervalMs: number; staleJourneyMs: number; prodRepingMs: number; quietStartHour: number; quietEndHour: number; tzOffsetMin: number };
   /** Channel the offline alarm posts to when the host drops off; unset is off. */
   offlineAlarmChannel?: string;
   /** Channel for the owner's copy of other people's slash commands; unset is the owner's DM. */
@@ -420,6 +443,14 @@ export const loadConfig = (source: Record<string, string | undefined> = process.
       minAgeMs: env.STALE_PROMISE_MIN_AGE_MS,
       windowMs: env.STALE_PROMISE_WINDOW_MS,
       maxNudges: env.STALE_PROMISE_MAX_NUDGES,
+    },
+    jueki: {
+      intervalMs: env.JUEKI_INTERVAL_MS,
+      staleJourneyMs: env.JUEKI_STALE_JOURNEY_MS,
+      prodRepingMs: env.JUEKI_PROD_REPING_MS,
+      quietStartHour: env.JUEKI_QUIET_START_HOUR,
+      quietEndHour: env.JUEKI_QUIET_END_HOUR,
+      tzOffsetMin: env.JUEKI_TZ_OFFSET_MIN,
     },
     ...(env.OFFLINE_ALARM_CHANNEL ? { offlineAlarmChannel: env.OFFLINE_ALARM_CHANNEL } : {}),
     ...(env.SLASH_MIRROR_CHANNEL ? { slashMirrorChannel: env.SLASH_MIRROR_CHANNEL } : {}),
