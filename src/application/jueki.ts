@@ -117,6 +117,8 @@ export type JuekiTurnRequest = {
   unprompted: boolean;
   loop: boolean;
   hold: boolean;
+  /** Answer whether the turn really ran: an ignored or restart-cut turn is not one that handled its picture. */
+  reportRan: true;
   trigger: "loop";
 };
 
@@ -144,7 +146,7 @@ export type JuekiDeps = {
   /** Open PRs of the bot's own repo with CI and reviewer state. */
   readonly ownPrs: () => Promise<{ readonly prs: readonly OwnPr[]; readonly problem?: string }>;
   readonly unanswered: (slackUserId: string, since: number, before: number) => readonly EndedThread[];
-  readonly runTurn: (req: JuekiTurnRequest) => Promise<{ text: string } | undefined | void>;
+  readonly runTurn: (req: JuekiTurnRequest) => Promise<{ text: string; ran?: boolean } | undefined | void>;
   /** Minutes east of UTC the owner's day is read in. */
   readonly offsetMinutes: () => number;
   readonly quiet: { readonly startHour: number; readonly endHour: number };
@@ -359,7 +361,7 @@ export const createJueki = (deps: JuekiDeps): Jueki => {
           picture.replaceTickets.push({ ref: `ticket ${t.id}`, line: `${t.dispatchId}: renewal refused (${r.error})` });
         }
       } else if (picture.replaceTickets.length < PICTURE_CAP && fresh("nudge", ref("ticket", t.id), now, NUDGE_REPEAT_MS)) {
-        picture.replaceTickets.push({ ref: `ticket ${t.id}`, line: `${t.dispatchId}: past its 24h lifetime, the worker needs a new one` });
+        picture.replaceTickets.push({ ref: `ticket ${t.id}`, line: `${t.dispatchId}: at the end of its 24h life, the worker needs a new ticket` });
       }
     }
   };
@@ -466,8 +468,6 @@ export const createJueki = (deps: JuekiDeps): Jueki => {
           log("no DM with the owner; the turn is not started");
           return;
         }
-        // Marked only now that a turn can really start: without a DM nothing was fed, and everything is in the next tick's picture.
-        for (const m of marks) deps.repo.mark(m.kind, m.id, now);
         const day = today();
         const reply = await deps.runTurn({
           channelId: channel,
@@ -478,10 +478,15 @@ export const createJueki = (deps: JuekiDeps): Jueki => {
           unprompted: true,
           loop: true,
           hold: true,
+          reportRan: true,
           trigger: "loop",
         });
-        // An approval is handed over once the turn has run; one that threw (or died with a restart) is fed again.
-        for (const b of approved) deps.repo.markHandled(b.id, deps.clock());
+        // Marks and approvals are written only once the turn REALLY ran (a reply or NO_REPLY): one that threw, was
+        // ignored, was busy or was cut for a restart (all of which resolve as nothing) leaves its picture to the next tick.
+        if (reply?.ran) {
+          for (const m of marks) deps.repo.mark(m.kind, m.id, now);
+          for (const b of approved) deps.repo.markHandled(b.id, deps.clock());
+        }
         const note = reply?.text.trim();
         if (note && !/no[_ ]reply/i.test(note)) await act(`note: ${note}`);
       } catch (e) {

@@ -45,7 +45,7 @@ const setup = (start = NOON, over: Partial<JuekiDeps> = {}) => {
   let scan = NO_STUCK_WORK;
   let unanswered: { channelId: string; threadTs: string; lastAt: number; slackUserId: string }[] = [];
   let n = 0;
-  const flags = { dmOpen: true, turnThrows: false };
+  const flags = { dmOpen: true, turnThrows: false, turnCut: false };
   const jueki = createJueki({
     clock: () => clock.t,
     ownerSlackId: OWNER,
@@ -78,7 +78,8 @@ const setup = (start = NOON, over: Partial<JuekiDeps> = {}) => {
     runTurn: async (req) => {
       turns.push(req);
       if (flags.turnThrows) throw new Error("cut for a restart");
-      return { text: "NO_REPLY" };
+      // An ignored or restart-cut turn resolves as nothing, like a silent one.
+      return flags.turnCut ? undefined : { text: "NO_REPLY", ran: true };
     },
     offsetMinutes: () => 420,
     quiet: { startHour: 22, endHour: 5 },
@@ -330,6 +331,28 @@ describe("a held or failed turn loses nothing", () => {
     expect(s.turns).toHaveLength(2);
     expect(s.turns[1]!.text).toContain("needs the staging bucket");
     expect(s.repo.approvedUnhandled()).toEqual([]);
+  });
+
+  test("a turn that was ignored or cut for a restart (it resolves as nothing) marks nothing and hands over no approval: all of it is fed again", async () => {
+    const s = setup();
+    journey(s, "old thing", 30, NOON - 5 * DAY_MS);
+    const b = s.repo.openBlocker({ key: "k", kind: "permission", prod: false, text: "needs the bucket" }, NOON);
+    s.repo.decide(b.id, "approved", NOON);
+    s.flags.turnCut = true;
+    await s.jueki.tick();
+    await settle();
+    expect(s.turns).toHaveLength(1);
+    expect(s.repo.lastMark("nudge", "journey:1")).toBeUndefined();
+    expect(s.repo.approvedUnhandled().map((x) => x.id)).toEqual([b.id]);
+    s.flags.turnCut = false;
+    s.clock.t += 30 * MINUTE_MS;
+    await s.jueki.tick();
+    await settle();
+    expect(s.turns).toHaveLength(2);
+    expect(s.turns[1]!.text).toContain("journey #1");
+    expect(s.turns[1]!.text).toContain("needs the bucket");
+    expect(s.repo.approvedUnhandled()).toEqual([]);
+    expect(s.repo.lastMark("nudge", "journey:1")).toBeDefined();
   });
 
   test("a ticket already capped at its 24h life and about to lapse is replaced (fed to the turn), not renewed every tick", async () => {

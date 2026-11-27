@@ -49,6 +49,13 @@ describe("createTurnRunner", () => {
     expect(inbounds[0]).toMatchObject({ model: "sonnet", trigger: "loop" });
   });
 
+  test("a held turn that reports whether it ran tells a reply and a silence (both ran) from an ignored turn (it did not)", async () => {
+    const asked = { ...req, text: "x", loop: true, hold: true, reportRan: true, trigger: "loop" } as const;
+    expect(await make({ kind: "reply", text: "found 3" }).runTurn(asked)).toEqual({ text: "found 3", ran: true });
+    expect(await make({ kind: "reply", text: "NO_REPLY" }).runTurn(asked)).toEqual({ text: "", ran: true });
+    expect(await make({ kind: "ignored" }).runTurn(asked)).toEqual({ text: "", ran: false });
+  });
+
   test("a silence note or an ignored turn posts nothing", async () => {
     for (const result of [{ kind: "reply", text: "NO_REPLY" }, { kind: "ignored" }] as const) {
       const { runTurn, posted } = make(result);
