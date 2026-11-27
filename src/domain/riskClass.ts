@@ -104,17 +104,19 @@ const DOC_EXT_RE = /\.(?:md|mdx|txt|rst|png|jpe?g|gif|svg|webp|ico|pdf)$|(?:^|\/
 const SLASH_COMMENT_EXT_RE = /\.(?:ts|tsx|js|jsx|mjs|cjs|css|scss|java|go|rs|c|h|cpp)$/;
 const HASH_COMMENT_EXT_RE = /\.(?:sh|bash|zsh|ya?ml|toml|py|rb|env|example|gitignore|gitleaksignore)$|(?:^|\/)\.env[\w.]*$|(?:^|\/)\.githooks\//;
 
-function isComment(path: string, line: string): boolean {
+function isComment(path: string, line: string, inBlock: boolean): boolean {
   const t = line.trim();
   if (t === "") return true;
   if (SLASH_COMMENT_EXT_RE.test(path)) {
     // a `// @ts-ignore` or `/* istanbul ignore */` steers a tool, it is not prose
     if (/@ts-(?:ignore|expect-error|nocheck)|eslint-disable|biome-ignore|istanbul ignore/.test(t)) return false;
     if (t.startsWith("//")) return true;
-    // code after a closing `*/` is code: `/* ok */ run(x)` and `*/ export const X = 1` are not comments
-    if (t.startsWith("/*") || t.startsWith("*/")) return t.lastIndexOf("*/") < 0 ? t.startsWith("/*") : t.slice(t.lastIndexOf("*/") + 2).trim() === "";
-    // a `*` line is a block-comment body only as far as it reads as prose: one that names a capability or steers an agent is scanned as what it is
-    if (t.startsWith("*")) return capabilityOf(t) === undefined && !isPromptText(t);
+    // inside a block comment, or opening one: a comment unless code follows the closing `*/`
+    if (inBlock || t.startsWith("/*")) {
+      const close = t.lastIndexOf("*/");
+      return close < 0 ? true : t.slice(close + 2).trim() === "";
+    }
+    // a `*` or `*/` line that is not provably inside a block comment (no opener in view) is scanned as code
     return false;
   }
   if (HASH_COMMENT_EXT_RE.test(path)) return t.startsWith("#") && !t.startsWith("#!");
@@ -137,16 +139,40 @@ const isPromptText = (line: string): boolean => {
   return STEERING_WORD_RE.test(t);
 };
 
-type Line = { readonly sign: "+" | "-"; readonly text: string };
+// `inBlock`: between a block-comment opener and its closer, as far as the hunk (context lines included) shows
+type Line = { readonly sign: "+" | "-"; readonly text: string; readonly inBlock: boolean };
 
-/** The added and removed lines of a patch (a removed guard is as much a change as an added one). */
+/**
+ * The added and removed lines of a patch (a removed guard is as much a change
+ * as an added one), each with whether it sits inside a block comment. The old
+ * and the new side keep their own state, fed by the context lines they share;
+ * a hunk that starts mid-comment shows no opener, so its lines read as code.
+ */
 const changedLines = (patch: string): Line[] => {
   const out: Line[] = [];
+  let oldBlock = false;
+  let newBlock = false;
+  const next = (open: boolean, text: string): boolean => {
+    const t = text.trim();
+    if (open) return !t.includes("*/");
+    return t.startsWith("/*") && !t.slice(2).includes("*/");
+  };
   for (const raw of patch.split("\n")) {
     // a patch starts at its first `@@`, so a `+++` or `---` here is a changed line that begins with `++` or `--`, never a header
-    if (raw.startsWith("@@")) continue;
-    if (raw.startsWith("+")) out.push({ sign: "+", text: raw.slice(1) });
-    else if (raw.startsWith("-")) out.push({ sign: "-", text: raw.slice(1) });
+    if (raw.startsWith("@@")) {
+      oldBlock = false;
+      newBlock = false;
+    } else if (raw.startsWith("+")) {
+      out.push({ sign: "+", text: raw.slice(1), inBlock: newBlock });
+      newBlock = next(newBlock, raw.slice(1));
+    } else if (raw.startsWith("-")) {
+      out.push({ sign: "-", text: raw.slice(1), inBlock: oldBlock });
+      oldBlock = next(oldBlock, raw.slice(1));
+    } else {
+      const text = raw.startsWith(" ") ? raw.slice(1) : raw;
+      oldBlock = next(oldBlock, text);
+      newBlock = next(newBlock, text);
+    }
   }
   return out;
 };
@@ -186,7 +212,7 @@ const classifyFile = (file: ChangedFile): { risk: FileRisk; promptText: boolean 
   // prose only when every path the file had is a doc path: a rename out of source into `.md` is still that source
   const prose = paths.every((p) => DOC_EXT_RE.test(p)) && !steering;
   const test = TEST_PATH_RE.test(file.path);
-  for (const { text } of lines) {
+  for (const { text, inBlock } of lines) {
     if (text.trim() === "") continue;
     if (PACKAGE_JSON_RE.test(file.path) && DEPENDENCY_LINE_RE.test(text)) {
       verdicts.push({ class: "capability", reason: "dependencies: package.json", promptText: false });
@@ -201,7 +227,7 @@ const classifyFile = (file: ChangedFile): { risk: FileRisk; promptText: boolean 
       verdicts.push(tool !== undefined ? { class: "capability", reason: `${tool}: tool grant in a steering file`, promptText: true } : { class: "prompt", reason: "steering text (skill, guide or instruction file)", promptText: true });
       continue;
     }
-    if (isComment(file.path, text)) {
+    if (isComment(file.path, text, inBlock)) {
       verdicts.push({ class: "docs", reason: "comments", promptText: false });
       continue;
     }

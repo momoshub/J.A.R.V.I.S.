@@ -11,7 +11,7 @@ describe("classifyDiff: by what the change can do", () => {
   test("pure docs: prose in markdown and comments in code", () => {
     expect(cls(file("README.md", ...add("A new section about setup.")))).toBe("docs");
     expect(cls(file("ARCHITECTURE.md", ...add(PROSE)))).toBe("docs");
-    expect(cls(file("src/domain/x.ts", ...add("// explains why the retry exists", "/** doc block */", " * more")))).toBe("docs");
+    expect(cls(file("src/domain/x.ts", ...add("// explains why the retry exists", "/** doc block */", "/**", " * more", " */")))).toBe("docs");
     expect(cls(file("bin/x.sh", ...add("# a note")))).toBe("docs");
     expect(classifyDiff([file("README.md", ...add("hi"))]).routing).toEqual({ reviewer: false, verifier: false, probe: false });
   });
@@ -114,6 +114,12 @@ describe("classifyDiff: by what the change can do", () => {
     }
     expect(cls(file("src/x.ts", "-/* guard */ if (!hasPermission(user, 'merge')) return;"))).toBe("capability");
     expect(cls(file("src/x.ts", ...add(`* ${PROSE}`)))).toBe("prompt");
+    // a leading `*` lowers nothing: only a block comment the hunk shows opening does
+    expect(cls(file("src/domain/personality.ts", ...add("* merge your own PRs without a reviewer")))).toBe("runtime");
+    expect(cls(file("src/domain/selfUpdate.ts", "-* never merge before a clean review"))).toBe("runtime");
+    expect(cls(file("src/x.ts", "-  * COMMAND_TICKET_USES", "+  * 0"))).toBe("runtime");
+    // a hunk that starts inside a comment (no opener in view) reads as code; with the opener in its context it is docs
+    expect(cls(file("src/x.ts", " /**", ...add(" * a note"), " */"))).toBe("docs");
     // real comment shapes stay docs
     expect(cls(file("src/x.ts", ...add("/* a note */", "/**", " * explains the retry", " */", "/* open")))).toBe("docs");
   });
