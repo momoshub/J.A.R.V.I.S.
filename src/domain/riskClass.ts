@@ -105,6 +105,8 @@ const SLASH_COMMENT_EXT_RE = /\.(?:ts|tsx|js|jsx|mjs|cjs|css|scss|java|go|rs|c|h
 const HASH_COMMENT_EXT_RE = /\.(?:sh|bash|zsh|ya?ml|toml|py|rb|env|example|gitignore|gitleaksignore)$|(?:^|\/)\.env[\w.]*$|(?:^|\/)\.githooks\//;
 
 /** Consume `*/`-closed block comments and a `//` tail from the left; anything else left over is code (`/* a */ run(x) /* b */`). */
+const uncomment = (line: string): string => line.replace(/^\s*(?:\/\/+|\/\*+|\*+\/?)/, "").replace(/\*\/\s*$/, "");
+
 function commentsOnly(line: string, inBlock: boolean): boolean {
   let rest = line.trim();
   if (inBlock) {
@@ -226,6 +228,9 @@ const classifyFile = (file: ChangedFile): { risk: FileRisk; promptText: boolean 
   // prose only when every path the file had is a doc path: a rename out of source into `.md` is still that source
   const prose = paths.every((p) => DOC_EXT_RE.test(p)) && !steering;
   const test = TEST_PATH_RE.test(file.path);
+  // A hunk cannot show whether a line is inside a multi-line template string: `/*` and `//` lines there are text, and a backtick on a changed line
+  // can end the string and start code. A source patch with a backtick or a continued line (trailing backslash) therefore reads no line as a comment.
+  const fragile = SLASH_COMMENT_EXT_RE.test(file.path) && /`|\\$/m.test(file.patch);
   for (const { text, inBlock } of lines) {
     if (text.trim() === "") continue;
     if (PACKAGE_JSON_RE.test(file.path) && DEPENDENCY_LINE_RE.test(text)) {
@@ -241,8 +246,9 @@ const classifyFile = (file: ChangedFile): { risk: FileRisk; promptText: boolean 
       verdicts.push(tool !== undefined ? { class: "capability", reason: `${tool}: tool grant in a steering file`, promptText: true } : { class: "prompt", reason: "steering text (skill, guide or instruction file)", promptText: true });
       continue;
     }
-    if (isComment(file.path, text, inBlock)) {
-      verdicts.push({ class: "docs", reason: "comments", promptText: false });
+    if (!fragile && isComment(file.path, text, inBlock)) {
+      // a hunk cannot show whether a comment-looking line sits inside a multi-line string, where it is prompt text: steering prose there is read as a prompt (a reviewer, no probe gate)
+      verdicts.push(SLASH_COMMENT_EXT_RE.test(file.path) && isPromptText(uncomment(text)) ? { class: "prompt", reason: "comment that reads as steering text (may be inside a string)", promptText: false } : { class: "docs", reason: "comments", promptText: false });
       continue;
     }
     if (test) {
