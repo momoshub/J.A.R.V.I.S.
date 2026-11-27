@@ -172,7 +172,8 @@ const build = (opts: {
             replies: async (a: Record<string, unknown>) => {
               if (opts.repliesThrows) throw new Error("ratelimited");
               const found = opts.stored?.[String(a.latest)];
-              return { messages: found ? [{ ts: String(a.latest), ...found }] : [] };
+              // like Slack: the thread's parent comes first, whatever the bounds
+              return { messages: [{ ts: String(a.ts), text: "the question" }, ...(found ? [{ ts: String(a.latest), ...found }] : [])] };
             },
           },
         }

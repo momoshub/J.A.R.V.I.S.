@@ -903,7 +903,8 @@ const footSelfPost = async (msg: Incoming, ts: string, line: string, log: (m: st
   try {
     const replies = msg.client.conversations?.replies;
     if (!replies) return log(`footer for the turn's own post skipped, no way to read it ${where}`);
-    const res = await replies({ channel: msg.channelId, ts: msg.threadTs, latest: ts, oldest: ts, inclusive: true, limit: 1 });
+    const res = await replies({ channel: msg.channelId, ts: msg.threadTs, latest: ts, oldest: ts, inclusive: true, limit: 10 });
+    // `replies` starts at the thread's parent whatever the bounds, so the post is matched by its exact ts, never `messages[0]`
     const post = res.messages?.find((m) => m.ts === ts);
     if (!post) return log(`footer for the turn's own post skipped, message not found ${where}`);
     const update = footerUpdate(post, line);
