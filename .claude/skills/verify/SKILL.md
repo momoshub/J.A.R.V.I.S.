@@ -11,6 +11,7 @@ The session that wrote a PR never declares it done. A separate verifier (a fresh
 
 The writer's description says what the writer believes it fixed; a verifier that starts there only exercises that. The brief you are given is built by `bin/verify-brief.ts brief --pr <pr>` from the diff's paths: the boundaries they cross (ticket, access, command, slack, pipeline, script, db, env, prompt, watch, web, runtime) each with numbered adversarial cases (`ticket.1`, `command.2`, ...), the policy text of `SECURITY.md` / `ARCHITECTURE.md` / `AGENTS.md`, the regression history of those files (fix, bug and revert merges and the tests they added), past `[review round]` blockers and the contracts (tests, system-model tests, help, env). If you were handed no such file, build it yourself in your worktree (`bun bin/verify-brief.ts brief --pr <pr> --out brief.md`; `--no-gh` when gh is unreachable, and say so).
 
+- The policy text in the brief is read at the merge base, and `--pr` takes the head, base and file list from GitHub, not from your checkout: if the diff edits `SECURITY.md`, `ARCHITECTURE.md` or `AGENTS.md`, the brief lists that as a change to scrutinise (does it loosen a rule?), never as the policy.
 - Read the brief and attack it first. Read the PR body only afterwards, as one more claim to falsify.
 - Per boundary try at least one adversarial or escalation case, not only the happy path: a role below the gate, a ticket for another repo, a stale head, a hostile argument, a second run, old data. A case that cannot apply is `n/a <id>: <reason>`, never skipped silently.
 - Policy items you exercise are the ids in the brief's `REQUIRED_ITEMS:` line; the `[verify]` comment lists them (see Evidence).
@@ -53,7 +54,7 @@ Post one comment `[verify]` on the PR (as the `SELF_PR_REVIEWER` account: `GH_TO
 - the head SHA you verified (`git rev-parse HEAD` in your worktree equals the PR's `headRefOid`)
 - the exact commands run and their trimmed output (typecheck, scoped and full `bun test` counts)
 - the behaviour proof for the change type above: command output, thread permalink, log line, screenshot, exit codes
-- `Exercised: <ids>`: every item id of the brief you tried, each with one line of what you did and what came out (`n/a <id>: <reason>` for one that does not apply), and `Model: <agent/model you ran on>` (say "same family as the writer" when it is)
+- `Exercised: <ids>` (or an `Exercised:` header with one `- <id>: what you did` line per item): every item id of the brief you tried, each with one line of what you did and what came out (`n/a <id>: <reason>` for one that does not apply), and `Model: <agent/model you ran on>` (say "same family as the writer" when it is)
 - what you could not verify and why
 - a verdict line: `VERDICT: verified` or `VERDICT: not verified - <what is missing or broken>`
 

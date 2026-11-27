@@ -1752,9 +1752,11 @@ A verifier briefed from the PR description exercises what the writer says it fix
 
 ```bash
 bun bin/verify-brief.ts brief --pr 123 --out brief.md            # or --base origin/main --head <sha>; --no-gh skips past review blockers
-bun bin/verify-brief.ts agent --model sonnet                      # VERIFIER_AGENT / VERIFIER_MODEL_ARGS / VERIFIER_NOTE
+bun bin/verify-brief.ts agent --model sonnet                      # `eval` it: VERIFIER_AGENT / VERIFIER_MODEL / VERIFIER_NOTE
 bun bin/verify-brief.ts check --brief brief.md --comment verify.md  # exit 1 when the [verify] comment leaves a required item out
 ```
+
+`--pr` takes the PR's head, base and file list from GitHub (paged, so a very large diff works), never from the checkout you run in. The policy docs and the contracts are read at the merge base, so a PR that edits `SECURITY.md` cannot feed its own words into the brief (the edit is flagged as a change to scrutinise instead).
 
 The brief lists the boundaries the changed paths cross (tickets, roles, commands, Slack, merge gates, scripts, databases, env, prompts, watches, web) with adversarial and escalation cases to try beyond the happy path, the policy paragraphs that govern them, the regression history of the same files (fix, bug and revert merges, the tests they touched, past `[review round]` blockers) and the contracts (tests, system-model tests, command fixtures, `.env.example`). The verifier's `[verify]` comment names the items it exercised (`Exercised: ticket.1, command.2`, `n/a <id>: <reason>`). `agent` starts the verifier on another model family (`codex`, then `antigravity`) when its CLI is on the host, and on `claude` with a note when none is. See `.claude/skills/verify/SKILL.md`.
 

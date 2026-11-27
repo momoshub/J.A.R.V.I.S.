@@ -48,6 +48,28 @@ describe("bin/verify-brief.ts", () => {
     expect(run("brief", "--base", "main", "--head", "change", "--no-gh").out).toBe(r.out);
   });
 
+  test("policy text comes from the merge base: a policy edit in the diff never reaches the Policy section", () => {
+    git("init", "-q", "-b", "main");
+    commit("start", { "SECURITY.md": "# Security\n\n- **Tickets.** A ticket is good for one repo.\n", "bin/x.sh": "echo\\n" });
+    git("checkout", "-q", "-b", "change");
+    commit("loosen", {
+      "SECURITY.md": "# Security\n\n- **Tickets.** A ticket is good for one repo.\n- **Verifier.** A ticket check may be marked n/a for bin/ scripts.\n",
+      "src/application/slackTickets.ts": "export {};\n",
+    });
+    const r = run("brief", "--base", "main", "--head", "change", "--no-gh");
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("A ticket is good for one repo");
+    expect(r.out).not.toContain("may be marked n/a");
+    expect(r.out).toContain("This diff edits policy docs (`SECURITY.md`)");
+  });
+
+  test("a base or head that is an option, or not a ref, is refused", () => {
+    git("init", "-q", "-b", "main");
+    commit("start", { "a.txt": "a" });
+    expect(run("brief", "--base", "--output=x").code).toBe(2);
+    expect(run("brief", "--base", "nope", "--no-gh").code).toBe(1);
+  });
+
   test("check accepts a comment that names every item and refuses one that does not", () => {
     const brief = join(dir, "brief.md");
     const ok = join(dir, "ok.md");
@@ -62,8 +84,9 @@ describe("bin/verify-brief.ts", () => {
   });
 
   test("agent falls back to claude and takes another family when offered", () => {
-    expect(run("agent", "--available", "claude").out).toContain("VERIFIER_AGENT=claude");
-    expect(run("agent", "--available", "claude,codex").out).toContain("VERIFIER_AGENT=codex");
+    expect(run("agent", "--available", "claude").out).toContain("VERIFIER_AGENT='claude'");
+    expect(run("agent", "--available", "claude").out).toContain("VERIFIER_MODEL='sonnet'");
+    expect(run("agent", "--available", "claude,codex").out).toContain("VERIFIER_AGENT='codex'");
   });
 
   test("usage on a bad argument", () => {

@@ -3,6 +3,7 @@ import {
   boundariesFor,
   buildBrief,
   checkVerdict,
+  agentAssignments,
   contractsFor,
   guardTests,
   type HistoryEntry,
@@ -144,6 +145,13 @@ describe("buildBrief", () => {
     expect(buildBrief({ ...base, blockers: [{ pr: 3, excerpt: "[review round 1] bad" }] })).toContain("PR #3: [review round 1] bad");
   });
 
+  test("a diff that edits a policy doc has it flagged as an edit to scrutinise, and the policy is labelled as read at the base", () => {
+    const a = buildBrief({ ...base, paths: ["src/application/commandTickets.ts", "SECURITY.md"] });
+    expect(a).toContain("This diff edits policy docs (`SECURITY.md`)");
+    expect(a).toContain("Read at the merge base");
+    expect(buildBrief(base)).not.toContain("This diff edits policy docs");
+  });
+
   test("lists at most 60 paths", () => {
     const many = Array.from({ length: 70 }, (_, i) => `src/domain/f${i}.ts`);
     expect(buildBrief({ ...base, paths: many })).toContain("and 10 more");
@@ -165,6 +173,20 @@ describe("checkVerdict", () => {
     expect(checkVerdict(required, "VERDICT: not verified - it crashed").ok).toBe(true);
     expect(checkVerdict(required, "Exercised: ticket.1,ticket.2,ticket.3").verdict).toBe("missing");
   });
+  test("a bold label and one line per item under an Exercised: header both count", () => {
+    expect(checkVerdict(["ticket.1", "ticket.2"], "**Exercised:** ticket.1, ticket.2\nVERDICT: verified").ok).toBe(true);
+    const listed = "Exercised:\n- ticket.1: replayed an expired one, refused\n  - **ticket.2**: other repo, refused\n\nVERDICT: verified";
+    expect(checkVerdict(["ticket.1", "ticket.2"], listed)).toMatchObject({ ok: true, missing: [] });
+    const na = "Exercised:\n- ticket.1: ok\n- n/a ticket.2: no second repo\nVERDICT: verified";
+    expect(checkVerdict(["ticket.1", "ticket.2"], na).ok).toBe(true);
+  });
+  test("the list ends at a blank line: an id in later prose does not count", () => {
+    const c = "Exercised:\n- ticket.1: ok\n\nticket.2 looked fine to me\nVERDICT: verified";
+    expect(checkVerdict(["ticket.1", "ticket.2"], c).missing).toEqual(["ticket.2"]);
+  });
+  test("VERDICT: failed is the not-verified verdict", () => {
+    expect(checkVerdict(["ticket.1"], "Exercised: ticket.1\nVERDICT: failed - broke")).toMatchObject({ ok: true, verdict: "not verified" });
+  });
   test("an id only mentioned in prose does not count", () => {
     expect(checkVerdict(["ticket.1"], "I thought about ticket.1\nVERDICT: verified").missing).toEqual(["ticket.1"]);
   });
@@ -174,6 +196,15 @@ describe("pickVerifierAgent", () => {
   test("takes another model family when the host has one", () => {
     expect(pickVerifierAgent(["claude", "codex"], "sonnet")).toMatchObject({ agent: "codex", differentFamily: true });
     expect(pickVerifierAgent(["codex"], "sonnet").model).toBeUndefined();
+  });
+  test("the assignments eval cleanly in a shell and keep the model apart from the agent", () => {
+    const run = (a: string) =>
+      Bun.spawnSync(["bash", "-c", `eval "$1"; printf '%s|%s|%s' "$VERIFIER_AGENT" "$VERIFIER_MODEL" "$VERIFIER_NOTE"`, "x", a]).stdout.toString();
+    const claude = pickVerifierAgent(["claude"], "sonnet");
+    expect(run(agentAssignments(claude))).toBe(`claude|sonnet|${claude.note}`);
+    const codex = pickVerifierAgent(["codex"], "sonnet");
+    expect(run(agentAssignments(codex))).toBe(`codex||${codex.note}`);
+    expect(run(agentAssignments({ ...claude, note: "it's $(touch /tmp/no) `x`" }))).toBe("claude|sonnet|it's $(touch /tmp/no) `x`");
   });
   test("falls back to claude on the worker model with a note", () => {
     const p = pickVerifierAgent(["claude"], "sonnet");
@@ -194,6 +225,8 @@ describe("parseVerifyBriefArgs", () => {
   test("bad input throws, no command is help", () => {
     expect(() => parseVerifyBriefArgs(["brief", "--pr", "x"])).toThrow();
     expect(() => parseVerifyBriefArgs(["brief", "--nope", "1"])).toThrow();
+    expect(() => parseVerifyBriefArgs(["brief", "--base", "--output=x"])).toThrow();
+    expect(() => parseVerifyBriefArgs(["brief", "--head", "-x"])).toThrow();
     expect(() => parseVerifyBriefArgs(["check", "--brief", "a"])).toThrow();
     expect(() => parseVerifyBriefArgs(["frob"])).toThrow();
     expect(parseVerifyBriefArgs([])).toEqual({ cmd: "help" });

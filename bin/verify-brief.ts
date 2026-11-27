@@ -16,7 +16,9 @@
 // Exit: 0 ok, 1 the run could not finish or the check failed, 2 usage.
 import { readFileSync, writeFileSync } from "node:fs";
 import {
+  agentAssignments,
   buildBrief,
+  POLICY_DOC_NAMES,
   checkVerdict,
   type HistoryEntry,
   type PastBlocker,
@@ -34,14 +36,19 @@ const fail = (message: string, code = 1): never => {
   process.exit(code);
 };
 
-const run = (cmd: readonly string[]): { ok: boolean; out: string } => {
-  const r = Bun.spawnSync([...cmd], { stdout: "pipe", stderr: "pipe" });
-  return { ok: r.exitCode === 0, out: r.stdout.toString() };
+const run = (cmd: readonly string[]): { ok: boolean; out: string; err: string } => {
+  const r = Bun.spawnSync([...cmd], { stdout: "pipe", stderr: "pipe", maxBuffer: 256 * 1024 * 1024 });
+  return { ok: r.exitCode === 0, out: r.stdout.toString(), err: r.stderr.toString().trim() };
 };
 const git = (...a: string[]): string => {
   const r = run(["git", ...a]);
-  return r.ok ? r.out : fail(`git ${a.join(" ")} failed`);
+  return r.ok ? r.out : fail(`git ${a.join(" ")} failed: ${r.err}`);
 };
+const gh = (...a: string[]): string => {
+  const r = run(["gh", ...a]);
+  return r.ok ? r.out : fail(`gh ${a.join(" ")} failed: ${r.err}`);
+};
+const verifyRef = (ref: string): string => git("rev-parse", "--verify", "--end-of-options", `${ref}^{commit}`).trim();
 
 let args: ReturnType<typeof parseVerifyBriefArgs>;
 try {
@@ -57,57 +64,72 @@ if (args.cmd === "help") {
 } else if (args.cmd === "agent") {
   const available = args.available ?? OTHER_FAMILY_AGENTS.filter((a) => Bun.which(a) !== null);
   const pick = pickVerifierAgent(available, args.model);
-  console.log(`VERIFIER_AGENT=${pick.agent}`);
-  console.log(`VERIFIER_MODEL_ARGS=${pick.model ? `--model ${pick.model}` : ""}`);
-  console.log(`VERIFIER_NOTE=${pick.note}`);
+  console.log(agentAssignments(pick));
 } else if (args.cmd === "check") {
   const required = requiredItemsOf(readFileSync(args.brief, "utf8"));
   const res = checkVerdict(required, readFileSync(args.comment, "utf8"));
   console.log(`verdict: ${res.verdict}; exercised: ${res.exercised.join(",") || "-"}; missing: ${res.missing.join(",") || "-"}`);
   process.exit(res.ok ? 0 : 1);
 } else {
-  const head = git("rev-parse", args.head).trim();
-  const pathsOut =
-    args.pr !== undefined
-      ? run(["gh", "pr", "diff", String(args.pr), "--name-only", ...(args.repo ? ["--repo", args.repo] : [])])
-      : { ok: true, out: git("diff", "--name-only", `${args.base}...${head}`) };
-  if (!pathsOut.ok) fail("could not read the diff's paths (gh pr diff --name-only failed)");
-  const paths = pathsOut.out.split("\n").map((s) => s.trim()).filter(Boolean).sort();
+  // --pr: the head, the base and the file list are GitHub's view of the PR (paged, so a huge diff
+  // works), never the local HEAD; --base/--head: refs in this checkout
+  let head: string;
+  let baseRef = args.base;
+  let paths: string[];
+  const repo =
+    args.repo ?? (args.gh || args.pr !== undefined ? run(["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"]).out.trim() : "");
+  if (args.pr !== undefined) {
+    if (!repo) fail("--pr needs the repo: pass --repo <owner/name> or run inside a checkout gh can name");
+    const meta = JSON.parse(gh("api", `repos/${repo}/pulls/${args.pr}`, "-q", "{head: .head.sha, base: .base.ref}")) as { head: string; base: string };
+    git("fetch", "-q", "origin", `refs/pull/${args.pr}/head`, meta.base);
+    head = verifyRef(meta.head);
+    baseRef = `origin/${meta.base}`;
+    paths = gh("api", `repos/${repo}/pulls/${args.pr}/files`, "--paginate", "-q", ".[] | .filename, (.previous_filename // empty)")
+      .split("\n").map((x) => x.trim()).filter(Boolean);
+  } else {
+    head = verifyRef(args.head);
+    baseRef = args.base;
+    paths = git("diff", "--name-only", `${verifyRef(baseRef)}...${head}`).split("\n").map((x) => x.trim()).filter(Boolean);
+  }
+  paths = [...new Set(paths)].sort();
 
-  const known = git("ls-tree", "-r", "--name-only", head).split("\n").filter(Boolean);
-  const docs = ["SECURITY.md", "ARCHITECTURE.md", "AGENTS.md"].flatMap((name) => {
-    const r = run(["git", "show", `${head}:${name}`]);
+  // what governs the change is read where the diff cannot reach it: at the merge base, not the head
+  const baseSha = verifyRef(baseRef);
+  const mergeBase = git("merge-base", baseSha, head).trim();
+  const known = git("ls-tree", "-r", "--name-only", mergeBase).split("\n").filter(Boolean);
+  const docs = POLICY_DOC_NAMES.flatMap((name) => {
+    const r = run(["git", "show", `${mergeBase}:${name}`]);
     return r.ok ? [{ name, text: r.out }] : [];
   });
 
   // first-parent merges of the base branch with the files each one changed: one entry per PR
-  const raw = git("log", "--first-parent", "-m", "--name-only", "--format=@@%H%x09%s", "-n", "600", args.base, "--", ...paths);
+  // (a \x01 starts a record: a subject cannot carry one)
+  const raw = git("log", "--first-parent", "-m", "--name-only", "--format=%x01%H%x09%s", "-n", "600", baseSha, "--", ...paths);
   const history: HistoryEntry[] = raw
-    .split("@@")
+    .split("\x01")
     .filter(Boolean)
     .map((chunk) => {
       const [first = "", ...files] = chunk.split("\n");
-      const [sha = "", subject = ""] = first.split("\t");
-      return { sha, subject, files: files.map((f) => f.trim()).filter(Boolean) };
+      const [sha = "", ...subject] = first.split("\t");
+      return { sha, subject: subject.join("\t"), files: files.map((f) => f.trim()).filter(Boolean) };
     });
 
   let blockers: PastBlocker[] | undefined;
   let blockersNote: string | undefined = args.gh ? undefined : "--no-gh";
   if (args.gh) {
     const prs = [...new Set(history.map((h) => prNumberOf(h.subject)).filter((n): n is number => n !== undefined))].slice(0, 20);
-    const repo = args.repo ?? run(["gh", "repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"]).out.trim();
     if (!repo) blockersNote = "gh could not name the repo";
     else {
       blockers = [];
       for (const n of prs) {
-        const r = run(["gh", "api", `repos/${repo}/pulls/${n}/reviews`, "--paginate", "-q", ".[].body"]);
+        // one JSON string per review body: a body with a blank line or a marker inside cannot bleed into the next
+        const r = run(["gh", "api", `repos/${repo}/pulls/${n}/reviews`, "--paginate", "-q", ".[].body | @json"]);
         if (!r.ok) {
           blockers = undefined;
-          blockersNote = "gh api failed";
+          blockersNote = `gh api failed: ${r.err.slice(0, 120)}`;
           break;
         }
-        // one review body per line break is ambiguous; split on the round marker instead
-        const bodies = r.out.split(/\n(?=\[review round \d+\])/);
+        const bodies = r.out.split("\n").filter(Boolean).map((l) => JSON.parse(l) as string);
         blockers.push(...reviewBlockers(n, bodies));
       }
     }
@@ -116,7 +138,7 @@ if (args.cmd === "help") {
   const brief = buildBrief({
     ...(args.pr !== undefined ? { pr: args.pr } : {}),
     head,
-    base: args.base,
+    base: baseRef,
     paths,
     known,
     docs,
