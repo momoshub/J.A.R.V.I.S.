@@ -70,10 +70,12 @@ const clip = (text: string, max: number): string => {
  */
 const SECRET_KEY =
   /(["']?)([\w.-]*(?:token|secret|passw(?:or)?d|pwd|api[_-]?key|apikey|credential|ticket|private[_-]?key|access[_-]?key|session[_-]?id|cookie)[\w.-]*)\1(\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,&;}]+)/gi;
-const SECRET_FLAG = /(\s--?(?:password|passwd|pwd|token|secret|api-?key|auth|user|u|p)(?:=|\s+))("[^"]*"|'[^']*'|\S+)/gi;
+const SECRET_FLAG = /(\s--?(?:password|passwd|pwd|token|secret|api-?key|auth)(?:=|\s+))("[^"]*"|'[^']*'|\S+)/gi;
 const SECRET_FORMS: readonly [RegExp, string][] = [
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, "[redacted]"],
   [/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+(?::[^\s/@]*)?@/gi, "$1[redacted]@"],
+  [/(\bcurl\b[^|;&\n]*?\s(?:-u|--user)(?:=|\s*))("[^"]*"|'[^']*'|\S+)/gi, "$1[redacted]"],
+  [/(\b(?:mysql|mariadb|mysqldump|mysqladmin)\b[^|;&\n]*?\s-p)(?=\S)("[^"]*"|'[^']*'|\S+)/gi, "$1[redacted]"],
   [/(\bAuthorization\s*:\s*)(?:(?:Basic|Bearer|Token)\s+)?\S+/gi, "$1[redacted]"],
   [/\beyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]*/g, "[redacted]"],
   [/\bgithub_pat_\w{20,}/g, "[redacted]"],
@@ -90,7 +92,9 @@ export const scrubStatusText = (text: string): string => {
 /** A command (or a read path) that fetches or prints a credential: its result is never shown. */
 const SECRET_FETCH =
   /(?:^|[;&|(]\s*)(?:op\s+(?:read|item|inject|document)|security\s+(?:find|dump)[\w-]*|printenv|env|set|export\s+-p|vault\s+(?:read|kv)|aws\s+(?:secretsmanager|ssm\s+get-parameter)|gcloud\s+secrets|kubectl\s+get\s+secret|pass\s+show|gpg\s+(?:-d|--decrypt)|age\s+-d)(?:\s|$)|\.env\b|\.pem\b|\.p12\b|\.netrc|id_(?:rsa|ed25519|ecdsa)|credentials|secrets?\b|keychain|\.aws\/|\.ssh\/|\/proc\/\S*environ/i;
-const outputHidden = (step: StatusStep): boolean => !!step.command && SECRET_FETCH.test(step.command);
+/** The same words `SECRET_KEY` looks for: a command that names one (`jq .slack_bot_token`, `select … key='openai_key'`) prints its value bare. */
+const SECRET_WORD = /token|secret|passw(?:or)?d|pwd|api[_-]?key|apikey|credential|private[_-]?key|access[_-]?key|cookie|\w+_key\b/i;
+const outputHidden = (step: StatusStep): boolean => !!step.command && (SECRET_FETCH.test(step.command) || SECRET_WORD.test(step.command));
 
 /** A short clipped line of a tool result: the first lines that say something, scrubbed. */
 const outputLine = (output: string): string => {

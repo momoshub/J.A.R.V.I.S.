@@ -329,6 +329,23 @@ describe("card content", () => {
     expect(textOf(tasksOf([{ ...rich(), command: "ls", output: "a.ts" }])[0]?.output)).toBe("a.ts\nlog line 650");
   });
 
+  test("a command that names a secret key hides its output too (jq, sqlite3)", () => {
+    const val = j("Zq8vX2mPq9", "LrT4uWbY7c");
+    for (const command of ["jq -r .slack_bot_token data/config.json", `sqlite3 data/jarvis.db "select value from settings where key='openai_key'"`]) {
+      const [t] = tasksOf([{ ...rich(), command, output: val }]);
+      expect(JSON.stringify(t)).not.toContain(val);
+      expect(textOf(t?.output)).toBe("log line 650");
+    }
+  });
+
+  test("an attached mysql -p<password> and curl -u are redacted, a harmless -p is not", () => {
+    const pw = j("Hunter", "2Secret");
+    const [t] = tasksOf([{ ...rich(), command: `mysql -uroot -p${pw} -e "select 1" && curl -u kai:${pw} x.test && mkdir -p build` }]);
+    const all = JSON.stringify(t);
+    expect(all).not.toContain(pw);
+    expect(all).toContain("mkdir -p build");
+  });
+
   test("sources: no userinfo, no query or fragment, no webhook, capped length", () => {
     const [t] = tasksOf([
       {
