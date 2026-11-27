@@ -25,7 +25,7 @@ The codebase is generic - the bot's identity (name, persona, labels) lives in th
 - **macOS first.** It is developed and run on a Mac. These parts are Mac-only:
   - **desktop control** (`bin/desktop.ts`, `bin/mac-ui.js`: `osascript` and the Accessibility permission, see [Desktop access](#desktop-access));
   - **Keychain token key mode** (`TOKEN_KEY_SOURCE=keychain`; the default `file` mode works anywhere);
-  - **restart via launchd**: `bin/jarvis-restart.sh` asks the running bot to exit once idle and relies on a supervisor to start it again. The repo ships no launchd plist; on a Mac write a LaunchAgent with `KeepAlive`, elsewhere use anything that restarts the process on exit (systemd `Restart=always`, a container restart policy, ...).
+  - **restart via launchd**: `bin/jarvis-restart.sh` asks the running bot to exit once idle and relies on a supervisor to start it again. On a Mac the repo ships a LaunchAgent template (`launchd/com.example.jarvis.plist`) that runs the release supervisor `bin/jarvis-release.sh` instead of `bun` directly: each restart is built and checked in its own per-commit folder, health-checked after the start and rolled back by itself, with `jarvis-release.sh rollback` as the way back that needs neither the bot nor CI (see `docs/releases.md`, including the one-time manual install). Elsewhere use anything that restarts the process on exit (systemd `Restart=always`, a container restart policy, ...); `jarvis-restart.sh` then checks the checkout in place, as before.
 - **On Linux** everything else runs (Slack, memory, dashboard, commands, GitHub App, reviews). Desktop control is unavailable, keychain mode is unavailable (stay on `file`), and restarts need your own supervisor.
 - **Orca is optional.** It is the multi-agent IDE the owner's turns use for background workers; with it missing or stopped, turns get no `ORCA_TERMINAL_HANDLE` and fall back to the Agent tool. Turn it off with `ORCA_TERMINAL_WORKTREE=off`.
 
@@ -850,6 +850,24 @@ running:
 
 It answers `503` when deaf, so an uptime check sees an outage instead of a
 process that happens to be alive.
+
+### Releases and the way back
+
+A restart after a merged change is built **outside the live checkout**: HEAD is
+exported to `~/.jarvis/releases/<sha>`, typechecked, tested and bundled there
+(`bin/jarvis-restart.sh` still refuses on red, and still drains), and only then
+does the supervisor's `current` link move. After the start the supervisor waits
+for `GET /health` to say `ok: true`; a release that does not come up in
+`RELEASE_HEALTH_TIMEOUT_S` (180) or exits first is undone by itself and the last
+known good one runs again. By hand, when the bot is too broken to help:
+
+```bash
+~/.jarvis/releases/bin/jarvis-release.sh status
+~/.jarvis/releases/bin/jarvis-release.sh rollback        # last known good, restarts at once
+```
+
+It needs only bash and `launchctl`. Installing the supervisor is a one-time
+manual step (the LaunchAgent lives outside the repo): `docs/releases.md`.
 
 ## Stuck work
 

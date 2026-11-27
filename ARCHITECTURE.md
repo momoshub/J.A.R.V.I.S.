@@ -314,7 +314,13 @@ no classes.
   (logic, commands, adapters, `bin/` scripts, or a mixed PR) a reviewer Orca worker
   reads it first, up to 5 rounds (each round is a real GitHub review, request changes or approve; fixes are pushes answered by a `[fix round N]` comment); docs,
   prompt text, skills and dashboard UI need no reviewer. `bin/jarvis-restart.sh` runs typecheck and tests, rebuilds the
-  dashboard bundle, and only restarts when all three pass. With `SELF_PR_AUTHOR`/`SELF_PR_REVIEWER` set, the
+  dashboard bundle, and only restarts when all three pass. Under the release supervisor
+  those checks run on an immutable per-commit export of HEAD (`~/.jarvis/releases/<sha>`,
+  `bin/jarvis-release.sh`), not on the live checkout, and a green run only moves the
+  `current` link; the supervisor (what launchd runs, a copy outside the repo) health-checks a release
+  that is not last-good yet (`/health` `ok: true`) and goes back to `last-good` by itself on failure.
+  `jarvis-release.sh rollback` is the way back that needs neither the bot, the merge script nor CI
+  (`docs/releases.md`). With `SELF_PR_AUTHOR`/`SELF_PR_REVIEWER` set, the
   PR is opened as the author and reviewed, approved and merged as the reviewer
   (the reviewer's own approving review is the clean verdict; `merge-when-green.sh` approves right before the merge only when that account has not already approved this head). `restartWhenIdle` then drains: timers that start turns hold, and new
   chat messages are still answered, each turn on `RESTART_TURN_BUDGET_MS` (2 min;
@@ -453,6 +459,13 @@ Concrete implementations of the seams and the transports.
   fakes and never touch the network or the wall clock.
 - **Slack never drops on a restart.** The gateway runs under its own supervisor
   and is not restarted with the bot.
+- **Code is released, state is not.** The bot runs from `<releases>/<sha>`, a plain
+  export of one commit with no `.git`, never edited; `.env`, the databases, `data/`
+  and `logs/` stay in the source checkout (linked in, never copied or versioned), so
+  going back to an older release moves no data. `current` is switched only after the
+  checks pass and `last-good` only after the new process answered `/health`, which is
+  why a red build is a refusal and a build that will not start is a rollback, not a
+  crash-loop.
 - **Sessions, not transcripts.** A thread resumes its CLI session instead of
   replaying history into a cold process, and the session id lives in the DB so
   a restart does not lose it.
