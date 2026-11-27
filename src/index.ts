@@ -603,7 +603,7 @@ const main = async () => {
   // Slack Web API + AI drafting, shared by the console and the power-tool commands.
   // retries: 0 so a rate-limited call fails fast instead of hanging.
   const slackWeb = new WebClient(config.slackBotToken, { retryConfig: { retries: 0 } });
-  const slackAdmin = createSlackAdmin(slackWeb, clock);
+  const slackAdmin = createSlackAdmin(slackWeb);
   // `quick-review` approves, requests changes and reads CI through this one gh port; the
   // gate puts a running CI on the watcher's timer (see the watcher below).
   const github = createGhCli();

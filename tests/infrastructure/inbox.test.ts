@@ -367,16 +367,13 @@ describe("a reply cut off by a restart", () => {
       },
     };
     const notice = interruptedNotice("redeliver");
-    const now = 1_794_123_692_000;
     await tidyInterrupted(
       api,
       { id: 1, channel: "D1", streamTs: ["300.1", "300.2"], outcome: "redeliver", retried: false },
       notice,
-      undefined,
-      () => now,
     );
     // the markdown block a stopped stream needs, then the signed footer
-    const blocks = [{ type: "markdown", text: notice }, footerBlock(footerLine("Jarvis", now))];
+    const blocks = [{ type: "markdown", text: notice }, footerBlock(footerLine("Jarvis"))];
     expect(calls).toEqual([
       ["chat.stopStream", { channel: "D1", ts: "300.1" }],
       ["chat.update", { channel: "D1", ts: "300.1", text: notice, blocks }],

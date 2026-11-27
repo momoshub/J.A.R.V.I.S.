@@ -9,6 +9,7 @@
 import { join, normalize } from "node:path";
 import { describeConnection, isListening, type ConnectionHealth } from "../../domain/connectionHealth.ts";
 import { describeUiAccess, type UiAccess } from "../../domain/uiAccess.ts";
+import { UNSIGNED } from "../../domain/messageFooter.ts";
 import type { BotProfile } from "../../application/botProfile.ts";
 import type { SlackAdminPort } from "../../application/slackAdmin.ts";
 import type { DraftReply } from "../../application/draftReply.ts";
@@ -521,7 +522,8 @@ export const createDashboard = (config: DashboardConfig, deps: DashboardDeps) =>
         // --- Slack console mutations ---
         case "/api/slack/update":
           return slackGuard(async () => {
-            await deps.slack!.update(String(body.channel), String(body.ts), String(body.text ?? ""));
+            // A console edit is in no session's thread: no footer.
+            await deps.slack!.update(String(body.channel), String(body.ts), String(body.text ?? ""), UNSIGNED);
             return { ok: true };
           });
         case "/api/slack/delete":
@@ -534,7 +536,7 @@ export const createDashboard = (config: DashboardConfig, deps: DashboardDeps) =>
             const text = String(body.text ?? "").trim();
             if (!text) throw new Error("Message is empty");
             const threadTs = body.threadTs ? String(body.threadTs) : undefined;
-            await deps.slack!.post(String(body.channel), text, threadTs);
+            await deps.slack!.post(String(body.channel), text, threadTs, UNSIGNED);
             return { ok: true };
           });
         case "/api/slack/draft":

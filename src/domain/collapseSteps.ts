@@ -74,9 +74,9 @@ export const collapsedBlocks = (
   body: string,
   collapsed?: Collapsed,
   /**
-   * The signed footer line (`Jarvis · model · in 95.9k · ... · 3m 16s · updated
-   * <time>`, see messageFooter.ts). When given, the grey block carries the
-   * footer's block_id so a later edit can restamp it.
+   * The signed footer line (`Jarvis · model · in 95.9k · ... · 3m 16s`, see
+   * messageFooter.ts). When given, the grey block carries the footer's
+   * block_id so a rebuild replaces it rather than stacking a second one.
    */
   footer?: string,
 ): Block[] => {

@@ -8,7 +8,7 @@ import { splitForBlocks, toMrkdwn } from "../../domain/slackFormat.ts";
 import { toBlockMessage } from "../../domain/blockKit.ts";
 import { type MessageBlock, visibleText } from "../../domain/slackMessageText.ts";
 import { noticeFingerprint } from "../../domain/noticeFingerprint.ts";
-import { footerBlock, footerLine, sectionChunks, signedSections, signedText, SIGNATURES, withFooter } from "../../domain/messageFooter.ts";
+import { footerBlock, footerLine, sectionChunks, signedSections, signedText, SIGNATURES, UNSIGNED, withFooter } from "../../domain/messageFooter.ts";
 import type { SlackMember } from "../../domain/slackMembers.ts";
 import type { InternalKind } from "../../domain/internalMessages.ts";
 import { type FooterUsage, usageFooter } from "../../domain/usageFooter.ts";
@@ -76,18 +76,20 @@ const mapPool = async <T, R>(items: T[], n: number, fn: (item: T) => Promise<R>)
   return out;
 };
 
-export const createSlackAdmin = (client: WebClient, clock: () => number = Date.now): SlackAdminPort => {
+export const createSlackAdmin = (client: WebClient): SlackAdminPort => {
   const nameCache = new Map<string, string>();
-  /** The grey signature line every post carries. Stamped "updated" only for an edit. */
-  const footer = (by?: string, usage?: FooterUsage, edited = false, trigger?: InternalKind): string =>
-    footerLine(by ?? SIGNATURES.jarvis, edited ? clock() : undefined, usage ? usageFooter(usage) : undefined, undefined, trigger);
+  /** The grey signature line every post carries; `undefined` (`by` of `UNSIGNED`) for a message outside the turn's own thread. */
+  const signature = (by?: string, usage?: FooterUsage, trigger?: InternalKind): string =>
+    footerLine(by ?? SIGNATURES.jarvis, usage ? usageFooter(usage) : undefined, trigger);
+  const footer = (by?: string | null, usage?: FooterUsage, trigger?: InternalKind): string | undefined =>
+    by === UNSIGNED ? undefined : signature(by, usage, trigger);
   let botUserId: string | undefined;
   let workspace: string | undefined;
 
   const settle = async (channel: string, ts: string, text: string, by?: string): Promise<void> => {
     // Drop the buttons so a decided request cannot be clicked again.
     await client.chat
-      .update({ channel, ts, ...signedText(text, footer(by, undefined, true)) })
+      .update({ channel, ts, ...signedText(text, footer(by)) })
       // Refused: the text as unsigned sections (still no buttons), and
       // failing that a text-only edit, so at least the words change.
       .catch(() =>
@@ -266,7 +268,7 @@ export const createSlackAdmin = (client: WebClient, clock: () => number = Date.n
       // A refused markdown block is retried as sections; a refused rewrite
       // (a stopped stream's block_mismatch, say) still edits the words,
       // text-only, as before.
-      const line = footer(by, undefined, true);
+      const line = footer(by);
       await client.chat
         .update({ channel, ts, ...signedText(text, line) })
         .catch(() => client.chat.update({ channel, ts, ...signedSections(text, line) }))
@@ -315,7 +317,7 @@ export const createSlackAdmin = (client: WebClient, clock: () => number = Date.n
 
     post: async (channel, text, threadTs, by, usage, trigger) => {
       const thread = threadTs ? { thread_ts: threadTs } : {};
-      const line = footer(by, usage, false, trigger);
+      const line = footer(by, usage, trigger);
       const rich = toBlockMessage(text, toMrkdwn);
       // A Block Kit reply that carries its own words falls back to those, not its JSON.
       const body = rich?.plain ?? toMrkdwn(text);
@@ -344,7 +346,7 @@ export const createSlackAdmin = (client: WebClient, clock: () => number = Date.n
       if (!channel) return undefined;
       const body = toMrkdwn(text);
       const posted = (await client.chat
-        .postMessage({ channel, ...signedText(body, footer(by, undefined, false, trigger)) })
+        .postMessage({ channel, ...signedText(body, footer(by, undefined, trigger)) })
         .catch(() => client.chat.postMessage({ channel, text: body }))) as { ts?: string };
       return posted.ts ? { channel, ts: posted.ts } : undefined;
     },
@@ -365,7 +367,7 @@ export const createSlackAdmin = (client: WebClient, clock: () => number = Date.n
             ...(a.style ? { style: a.style } : {}),
           })),
         },
-        footerBlock(footer(by)),
+        footerBlock(signature(by)),
       ];
       const posted = (await client.chat.postMessage({ channel, text, blocks })) as { ts?: string };
       return posted.ts ? { channel, ts: posted.ts, fingerprint: noticeFingerprint(blocks) } : undefined;
@@ -384,7 +386,7 @@ export const createSlackAdmin = (client: WebClient, clock: () => number = Date.n
             ...(a.style ? { style: a.style } : {}),
           })),
         },
-        footerBlock(footer(by)),
+        footerBlock(signature(by)),
       ];
       const posted = (await client.chat.postMessage({
         channel,
@@ -435,7 +437,7 @@ export const createSlackAdmin = (client: WebClient, clock: () => number = Date.n
             text: { type: "mrkdwn", text: toMrkdwn(chunk) },
           })),
           ...(elements.length > 0 ? [{ type: "actions", elements }] : []),
-          footerBlock(footer(by)),
+          footerBlock(signature(by)),
         ] as never,
       })) as { ts?: string };
       return posted.ts ? { channel, ts: posted.ts } : undefined;
@@ -457,7 +459,7 @@ export const createSlackAdmin = (client: WebClient, clock: () => number = Date.n
             ...(a.style ? { style: a.style } : {}),
           })),
         },
-        footerBlock(footer(by, undefined, true)),
+        footerBlock(signature(by)),
       ];
       try {
         await client.chat.update({ channel, ts, text: text || " ", blocks: blocks as never });

@@ -97,7 +97,7 @@ import type { ToolPolicy } from "../../domain/toolPolicy.ts";
 import { unfollowOnReaction } from "../../application/followReaction.ts";
 import { collapsedBlocks } from "../../domain/collapseSteps.ts";
 import { usageFooter } from "../../domain/usageFooter.ts";
-import { footerLine, restamp, signedText, SIGNATURES, withFooter } from "../../domain/messageFooter.ts";
+import { footerLine, signedText, SIGNATURES, withFooter } from "../../domain/messageFooter.ts";
 import { isSilenceNote } from "../../domain/silence.ts";
 import { closingReply, hasKeepMarker, replaceableSelfPost, stripKeepMarker } from "../../domain/selfPost.ts";
 import type { SelfPosts } from "../../application/selfPosts.ts";
@@ -668,13 +668,10 @@ export const createHandler =
       }
       const replyText = closing.text;
       const fail = (e: unknown) => log(`collapse failed: ${e instanceof Error ? e.message : String(e)}`);
-      // Signed, not stamped: tidying the streamed reply is still its first
-      // send, and "updated" is only for a later edit (restamp).
+      // The reply goes into the turn's own thread, so it is signed.
       const footer = footerLine(
         (result.kind === "reply" ? result.by : undefined) ?? SIGNATURES.jarvis,
-        undefined,
         stream?.usage ? usageFooter(stream.usage) : undefined,
-        undefined,
         result.kind === "reply" ? result.trigger : undefined,
       );
       // Every text the tidy-up writes goes through here, so the KEEP_REPLY marker never reaches Slack
@@ -1075,7 +1072,7 @@ export const createKitListeners = (
             channel,
             ts: pressed.ts,
             text: pressed.text ?? "",
-            blocks: restamp(snapBackBlocks(pressed.blocks), SIGNATURES.jarvis, Date.now()),
+            blocks: snapBackBlocks(pressed.blocks),
           });
           log(`kit snap back ${actionId} on ${pressed.ts}`);
         } catch (err) {
@@ -1107,7 +1104,7 @@ export const createKitListeners = (
             channel,
             ts,
             text: pressed.text ?? "",
-            blocks: restamp(blocks, SIGNATURES.jarvis, Date.now()),
+            blocks,
           });
         } catch (err) {
           log(`kit vote ${actionId} on ${ts} failed: ${slackRefusal(err)}`);
@@ -1132,11 +1129,7 @@ export const createKitListeners = (
           channel,
           ts: pressed.ts,
           text: pressed.text ?? "",
-          blocks: restamp(
-            retireKit(pressed.blocks, pressedNote(by, pickedLabel(action)), actionId, picksOf(body.state?.values)),
-            SIGNATURES.jarvis,
-            Date.now(),
-          ),
+          blocks: retireKit(pressed.blocks, pressedNote(by, pickedLabel(action)), actionId, picksOf(body.state?.values)),
         });
       } catch (err) {
         log(`kit lock ${actionId} on ${pressed.ts} failed: ${slackRefusal(err)}`);
@@ -1211,7 +1204,7 @@ export const retireOpenKit = async (
         channel: m.channel,
         ts: x.ts,
         text: x.text ?? "",
-        blocks: restamp(retireKit(x.blocks ?? [], repliedNote(m.user)), SIGNATURES.jarvis, Date.now()),
+        blocks: retireKit(x.blocks ?? [], repliedNote(m.user)),
       });
     }
     if (open.length) log(`kit retired ${open.length} open question(s) in ${m.channel}/${m.thread_ts}: answered in text`);

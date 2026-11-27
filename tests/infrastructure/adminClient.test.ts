@@ -1,11 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import type { WebClient } from "@slack/web-api";
 import { createSlackAdmin } from "../../src/infrastructure/slack/adminClient.ts";
-import { FOOTER_BLOCK_ID, footerLine } from "../../src/domain/messageFooter.ts";
+import { FOOTER_BLOCK_ID, footerLine, UNSIGNED } from "../../src/domain/messageFooter.ts";
 import { usageFooter } from "../../src/domain/usageFooter.ts";
 import { blockKitReply } from "../../src/domain/blockKit.ts";
 
-const NOW = 1_794_123_692_000;
 
 type Call = [string, Record<string, unknown>];
 type Block = { type: string; block_id?: string; elements?: { text?: string }[] };
@@ -24,14 +23,14 @@ const fake = (refuse?: (a: Record<string, unknown>) => boolean) => {
       update: async (a: Record<string, unknown>) => void calls.push(["update", a]),
     },
   } as unknown as WebClient;
-  return { calls, admin: createSlackAdmin(client, () => NOW) };
+  return { calls, admin: createSlackAdmin(client) };
 };
 
 const footerOf = (a: Record<string, unknown> | undefined): Block | undefined => (a?.blocks as Block[] | undefined)?.at(-1);
 const signedBy = (a: Record<string, unknown> | undefined): string | undefined => footerOf(a)?.elements?.[0]?.text;
 
 describe("every message the admin client writes is signed", () => {
-  test("a plain post is a markdown block plus a footer signed Jarvis, with no \"updated\" on a first send", async () => {
+  test("a plain post is a markdown block plus a footer signed Jarvis", async () => {
     const { calls, admin } = fake();
     await admin.post("C1", "hello **there**", "100.1");
     const [, a] = calls[0]!;
@@ -62,7 +61,7 @@ describe("every message the admin client writes is signed", () => {
     };
     await admin.post("D1", "done", "100.1", undefined, usage);
     await admin.post("D1", "done", "100.1", "workflow worker", usage);
-    expect(signedBy(calls[0]?.[1])).toBe(footerLine("Jarvis", undefined, usageFooter(usage)));
+    expect(signedBy(calls[0]?.[1])).toBe(footerLine("Jarvis", usageFooter(usage)));
     expect(signedBy(calls[0]?.[1])).toBe("Jarvis · claude-opus-5-5 · in 95.9k · out 10.6k · cache r 1.6M w 20.4k · $1.30 · 3m 16s");
     expect(signedBy(calls[1]?.[1])).toStartWith("workflow worker · claude-opus-5-5 · ");
   });
@@ -115,16 +114,36 @@ describe("every message the admin client writes is signed", () => {
     expect(JSON.stringify(calls[1]?.[1])).not.toContain("blockkit");
   });
 
-  test("an edit sends blocks, so the old ones never stay on screen, and is restamped", async () => {
+  test("an edit sends blocks, so the old ones never stay on screen, and adds no \"updated\" stamp", async () => {
     const { calls, admin } = fake();
     await admin.update("C1", "5.5", "draining: 2 turns left");
     await admin.settleInteractive("C1", "6.6", "approved by <@U1>", "command");
     expect(calls[0]?.[0]).toBe("update");
     expect(calls[0]?.[1]).toMatchObject({ channel: "C1", ts: "5.5", text: "draining: 2 turns left" });
-    expect(signedBy(calls[0]?.[1])).toBe(footerLine("Jarvis", NOW));
-    expect(signedBy(calls[0]?.[1])).toContain("updated <!date^");
+    expect(signedBy(calls[0]?.[1])).toBe(footerLine("Jarvis"));
+    expect(signedBy(calls[0]?.[1])).not.toContain("updated");
     expect((calls[1]?.[1].blocks as Block[]).map((b) => b.type)).toEqual(["markdown", "context"]);
-    expect(signedBy(calls[1]?.[1])).toBe(footerLine("command", NOW));
+    expect(signedBy(calls[1]?.[1])).toBe(footerLine("command"));
+  });
+
+  test("a post or an edit with `by` UNSIGNED has no footer, so a console edit or a cross-thread post carries no sign", async () => {
+    const { calls, admin } = fake();
+    await admin.post("C9", "hello there", undefined, UNSIGNED);
+    await admin.post("C9", "in a thread", "100.1", UNSIGNED);
+    await admin.update("C1", "5.5", "edited from the console", UNSIGNED);
+    for (const [, args] of calls) {
+      expect(JSON.stringify(args.blocks)).not.toContain(FOOTER_BLOCK_ID);
+      expect(footerOf(args)?.type).toBe("markdown");
+    }
+    expect(calls[0]?.[1]).toMatchObject({ channel: "C9", text: "hello there" });
+    expect(calls[1]?.[1]).toMatchObject({ thread_ts: "100.1" });
+    expect(calls[2]?.[1]).toMatchObject({ channel: "C1", ts: "5.5", text: "edited from the console" });
+  });
+
+  test("an unsigned Block Kit post keeps its blocks and gains no footer", async () => {
+    const { calls, admin } = fake();
+    await admin.post("C9", blockKitReply("*cpu* fine", [{ type: "header", text: { type: "plain_text", text: "ok" } }]), undefined, UNSIGNED);
+    expect((calls[0]?.[1].blocks as Block[]).map((b) => b.type)).toEqual(["header"]);
   });
 
   test("a refused rewrite still edits the words, text-only", async () => {
@@ -137,7 +156,7 @@ describe("every message the admin client writes is signed", () => {
         },
       },
     } as unknown as WebClient;
-    await createSlackAdmin(client, () => NOW).update("C1", "5.5", "edited");
+    await createSlackAdmin(client).update("C1", "5.5", "edited");
     expect(calls).toHaveLength(3);
     expect(calls[2]).toEqual({ channel: "C1", ts: "5.5", text: "edited" });
   });
@@ -152,10 +171,10 @@ describe("every message the admin client writes is signed", () => {
         },
       },
     } as unknown as WebClient;
-    await createSlackAdmin(client, () => NOW).update("C1", "5.5", "draining: 1 turn left", "command");
+    await createSlackAdmin(client).update("C1", "5.5", "draining: 1 turn left", "command");
     expect(calls).toHaveLength(2);
     expect((calls[1]?.blocks as Block[]).map((b) => b.type)).toEqual(["section", "context"]);
-    expect(signedBy(calls[1])).toStartWith("command · ");
+    expect(signedBy(calls[1])).toBe("command");
   });
 
   test("a refused settle still drops the buttons, unsigned, then falls back to text-only", async () => {
@@ -169,7 +188,7 @@ describe("every message the admin client writes is signed", () => {
         },
       },
     } as unknown as WebClient;
-    await createSlackAdmin(client, () => NOW).settleInteractive("C1", "6.6", "approved");
+    await createSlackAdmin(client).settleInteractive("C1", "6.6", "approved");
     expect(calls).toHaveLength(3);
     expect(calls[1]).toEqual({ channel: "C1", ts: "6.6", text: "approved", blocks: [{ type: "section", text: { type: "mrkdwn", text: "approved" } }] });
     expect(calls[2]).toEqual({ channel: "C1", ts: "6.6", text: "approved" });
@@ -203,7 +222,7 @@ describe("workspaceUrl", () => {
     const client = {
       auth: { test: async () => (calls++, { user_id: "UBOT", url }) },
     } as unknown as WebClient;
-    return { admin: createSlackAdmin(client, () => NOW), calls: () => calls };
+    return { admin: createSlackAdmin(client), calls: () => calls };
   };
 
   test("is the auth.test url without its trailing slash, asked of Slack once", async () => {
@@ -222,7 +241,7 @@ describe("workspaceUrl", () => {
 });
 
 describe("the console's reads", () => {
-  const readClient = (over: Record<string, unknown>) => createSlackAdmin({ auth: { test: async () => ({ user_id: "UBOT" }) }, users: { info: async () => ({ user: { name: "ann" } }) }, ...over } as unknown as WebClient, () => NOW);
+  const readClient = (over: Record<string, unknown>) => createSlackAdmin({ auth: { test: async () => ({ user_id: "UBOT" }) }, users: { info: async () => ({ user: { name: "ann" } }) }, ...over } as unknown as WebClient);
 
   test("conversations.list pages channels (public and private) or DMs, archived left out, with the cursor handed on", async () => {
     const asked: Record<string, unknown>[] = [];

@@ -1,73 +1,48 @@
 import { describe, expect, test } from "bun:test";
 import {
-  clockFallback,
   FOOTER_BLOCK_ID,
   footerBlock,
   footerLine,
-  offsetLabel,
-  restamp,
   triggerLabel,
   MARKDOWN_LIMIT,
   sectionChunks,
   signedSections,
   signedText,
   SIGNATURES,
-  updatedStamp,
+  UNSIGNED,
   withFooter,
 } from "../../src/domain/messageFooter.ts";
 import { MAX_BLOCKS } from "../../src/domain/blockKit.ts";
 import { SECTION_LIMIT } from "../../src/domain/slackFormat.ts";
 
-// 2026-11-08 07:32:00 UTC = 14:32 at +07
-const AT = Date.UTC(2026, 10, 8, 7, 32, 0);
-const SECS = AT / 1000;
-const ICT = 420;
-
-describe("the time it shows", () => {
-  test("offsets read like a clock: whole hours short, half hours with minutes", () => {
-    expect(offsetLabel(420)).toBe("+07");
-    expect(offsetLabel(0)).toBe("+00");
-    expect(offsetLabel(-330)).toBe("-05:30");
-    expect(offsetLabel(345)).toBe("+05:45");
-  });
-
-  test("the fallback is the host's wall clock with its offset", () => {
-    expect(clockFallback(AT, ICT)).toBe("2026-11-08 14:32 +07");
-    // the offset can move the date too
-    expect(clockFallback(Date.UTC(2026, 10, 8, 20, 5), ICT)).toBe("2026-11-09 03:05 +07");
-  });
-
-  test("the stamp is a Slack date token, so each reader sees their own timezone", () => {
-    expect(updatedStamp(AT, ICT)).toBe(`updated <!date^${SECS}^{date_short_pretty} {time}|2026-11-08 14:32 +07>`);
-  });
-});
-
 describe("footerLine", () => {
-  test("signature, then what the turn reported, then when it was last written - one line", () => {
-    const line = footerLine("Jarvis", AT, "claude-opus-5-5 · in 95.9k · $1.30 · 3m 16s", ICT);
-    expect(line).toBe(
-      `Jarvis · claude-opus-5-5 · in 95.9k · $1.30 · 3m 16s · updated <!date^${SECS}^{date_short_pretty} {time}|2026-11-08 14:32 +07>`,
-    );
+  test("signature, then what the turn reported - one line", () => {
+    const line = footerLine("Jarvis", "claude-opus-5-5 · in 95.9k · $1.30 · 3m 16s");
+    expect(line).toBe("Jarvis · claude-opus-5-5 · in 95.9k · $1.30 · 3m 16s");
     expect(line).not.toContain("\n");
   });
 
-  test("nothing reported means just the signature and the time", () => {
-    expect(footerLine(SIGNATURES.innerChild, AT, undefined, ICT)).toBe(`inner child Jarvis · ${updatedStamp(AT, ICT)}`);
-    expect(footerLine("watch", AT, "  ", ICT)).toBe(`watch · ${updatedStamp(AT, ICT)}`);
+  test("nothing reported means just the signature", () => {
+    expect(footerLine(SIGNATURES.innerChild)).toBe("inner child Jarvis");
+    expect(footerLine("watch", "  ")).toBe("watch");
   });
 
   test("a blank signature is still signed, as Jarvis", () => {
-    expect(footerLine(" ", AT, undefined, ICT).startsWith("Jarvis · ")).toBe(true);
+    expect(footerLine(" ")).toBe("Jarvis");
   });
 
-  test("a first send has no edit time, so no \"updated\"", () => {
-    expect(footerLine("Jarvis")).toBe("Jarvis");
-    expect(footerLine("Jarvis", undefined, "claude-opus-5-5 · $0.20")).toBe("Jarvis · claude-opus-5-5 · $0.20");
+  test("there is no \"updated\" stamp, however the line is built", () => {
+    expect(footerLine("Jarvis", "claude-opus-5-5 · $0.20")).toBe("Jarvis · claude-opus-5-5 · $0.20");
+    expect(footerLine("Jarvis", undefined, "watch")).not.toContain("updated");
+  });
+
+  test("UNSIGNED is the null `by`: not a name, so it never reaches a footer line", () => {
+    expect(UNSIGNED).toBeNull();
   });
 });
 
 describe("blocks", () => {
-  const line = footerLine("Jarvis", AT, undefined, ICT);
+  const line = footerLine("Jarvis");
 
   test("the footer is a context block carrying the id an edit finds it by", () => {
     expect(footerBlock(line)).toEqual({
@@ -79,9 +54,16 @@ describe("blocks", () => {
 
   test("withFooter replaces a footer already there rather than stacking a second one", () => {
     const once = withFooter([{ type: "markdown", text: "hi" }], line);
-    const twice = withFooter(once, footerLine("watch", AT, undefined, ICT));
+    const twice = withFooter(once, footerLine("watch"));
     expect(twice).toHaveLength(2);
-    expect(JSON.stringify(twice[1])).toContain("watch · ");
+    expect(JSON.stringify(twice[1])).toContain("\"text\":\"watch\"");
+  });
+
+  test("no line means no footer, and a stale one is dropped (an unsigned rebuild)", () => {
+    const signed = withFooter([{ type: "markdown", text: "hi" }], line);
+    expect(withFooter(signed, undefined)).toEqual([{ type: "markdown", text: "hi" }]);
+    expect(signedText("hello", undefined)).toEqual({ text: "hello", blocks: [{ type: "markdown", text: "hello" }] });
+    expect(signedSections("hello", undefined).blocks).toEqual([{ type: "section", text: { type: "mrkdwn", text: "hello" } }]);
   });
 
   test("a full message is clipped so the footer still fits Slack's 50", () => {
@@ -187,67 +169,17 @@ describe("sectionChunks", () => {
   });
 });
 
-describe("restamp", () => {
-  const later = AT + 3 * 60_000;
-
-  test("an edit moves only the time: signature, usage and step summary stay", () => {
-    const text = `🔧 4 steps\n${footerLine("workflow worker", AT, "claude-opus-5-5 · $0.20 · 1m 2s", ICT)}`;
-    const before = [{ type: "markdown", text: "the answer" }, { type: "context", block_id: FOOTER_BLOCK_ID, elements: [{ type: "mrkdwn", text }] }];
-    const after = restamp(before, "Jarvis", later, ICT);
-    expect(after[0]).toEqual(before[0]);
-    const line = (after[1] as { elements: { text: string }[] }).elements[0]!.text;
-    expect(line).toBe(`🔧 4 steps\nworkflow worker · claude-opus-5-5 · $0.20 · 1m 2s · ${updatedStamp(later, ICT)}`);
-  });
-
-  test("a message with no footer yet - one the model posted itself - is signed now", () => {
-    const after = restamp([{ type: "section", text: { type: "mrkdwn", text: "Which?" } }], "Jarvis", later, ICT);
-    expect(after).toHaveLength(2);
-    expect(after[1]).toEqual(footerBlock(footerLine("Jarvis", later, undefined, ICT)));
-  });
-
-  test("the first edit of an unstamped first send adds the stamp after the usage", () => {
-    const before = [{ type: "context", block_id: FOOTER_BLOCK_ID, elements: [{ type: "mrkdwn", text: footerLine("Jarvis", undefined, "$0.20") }] }];
-    const line = (restamp(before, "Jarvis", later, ICT)[0] as { elements: { text: string }[] }).elements[0]!.text;
-    expect(line).toBe(`Jarvis · $0.20 · ${updatedStamp(later, ICT)}`);
-  });
-
-  test("a footer missing its stamp gains one", () => {
-    const before = [{ type: "context", block_id: FOOTER_BLOCK_ID, elements: [{ type: "mrkdwn", text: "Jarvis" }] }];
-    const line = (restamp(before, "Jarvis", later, ICT)[0] as { elements: { text: string }[] }).elements[0]!.text;
-    expect(line).toBe(`Jarvis · ${updatedStamp(later, ICT)}`);
-  });
-
-  test("a message already at 50 blocks keeps them all rather than gaining a footer", () => {
-    const full = Array.from({ length: MAX_BLOCKS }, (_, i) => ({ type: "section", text: { type: "mrkdwn", text: `${i}` } }));
-    expect(restamp(full, "Jarvis", later, ICT)).toEqual(full);
-  });
-
-  test("it does not touch the blocks it was given", () => {
-    const before = [{ type: "context", block_id: FOOTER_BLOCK_ID, elements: [{ type: "mrkdwn", text: footerLine("Jarvis", AT, undefined, ICT) }] }];
-    const copy = JSON.stringify(before);
-    restamp(before, "Jarvis", later, ICT);
-    expect(JSON.stringify(before)).toBe(copy);
-  });
-});
-
 describe("triggered by", () => {
   test("an internal kind sits after the signature and before the usage", () => {
-    expect(footerLine("Jarvis", undefined, "1.2k tokens", undefined, "watch")).toBe("Jarvis · triggered by watch · 1.2k tokens");
-    expect(footerLine("Jarvis", undefined, undefined, undefined, "loop")).toBe("Jarvis · triggered by loop");
+    expect(footerLine("Jarvis", "1.2k tokens", "watch")).toBe("Jarvis · triggered by watch · 1.2k tokens");
+    expect(footerLine("Jarvis", undefined, "loop")).toBe("Jarvis · triggered by loop");
     for (const kind of ["nudge", "tell", "orca"] as const) expect(triggerLabel(kind)).toBe(`triggered by ${kind}`);
   });
 
   test("a chat turn, and a brief (which starts no turn), say nothing", () => {
-    expect(footerLine("Jarvis", undefined, "1.2k tokens")).toBe("Jarvis · 1.2k tokens");
+    expect(footerLine("Jarvis", "1.2k tokens")).toBe("Jarvis · 1.2k tokens");
     expect(triggerLabel(undefined)).toBeUndefined();
     expect(triggerLabel("brief")).toBeUndefined();
-    expect(footerLine("Jarvis", undefined, undefined, undefined, "brief")).toBe("Jarvis");
-  });
-
-  test("an edit keeps the trigger and only moves the time", () => {
-    const before = withFooter([{ type: "markdown", text: "hi" }], footerLine("Jarvis", undefined, "1.2k tokens", undefined, "watch"));
-    const after = restamp(before, "Jarvis", Date.UTC(2026, 10, 8, 7, 32), 420);
-    const text = (after.at(-1) as unknown as { elements: { text: string }[] }).elements[0]!.text;
-    expect(text.startsWith("Jarvis · triggered by watch · 1.2k tokens · updated ")).toBe(true);
+    expect(footerLine("Jarvis", undefined, "brief")).toBe("Jarvis");
   });
 });

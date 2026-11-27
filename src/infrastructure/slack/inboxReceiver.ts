@@ -296,7 +296,6 @@ export const tidyInterrupted = async (
   row: Interrupted,
   notice: string,
   log: (line: string) => void = () => undefined,
-  clock: () => number = Date.now,
 ): Promise<void> => {
   const fail = (what: string, ts: string) => (err: unknown) =>
     log(`${what} ${row.channel}/${ts} failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -309,8 +308,8 @@ export const tidyInterrupted = async (
           ts,
           text: notice,
           // The markdown block is what a stopped stream accepts; the footer
-          // rides under it, signed and stamped like every other message.
-          blocks: withFooter([{ type: "markdown", text: toSlackMarkdown(notice) }], footerLine(SIGNATURES.jarvis, clock())),
+          // rides under it, signed like every other message.
+          blocks: withFooter([{ type: "markdown", text: toSlackMarkdown(notice) }], footerLine(SIGNATURES.jarvis)),
         })
         .catch(fail("rewrite", ts));
     } else {

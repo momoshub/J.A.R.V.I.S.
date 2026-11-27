@@ -15,6 +15,7 @@ import { createRoleRepo } from "../../src/infrastructure/db/roleRepo.ts";
 import { seedRoles } from "../../src/application/roles.ts";
 import { listCommandInfo } from "../../src/application/commands.ts";
 import { createSlackProxy } from "../../src/application/slackProxy.ts";
+import { UNSIGNED } from "../../src/domain/messageFooter.ts";
 import type { SlackAdminPort } from "../../src/application/slackAdmin.ts";
 import { createSlackTickets } from "../../src/application/slackTickets.ts";
 import { createOwnerTickets } from "../../src/application/ownerTickets.ts";
@@ -65,6 +66,21 @@ describe("dashboard static + api", () => {
     const none = await build({ slack: slack() }).dash.handle(api("/api/slack/workspace"));
     expect(await none.json()).toEqual({ url: null });
     expect((await build().dash.handle(api("/api/slack/workspace"))).status).toBe(503);
+  });
+
+  test("a console edit or post goes out unsigned: no session's thread, so no footer", async () => {
+    const calls: unknown[][] = [];
+    const slack = {
+      update: async (...a: unknown[]) => void calls.push(["update", ...a]),
+      post: async (...a: unknown[]) => void calls.push(["post", ...a]),
+    } as unknown as DashboardDeps["slack"];
+    const d = build({ slack }).dash;
+    expect((await d.handle(postJson("/api/slack/update", { channel: "C1", ts: "5.5", text: "fixed" }))).status).toBe(200);
+    expect((await d.handle(postJson("/api/slack/post", { channel: "C1", threadTs: "5.0", text: "hello" }))).status).toBe(200);
+    expect(calls).toEqual([
+      ["update", "C1", "5.5", "fixed", UNSIGNED],
+      ["post", "C1", "hello", "5.0", UNSIGNED],
+    ]);
   });
 
   test("health responds", async () => {
