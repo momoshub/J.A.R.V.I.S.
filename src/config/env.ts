@@ -140,6 +140,12 @@ const schema = z
     TOKEN_KEY_KEYCHAIN_SERVICE: z.string().trim().min(1).default("jarvis-token-key"),
     // Folder for the activity/error logs (one JSON line per event).
     LOG_DIR: z.string().default("logs"),
+    // Set by the release supervisor (bin/jarvis-release.sh launch), never by hand:
+    // the bot then runs from an immutable per-commit folder, and these name the
+    // checkout the self-fix flow works on and the folder that holds the releases.
+    // Unset (the plain `bun run src/index.ts`): the checkout it runs from.
+    JARVIS_SOURCE_REPO: z.string().optional(),
+    JARVIS_RELEASES_DIR: z.string().optional(),
     // Channel that gets the one restart notice listing the waiting threads.
     // Unset: nobody is told. Also the inner child's voice-drift log channel
     // unless the `inner_child_drift_channel` setting names another.
@@ -350,6 +356,8 @@ export type AppConfig = {
   tokenKeySource: "file" | "keychain";
   tokenKeyKeychainService: string;
   logDir: string;
+  sourceRepo?: string;
+  releasesDir?: string;
   /** Channel for the restart notice listing waiting threads; unset is silent. */
   drainNoticeChannel?: string;
   /** How long a turn started while a restart waits may run before it is cut. */
@@ -457,6 +465,8 @@ export const loadConfig = (source: Record<string, string | undefined> = process.
     tokenKeySource: env.TOKEN_KEY_SOURCE,
     tokenKeyKeychainService: env.TOKEN_KEY_KEYCHAIN_SERVICE,
     logDir: env.LOG_DIR,
+    sourceRepo: env.JARVIS_SOURCE_REPO,
+    releasesDir: env.JARVIS_RELEASES_DIR,
     ...(env.DRAIN_NOTICE_CHANNEL ? { drainNoticeChannel: env.DRAIN_NOTICE_CHANNEL } : {}),
     restartTurnBudgetMs: env.RESTART_TURN_BUDGET_MS,
     orcaReap: { intervalMs: env.ORCA_REAP_INTERVAL_MS, idleMs: env.ORCA_REAP_IDLE_MS, dryRun: env.ORCA_REAP_DRY_RUN },

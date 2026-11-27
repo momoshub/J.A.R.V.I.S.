@@ -11,6 +11,13 @@ const base = {
 };
 
 describe("loadConfig", () => {
+  test("the release supervisor's source checkout and releases folder are unset by default and read from the env", () => {
+    const c = loadConfig(base);
+    expect([c.sourceRepo, c.releasesDir]).toEqual([undefined, undefined]);
+    const o = loadConfig({ ...base, JARVIS_SOURCE_REPO: "/src/jarvis", JARVIS_RELEASES_DIR: "/rel" });
+    expect([o.sourceRepo, o.releasesDir]).toEqual(["/src/jarvis", "/rel"]);
+  });
+
   test("voice transcription has sane defaults and every path can be set", () => {
     const c = loadConfig(base);
     expect(c.whisperBin).toBe("/opt/homebrew/bin/whisper-cli");
