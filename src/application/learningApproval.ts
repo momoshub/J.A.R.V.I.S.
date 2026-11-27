@@ -25,6 +25,7 @@ import {
   approvalText,
   oneLine,
   proposalProblem,
+  agentSettledText,
   settledText,
   type DecisionRefusal,
   type LearningScope,
@@ -197,17 +198,19 @@ const settle = async (
   decision: "approve" | "reject",
   by: string,
   canFlip: boolean,
+  viaAgent = false,
 ): Promise<void> => {
   if (!l.noticeChannel || !l.noticeTs || !deps.slack) return;
-  const text = settledText(decision === "approve" ? "approved" : "rejected", l.id, l.content, by);
+  const kind = decision === "approve" ? "approved" : "rejected";
+  const text = viaAgent ? agentSettledText(kind, l.id, l.content) : settledText(kind, l.id, l.content, by);
   const { noticeChannel: channel, noticeTs: ts } = l;
   if (!deps.slack.updateInteractive) {
     deps.learnings.setNoticeFingerprint(l.id, "");
     await deps.slack.settleInteractive(channel, ts, text, SIGNATURES.learning).catch(logAndIgnore("learning approval settle"));
     return;
   }
-  const names = await deps.slack.resolveNames?.([by]).catch(logAndIgnore("learning decider name"));
-  const who = (names?.[by] ?? "").trim() || "the owner";
+  const names = viaAgent ? undefined : await deps.slack.resolveNames?.([by]).catch(logAndIgnore("learning decider name"));
+  const who = viaAgent ? "me, in the owner's turn" : (names?.[by] ?? "").trim() || "the owner";
   // Whatever happens next, the message no longer matches the old fingerprint: clear it first, set the new one once the rewrite landed.
   deps.learnings.setNoticeFingerprint(l.id, "");
   const fingerprint = await deps.slack
@@ -229,7 +232,13 @@ export const decideLearning = async (
   id: number,
   decision: "approve" | "reject",
   by: string,
-  opts: { readonly flip?: boolean; /** Where it applies from now on; absent keeps what the proposal asked for. */ readonly scope?: LearningScope } = {},
+  opts: {
+    readonly flip?: boolean;
+    /** Where it applies from now on; absent keeps what the proposal asked for. */
+    readonly scope?: LearningScope;
+    /** The agent decided it in a turn the owner's own message started (the command checked that): the notice and the log say so. */
+    readonly viaAgent?: boolean;
+  } = {},
 ): Promise<DecideResult> => {
   const l = deps.learnings.get(id);
   if (!l) return { kind: "refused", why: "unknown" };
@@ -239,8 +248,8 @@ export const decideLearning = async (
 
   if (decision === "reject") {
     if (!deps.learnings.decide(id, "rejected", by, now)) return { kind: "refused", why: "decided" };
-    deps.log?.(`learning #${id} rejected by ${by}`);
-    await settle(deps, l, "reject", by, true);
+    deps.log?.(`learning #${id} rejected by ${opts.viaAgent ? `the agent, in ${by}'s own turn` : by}`);
+    await settle(deps, l, "reject", by, true, opts.viaAgent);
     return { kind: "rejected", learning: l, warnings: [] };
   }
 
@@ -259,8 +268,8 @@ export const decideLearning = async (
   if (opts.scope && !adapter) deps.learnings.setScope(id, opts.scope);
   // The adapter holds it now and is what the prompt reads; the row would only be a second copy.
   if (adapter) deps.learnings.remove(id);
-  deps.log?.(`learning #${id} approved by ${by}`);
-  await settle(deps, l, "approve", by, !adapter);
+  deps.log?.(`learning #${id} approved by ${opts.viaAgent ? `the agent, in ${by}'s own turn` : by}`);
+  await settle(deps, l, "approve", by, !adapter, opts.viaAgent);
   return { kind: "approved", learning: { ...l, scope }, warnings };
 };
 

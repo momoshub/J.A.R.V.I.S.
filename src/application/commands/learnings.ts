@@ -1,7 +1,8 @@
 /** Learned facts: learn, learnings, relearn, unlearn. */
 
 import { isBlank } from "../../domain/adapter.ts";
-import { AGENT_SOURCE, parseLearnArgs, pendingReply, refusalText, scopeLabel } from "../../domain/learning.ts";
+import { SIGNATURES } from "../../domain/messageFooter.ts";
+import { AGENT_SOURCE, agentApprovalAudit, parseLearnArgs, pendingReply, refusalText, scopeLabel } from "../../domain/learning.ts";
 import { decideLearning, proposeLearning, rewordLearning, saveActive } from "../learningApproval.ts";
 import { type CommandDef, adapterDepsOf } from "./shared.ts";
 
@@ -10,16 +11,18 @@ export const LEARNINGS_COMMANDS: readonly CommandDef[] = [
     name: "learn",
     minRole: "executer",
     usage: "<fact>|pending|approve <id> [global|<channel ids>]|reject <id>",
-    summary: "teach me a durable fact (the owner's is saved, anyone else's waits for the owner's approval)",
-    run: async ({ deps, actor, rest, prefix, fromBrainRun, channelId, threadTs, messageTs }) => {
+    summary: "teach me a durable fact (the owner's is saved, anyone else's waits for the owner's approval; I approve only inside a turn the owner's own message started, and tell them)",
+    run: async ({ deps, actor, rest, prefix, fromBrainRun, ownerTurn, channelId, threadTs, messageTs }) => {
       const la = deps.learningApproval;
       if (!la) return "Learnings are not available.";
       const owner = actor.role === "owner";
       const args = parseLearnArgs(rest);
 
       // The owner's side of it. A member typing these is refused rather than
-      // saving "approve 3" as a fact, and so is the brain: deciding is the
-      // owner's own typed line or button, never something a turn runs for itself.
+      // saving "approve 3" as a fact. So is the brain, except in a turn the
+      // owner's own message started (the run ticket's owner bit, set by the bot, never by text): there the owner has
+      // allowed it to decide for them, and the owner's DM gets an audit line (below). A watch, a worker, a tell or a
+      // loop turn has no such bit and stays refused.
       if (args.kind === "pending") {
         if (!owner) return refusalText("not-owner");
         const waiting = la.learnings.pending();
@@ -34,8 +37,14 @@ export const LEARNINGS_COMMANDS: readonly CommandDef[] = [
       }
       if (args.kind === "approve" || args.kind === "reject") {
         if (!owner) return refusalText("not-owner");
-        if (fromBrainRun) return refusalText("from-turn");
-        const r = await decideLearning(la, args.id, args.kind, actor.slackId, args.kind === "approve" && args.scope ? { scope: args.scope } : {});
+        const viaAgent = fromBrainRun;
+        if (viaAgent && (!ownerTurn || actor.slackId !== deps.ownerSlackId)) return refusalText("from-turn");
+        // The audit line is the guard rail: no way to send it, no approval from a turn.
+        if (viaAgent && args.kind === "approve" && !la.slack) return "I cannot DM you the audit line from here, so I did not approve it. Nothing changed.";
+        const r = await decideLearning(la, args.id, args.kind, actor.slackId, {
+          ...(args.kind === "approve" && args.scope ? { scope: args.scope } : {}),
+          ...(viaAgent ? { viaAgent: true } : {}),
+        });
         if (r.kind === "refused") return refusalText(r.why, args.id);
         if (r.kind === "failed") return `I could not keep that, so it is still pending:\n${r.violations.map((v) => `- ${v}`).join("\n")}`;
         if (r.kind === "rejected") return `Rejected #${args.id}. It will never be part of my memory.`;
@@ -43,6 +52,18 @@ export const LEARNINGS_COMMANDS: readonly CommandDef[] = [
           r.warnings.length > 0
             ? `\n:warning: my always-on memory is over budget - \`${prefix} adapter refine\` will tidy it.`
             : "";
+        if (viaAgent) {
+          const here = threadTs ?? messageTs;
+          const link = here ? await la.slack?.permalink?.(channelId, here).catch(() => undefined) : undefined;
+          const sent = await la.slack
+            ?.postDm(
+              deps.ownerSlackId,
+              agentApprovalAudit({ id: args.id, content: r.learning.content, scope: r.learning.scope, ...(link ? { link } : {}), inAdapter: !!la.adapter?.(), prefix }),
+              SIGNATURES.learning,
+            )
+            .catch(() => undefined);
+          return `Approved #${args.id} (${scopeLabel(r.learning.scope)}) by me in the owner's own turn and logged.${sent ? " The owner was told in their DM and can take it back." : " The audit DM to the owner did not go out: say so."} I will keep that in mind.${nag}`;
+        }
         return `Approved #${args.id} (${scopeLabel(r.learning.scope)}). I will keep that in mind.${nag}`;
       }
 

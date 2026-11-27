@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { dispatchCommand, listCommandInfo, type CommandDeps } from "../../src/application/commands.ts";
+import { decideBugReportPress } from "../../src/application/bugReportApproval.ts";
+import { BUG_REJECT_ACTION } from "../../src/domain/bugReport.ts";
 import { createBugReportRepo } from "../../src/infrastructure/db/bugReportRepo.ts";
 import { seededBook } from "../../src/domain/roleSeed.ts";
 import { DEDUPE_MS, MAX_PER_DAY } from "../../src/domain/bugReport.ts";
@@ -111,22 +113,93 @@ describe("bug-report command", () => {
 });
 
 describe("bug-report approve / reject from a turn", () => {
-  test("an owner-actor brain run in the owner's DM, with no press, cannot approve or reject", async () => {
+  test("a turn the owner's message did not start cannot approve or reject, even as the owner", async () => {
     const { deps, bugReports } = setup();
     await run(deps, REPORT);
     for (const line of ["bug-report approve 1", "bug-report reject 1", "bug-report APPROVE 1"]) {
-      expect(await run(deps, line, actor(), OWNER)).toContain("only by the owner pressing the button");
+      expect(await run(deps, line, actor(), OWNER)).toContain("This turn is neither");
     }
     expect(bugReports.get(1)?.state).toBe("pending");
     expect(slackCalls.settled).toHaveLength(0);
   });
 
-  test("nobody else's brain run can decide it either", async () => {
+  test("nobody else's brain run can decide it either, owner bit or not", async () => {
     const { deps, bugReports } = setup();
     await run(deps, REPORT);
     for (const role of ["pal", "executer", "admin"] as const) {
-      expect(await run(deps, "bug-report approve 1", actor({ slackId: `U-${role}`, role }), OWNER)).toContain("pressing the button");
+      const who = actor({ slackId: `U-${role}`, role });
+      expect(await run(deps, "bug-report approve 1", who, OWNER)).toContain("This turn is neither");
+      expect(await dispatchCommand(deps, who, "C1", "bug-report approve 1", { fromBrainRun: true, ownerTurn: { named: [] } })).toContain("This turn is neither");
     }
     expect(bugReports.get(1)?.state).toBe("pending");
+  });
+
+  const ownerRun = (deps: CommandDeps, line: string, threadTs: string, turns?: unknown[]) =>
+    dispatchCommand({ ...deps, ...(turns ? { runTurn: async (r: unknown) => void turns.push(r) } : {}) }, actor(), "C9", line, {
+      fromBrainRun: true,
+      threadTs,
+      messageTs: threadTs,
+      ownerTurn: { named: [] },
+    });
+
+  test("the owner's own turn approves: audit DM with Reject, fix turn started like the press does, logged as the agent's", async () => {
+    const { deps, bugReports } = setup();
+    await run(deps, REPORT);
+    slackCalls.posts.length = 0;
+    slackCalls.buttons.length = 0;
+    const turns: { channelId: string; threadTs: string; slackUserId: string; text: string; unprompted?: boolean }[] = [];
+    const out = await ownerRun(deps, "bug-report approve 1", "1800000000.000100", turns);
+    expect(out).toContain("approved by me in the owner's own turn");
+    expect(out).toContain("Do not fix it in this turn");
+    expect(bugReports.get(1)).toMatchObject({ state: "approved", decidedBy: "agent" });
+    const audit = slackCalls.posts.find((p) => p.channel === OWNER);
+    expect(audit?.text).toContain("I approved it myself");
+    expect(audit?.text).toContain("reply posted twice");
+    expect(slackCalls.buttons).toEqual(["jv:bug-report:reject:1"]);
+    // the old Approve / Reject notice is settled, and the audit line is the notice a Reject press is checked against
+    expect(slackCalls.settled[0]?.text).toContain("approved by");
+    expect(turns).toHaveLength(1);
+    expect(turns[0]).toMatchObject({ channelId: OWNER, slackUserId: OWNER, unprompted: true });
+    expect(turns[0]?.text).toContain("approved by the agent");
+    // the owner's Reject on the audit line stops it, as for the coordinator's approval
+    const b = bugReports.get(1)!;
+    const press = await decideBugReportPress(
+      { bugReports, slack: deps.slack, clock: deps.clock, ownerSlackId: OWNER },
+      { slackUserId: OWNER, actionId: BUG_REJECT_ACTION, value: "1", channel: b.noticeChannel, messageTs: b.noticeTs },
+    );
+    expect(press).toMatchObject({ kind: "rejected", id: 1 });
+    expect(bugReports.get(1)?.state).toBe("rejected");
+  });
+
+  test("approving from the thread the bug is from does not start a second turn: this turn does the fix", async () => {
+    const { deps, bugReports } = setup();
+    await run(deps, REPORT);
+    const turns: unknown[] = [];
+    const out = await dispatchCommand({ ...deps, runTurn: async (r: unknown) => void turns.push(r) }, actor(), "C1", "bug-report approve 1", {
+      fromBrainRun: true,
+      threadTs: "1700000000.000100",
+      messageTs: "1700000000.000900",
+      ownerTurn: { named: [] },
+    });
+    expect(out).toContain("Do the fix in this turn");
+    expect(turns).toHaveLength(0);
+    expect(bugReports.get(1)).toMatchObject({ state: "approved", decidedBy: "agent" });
+  });
+
+  test("no way to DM the audit line means nothing is approved", async () => {
+    const { deps, bugReports } = setup();
+    await run(deps, REPORT);
+    const mute = { ...deps, slack: { ...deps.slack!, postDmInteractive: undefined as never } };
+    expect(await ownerRun(mute, "bug-report approve 1", "1800000000.000100")).toContain("did not approve");
+    expect(bugReports.get(1)?.state).toBe("pending");
+  });
+
+  test("an unknown or already decided report changes nothing, and reject works in the owner's turn", async () => {
+    const { deps, bugReports } = setup();
+    await run(deps, REPORT);
+    expect(await ownerRun(deps, "bug-report approve 7", "1800000000.000100")).toContain("no bug report");
+    expect(await ownerRun(deps, "bug-report reject 1", "1800000000.000100")).toContain("rejected by me");
+    expect(bugReports.get(1)?.state).toBe("rejected");
+    expect(await ownerRun(deps, "bug-report approve 1", "1800000000.000100")).toContain("already rejected");
   });
 });
