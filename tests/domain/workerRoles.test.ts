@@ -83,10 +83,18 @@ describe("rule syntax (checked against Claude Code 2.1.285)", () => {
     expect(ROLE_PROFILES.reviewer.deny).toContain("Bash(gh api*-XPUT*)");
   });
 
-  test("a read of a file or a ref through gh api is not denied", () => {
-    const denied = ROLE_PROFILES.reviewer.deny.join("\n");
-    expect(denied).not.toContain("/contents");
-    expect(denied).not.toContain("/git/refs");
+  test("gh api cannot put commits on the remote without a method flag: refs, blobs, trees, commits, PRs and dispatches", () => {
+    for (const r of WORKER_ROLES) expect(ROLE_PROFILES[r].deny).toContain("Bash(gh api*/git/refs*)");
+    for (const r of ["reviewer", "verifier", "investigator"] as const) {
+      for (const p of ["/git/commits", "/git/trees", "/git/blobs", "/dispatches", "/pulls -"]) {
+        expect(ROLE_PROFILES[r].deny).toContain(`Bash(gh api*${p}*)`);
+      }
+      expect(ROLE_PROFILES[r].deny).toContain("Bash(*=* gh api*/git/blobs*)");
+    }
+  });
+
+  test("a read of a file through gh api is not denied", () => {
+    expect(ROLE_PROFILES.reviewer.deny.join("\n")).not.toContain("/contents");
   });
 
   test("reviewer and verifier may write only to scratch with the file tools; the investigator not at all", () => {

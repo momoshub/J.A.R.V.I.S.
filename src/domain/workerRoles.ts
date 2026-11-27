@@ -97,11 +97,19 @@ const GH_API_MUTATIONS = [
   "gh api*-X PUT", "gh api*-X DELETE", "gh api*-X PATCH", "gh api*-XPUT", "gh api*-XDELETE", "gh api*-XPATCH",
   "gh api*--method PUT", "gh api*--method DELETE", "gh api*--method PATCH", "gh api*--method=PUT", "gh api*--method=DELETE", "gh api*--method=PATCH",
   "gh api*/merge",
+  // `gh api` sends a POST whenever a field or --input is given, so a ref is created without any method flag.
+  "gh api*/git/refs",
 ];
 /** GraphQL has its own merge and push mutations; a mutation can also come from a file, which no rule sees. */
 const GRAPHQL_WRITES = ["gh api graphql*mergePullRequest", "gh api graphql*AutoMerge", "gh api graphql*createCommitOnBranch", "gh api graphql*updateRef", "gh api graphql*createRef", "gh api graphql*createPullRequest"];
 /** A role with no business writing to GitHub gets no GraphQL at all (`gh pr view` and the REST reads cover its reads). */
 const NO_GRAPHQL = ["gh api graphql*"];
+/**
+ * REST writes that put commits on the remote or start work, none of which needs a method flag: blobs, trees
+ * and commits build a branch with a ref, a POST to `/pulls` opens a PR, `dispatches` starts a workflow.
+ * The read-only roles read all of it through `gh pr view`, `git` and `gh run`.
+ */
+const NO_REST_WRITES = ["gh api*/git/commits:*", "gh api*/git/trees:*", "gh api*/git/blobs:*", "gh api*/dispatches:*", "gh api*/pulls -*", "gh api*/pulls"];
 /** Global git options in front of the subcommand (`git -c k=v push`, `--git-dir`, `--no-pager`) get past the per-subcommand rules. */
 const GIT_OPTIONS = ["git -*"];
 
@@ -130,7 +138,7 @@ export const ROLE_PROFILES: Readonly<Record<WorkerRole, RoleProfile>> = {
       ...githubApp("comment"),
     ]),
     deny: [
-      "Edit", "NotebookEdit", ...NO_HOME_WRITE, ...GIT_WRITES, ...RAW_MERGE, ...denyBash(...GIT_OPTIONS, ...NO_GRAPHQL),
+      "Edit", "NotebookEdit", ...NO_HOME_WRITE, ...GIT_WRITES, ...RAW_MERGE, ...denyBash(...GIT_OPTIONS, ...NO_GRAPHQL, ...NO_REST_WRITES),
       ...denyBash("gh pr create:*", "gh pr edit:*", "gh pr close:*", "gh pr reopen:*", "gh pr ready:*", "gh issue create:*", "gh issue edit:*", "gh issue close:*", "gh release:*", "gh auth switch:*"),
       ...githubApp("pr-create", "pr-edit", "pr-close", "pr-reopen", "labels-add", "labels-remove", "reviewers-request", "git", "push", "review", "ticket-renew"),
     ],
@@ -141,7 +149,7 @@ export const ROLE_PROFILES: Readonly<Record<WorkerRole, RoleProfile>> = {
       ...githubApp("comment"),
     ]),
     deny: [
-      "Edit", "NotebookEdit", ...NO_HOME_WRITE, ...GIT_WRITES, ...RAW_MERGE, ...denyBash(...GIT_OPTIONS, ...NO_GRAPHQL),
+      "Edit", "NotebookEdit", ...NO_HOME_WRITE, ...GIT_WRITES, ...RAW_MERGE, ...denyBash(...GIT_OPTIONS, ...NO_GRAPHQL, ...NO_REST_WRITES),
       ...denyBash("gh pr create:*", "gh pr edit:*", "gh pr close:*", "gh pr reopen:*", "gh pr review:*", "gh issue create:*", "gh issue edit:*", "gh issue close:*", "gh release:*", "gh auth switch:*"),
       ...githubApp("pr-create", "pr-edit", "pr-close", "pr-reopen", "labels-add", "labels-remove", "reviewers-request", "git", "push", "review", "ticket-renew"),
     ],
@@ -149,7 +157,7 @@ export const ROLE_PROFILES: Readonly<Record<WorkerRole, RoleProfile>> = {
   investigator: {
     allow: withAssignment([...READ_TOOLS, ...READ_SHELL, ...READ_GIT, ...READ_GH, ...ORCA, ...bash("gh api:*")]),
     deny: [
-      "Edit", "Write", "NotebookEdit", ...GIT_WRITES, ...RAW_MERGE, ...denyBash(...GIT_OPTIONS, ...NO_GRAPHQL),
+      "Edit", "Write", "NotebookEdit", ...GIT_WRITES, ...RAW_MERGE, ...denyBash(...GIT_OPTIONS, ...NO_GRAPHQL, ...NO_REST_WRITES),
       ...denyBash("git worktree add:*", "git worktree remove:*", "git -C * worktree add:*", "gh pr create:*", "gh pr edit:*", "gh pr close:*", "gh pr reopen:*", "gh pr review:*", "gh pr comment:*", "gh issue create:*", "gh issue edit:*", "gh issue comment:*", "gh issue close:*", "gh release:*", "gh auth switch:*"),
       ...githubApp("pr-create", "pr-edit", "pr-close", "pr-reopen", "comment", "labels-add", "labels-remove", "reviewers-request", "git", "push", "review", "ticket-renew"),
     ],

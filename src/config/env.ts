@@ -392,8 +392,7 @@ export type AppConfig = {
   workerMcpDeny: string[];
   /** Raw `WORKER_ROLE_MCP_DENY`: per-role server exclusions, read by the trim helper. */
   workerRoleMcpDeny: string;
-  /** Absolute folder every Orca worker starts in. */
-  /** The shared worker home; each role's workers start in `<it>-<role>` (`roleHomeDir`). */
+  /** Absolute shared worker home; each role's workers start in `<it>-<role>` (`roleHomeDir`). */
   workerHomeDir: string;
   /** whisper.cpp CLI, the ggml model and ffmpeg for voice messages, and the limit on each step. */
   whisperBin: string;

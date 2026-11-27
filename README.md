@@ -471,8 +471,9 @@ assignment; `git -c ...` and `git --...` are denied outright for the read-only
 roles, and `gh api graphql` too), so a `bash -c` or `env git ...` wrapper, a shell
 redirect (`> file`, `tee`, `sed -i`) or a GraphQL mutation read from a file is not
 caught: the investigator has no write tool, but it is not stopped from a
-redirect, and a reviewer or verifier may use the file tools only for scratch
-folders (`/tmp`, `/private/tmp`, `/var/folders`), not under a home folder. The
+redirect, and a reviewer or verifier may use the file tools in scratch
+folders (`/tmp`, `/private/tmp`, `/var/folders`) and is refused under a home
+folder (`/Users`, `/home`; other paths such as `/etc` are not listed). The
 writer can still push to any branch it can reach: keeping `main` closed to it is
 branch protection's job, not this profile's. This takes away what a role never
 needs, it is not a sandbox, and the credentials a shell can read are a separate
