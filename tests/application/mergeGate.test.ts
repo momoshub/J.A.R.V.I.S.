@@ -111,6 +111,20 @@ describe("runMergeGate", () => {
     expect(g.calls.some((c) => c.startsWith("PUT"))).toBe(false);
   });
 
+  test("GitHub lists at most 3000 files: fewer files than `changed_files` means runtime code may be hidden, so review and verify are demanded", async () => {
+    const g = github({ files: ["README.md"], reviews: [], comments: [], pull: { changed_files: 3001 } });
+    const out = await runMergeGate(config, g.request, "o/r", 9, SHA);
+    expect(out).toMatchObject({ decision: "refused" });
+    expect(g.calls.some((c) => c.startsWith("PUT"))).toBe(false);
+    const complete = github({ files: ["README.md"], reviews: [], comments: [], pull: { changed_files: 1 } });
+    expect(await runMergeGate(config, complete.request, "o/r", 9, SHA)).toMatchObject({ decision: "merged", runtime: false });
+  });
+
+  test("a list that fills the 30-page cap fails closed instead of reading a truncated PR", async () => {
+    const g = github({ files: Array.from({ length: 3000 }, (_, i) => `docs/${i}.md`) });
+    await expect(runMergeGate(config, g.request, "o/r", 9, SHA)).rejects.toThrow("more than 3000");
+  });
+
   test("an edited [verify] comment refuses, even with an older good one behind it", async () => {
     const g = github({ comments: [{ user: { login: "rev" }, body: `[verify] ${SHA}\nVERDICT: verified`, created_at: "t1", updated_at: "t2" }] });
     expect(await runMergeGate(config, g.request, "o/r", 9, SHA)).toMatchObject({ decision: "refused" });

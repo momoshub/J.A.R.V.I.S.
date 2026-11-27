@@ -32,9 +32,10 @@ const pages = async (request: Request, path: string, pick: (page: unknown) => un
   for (let page = 1; page <= 30; page++) {
     const items = pick(await request("GET", `${path}${sep}per_page=100&page=${page}`));
     out.push(...items);
-    if (items.length < 100) break;
+    if (items.length < 100) return out;
   }
-  return out;
+  // A full 30th page: there may be more than this reads, and a verdict, a check or a file past the cap would be silently missed.
+  throw new Error(`${path} has more than 3000 entries: the merge gate cannot read them all, so it will not merge`);
 };
 
 export const runMergeGate = async (
@@ -71,6 +72,7 @@ export const runMergeGate = async (
     sha,
     pr: prState,
     // A rename shows its new path as `filename`: the old one counts too, or moving code into docs/ would look docs-only.
+    filesComplete: files.length >= (typeof pull.changed_files === "number" ? pull.changed_files : 0),
     files: files.flatMap((f) => [text(obj(f).filename), text(obj(f).previous_filename)].filter(Boolean)),
     checks: checks.map((c) => ({
       name: text(obj(c).name),

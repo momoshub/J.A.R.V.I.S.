@@ -44,6 +44,11 @@ describe("evaluateGate", () => {
     expect(evaluateGate(base({ files: ["README.md"], reviews: [], comments: [] }))).toEqual({ decision: "merge", runtime: false });
   });
 
+  test("an incomplete file list counts as runtime", () => {
+    refusedWith(base({ files: ["README.md"], filesComplete: false, reviews: [], comments: [] }), "review");
+    expect(evaluateGate(base({ files: ["README.md"], filesComplete: true, reviews: [], comments: [] })).decision).toBe("merge");
+  });
+
   test("closed, merged and draft PRs are refused", () => {
     refusedWith(base({ pr: { ...base().pr, state: "closed" } }), "closed");
     refusedWith(base({ pr: { ...base().pr, state: "closed", merged: true } }), "already merged");

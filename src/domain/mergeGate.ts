@@ -54,6 +54,8 @@ export type GateInput = {
   sha: string;
   pr: GatePr;
   files: readonly string[];
+  /** False when GitHub gave fewer files than the PR changed (its list stops at 3000): what is missing may be runtime code, so the PR counts as runtime. */
+  filesComplete?: boolean;
   checks: readonly GateCheck[];
   reviews: readonly GateReview[];
   comments: readonly GateComment[];
@@ -156,7 +158,7 @@ export const evaluateGate = (input: GateInput): GateDecision => {
   }
   for (const name of input.requiredChecks) if (!names.includes(name)) pending.push(`required check ${name} has not appeared yet`);
 
-  const runtime = touchesRuntime(input.files);
+  const runtime = input.filesComplete === false || touchesRuntime(input.files);
   if (input.files.length === 0) refused.push("the PR changes no files");
   if (runtime && input.attesters.length === 0) refused.push("MERGE_GATE_ATTESTERS names no account, so nobody's review or verify counts for runtime code");
   else if (runtime) {
