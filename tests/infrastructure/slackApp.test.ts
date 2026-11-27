@@ -2177,6 +2177,8 @@ describe("coordinator blocker press listener", () => {
     expect(r.turns[0]).toMatchObject({ channelId: "C0TEST00001", threadTs: "1795000000.123456", userId: OWNER });
     expect(r.turns[0]!.text).toContain("approved by the owner");
     expect(r.turns[0]!.text).toContain("<@U0PAL000001>");
+    // A text the bot built from a non-owner's words: no owner bit.
+    expect((r.turns[0] as { composed?: boolean }).composed).toBe(true);
     expect(posts).toHaveLength(0);
     expect(r.hook()).toBe(0);
     await press(open("u-reject", "502.5"), "502.5", "jv:coordinator:reject");

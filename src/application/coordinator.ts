@@ -61,6 +61,7 @@ import {
 } from "../domain/coordinator.ts";
 import type { FooterUsage } from "../domain/usageFooter.ts";
 import { watchesWorker } from "../domain/watch.ts";
+import { claimFindings, findingLine, holderLine, type ClaimFacts } from "../domain/writerClaim.ts";
 import { WORKER_TTL_DEFAULT_MS } from "../domain/workerTicket.ts";
 import type { StuckWork } from "../domain/stuckWork.ts";
 import type { JourneyRepo } from "../infrastructure/db/journeyRepo.ts";
@@ -149,6 +150,11 @@ export type CoordinatorDeps = {
     lapsedSince: (since: number) => readonly Watch[];
     /** A new watch with the same job; returns its id. */
     rearm: (w: Watch, now: number) => number;
+  };
+  /** The live writer claims (one writer per job, domain/writerClaim.ts) and the release of one. Absent: no claims are watched. */
+  readonly claims?: {
+    live: () => readonly ClaimFacts[];
+    release: (id: number, why: string) => boolean;
   };
   /** Dispatched Orca tasks whose worker is gone, and quiet PRs (the stuck-work probe). */
   readonly scan: () => Promise<StuckWork>;
@@ -290,7 +296,8 @@ export const createCoordinator = (deps: CoordinatorDeps): Coordinator => {
 
   /** What a turn that asked the owner to unblock a person is told (it then tells that person in one line). */
   const unblockReply = async (b: CoordinatorBlocker, route: BlockerRoute): Promise<string> => {
-    if (route.route === "raise") {
+    // The coordinator never approves an unblock itself (that would be acting as the owner with nobody pressing): an `approve` route, which cannot arise for kind `unblock`, is put to the owner like a raise.
+    if (route.route === "raise" || route.route === "approve") {
       if (await raise(b)) return "raised to the owner. Do not ask again. Tell the person in one line that the owner was asked.";
       return deps.scheduled === false
         ? "the owner could not be reached just now and nothing retries it. Tell the person to ask the owner directly."
@@ -314,7 +321,8 @@ export const createCoordinator = (deps: CoordinatorDeps): Coordinator => {
     const prior = deps.repo.blockerByKey(key);
     // With no tick scheduled nothing would raise a held unblock later, so quiet hours do not hold it.
     const quiet = quietNow() && !(input.subject && deps.scheduled === false);
-    const route: BlockerRoute = routeBlocker(input.facts, prior, now, { quiet, repingMs });
+    // A person's unblock is always kind `unblock` for the rules (never an `other` wall the coordinator may approve itself).
+    const route: BlockerRoute = routeBlocker(input.facts, prior, now, { quiet, repingMs, kind: input.subject ? "unblock" : input.kind, text });
     if (route.route === "self-fix") {
       // The grant `fixed` checks, and the end of any earlier ask: an owner asked about something the coordinator is now fixing would be asked all night.
       deps.repo.mark("selffix", key, now);
@@ -324,8 +332,17 @@ export const createCoordinator = (deps: CoordinatorDeps): Coordinator => {
     if (input.subject && !prior && deps.repo.unblocksSince(now - DAY_MS) >= MAX_UNBLOCKS_PER_DAY) {
       return "The owner has been asked to unblock people the most times in a day, so this one was not sent. Tell the person to ask the owner directly.";
     }
-    const b = deps.repo.openBlocker({ key, kind: input.kind, prod: input.facts.prod, text, ...(input.subject ? { subject: input.subject } : {}) }, now);
+    const b = deps.repo.openBlocker({ key, kind: input.subject ? "unblock" : input.kind, prod: input.facts.prod, text, ...(input.subject ? { subject: input.subject } : {}) }, now);
     if (input.subject) return unblockReply(b, route);
+    if (route.route === "approve") {
+      // Decided here, in code, from the facts and the sentence: never from anything a person wrote. It is handled on the spot
+      // (the turn that asked is told below), so the next tick does not hand it over as one the owner approved.
+      if (deps.repo.decide(b.id, "approved", now)) {
+        deps.repo.markHandled(b.id, now);
+        await act(`blocker #${b.id} (${b.kind}) approved by me (non-prod, low-risk, inside your role): ${b.text}`);
+      }
+      return `approved by me: non-prod, low-risk (reversible, no data write, no schema change, no secret or IAM change), inside the owner's role, no owner decision. Go ahead and do it; the owner was not asked.`;
+    }
     if (route.route === "raise") {
       await raise(b);
       return input.facts.prod
@@ -424,6 +441,23 @@ export const createCoordinator = (deps: CoordinatorDeps): Coordinator => {
     }
   };
 
+  /**
+   * The writer claims: a claim whose worker is gone, or that never got one, is released here (the `watch worker` hook
+   * normally does it at the worker's end), and two writers on one job are reported. Each finding is a digest line,
+   * once a day per key and kind; nothing else is said, no turn is needed.
+   */
+  const claimsStep = async (now: number, dead: ReadonlySet<string>): Promise<void> => {
+    if (!deps.claims) return;
+    const live = deps.claims.live();
+    if (live.length > 0) log(`live claims: ${live.map((c) => `${c.key} (${holderLine(c, now)})`).join("; ")}`);
+    for (const f of claimFindings(live, dead, now)) {
+      const key = f.kind === "duplicate" ? f.key : f.claim.key;
+      if (!doneOnce(`claim-${f.kind}`, key, now, f.kind === "duplicate" ? NUDGE_REPEAT_MS : 0)) continue;
+      if (f.kind !== "duplicate") deps.claims.release(f.claim.id, f.kind === "dead" ? "its worker is gone" : "never bound to a writer");
+      await act(findingLine(f, now));
+    }
+  };
+
   const picturePrs = async (now: number, picture: { redPrs: PictureItem[]; chasePrs: PictureItem[] }): Promise<string | undefined> => {
     const { prs, problem } = await deps.ownPrs();
     const { red, chase } = prFindings(prs, now);
@@ -474,6 +508,7 @@ export const createCoordinator = (deps: CoordinatorDeps): Coordinator => {
     await journeysStep(now, picture);
     await ticketsStep(now, picture);
     await watchesStep(now, dead);
+    await claimsStep(now, dead);
     const prProblem = await picturePrs(now, picture).catch((e: unknown) => `open PRs not read: ${e instanceof Error ? e.message : String(e)}`);
     if (prProblem) log(prProblem);
 
@@ -550,6 +585,12 @@ export const createCoordinator = (deps: CoordinatorDeps): Coordinator => {
     })();
   };
 
+  const claimLines = (): string => {
+    const live = deps.claims?.live() ?? [];
+    const now = deps.clock();
+    return live.length === 0 ? "none" : live.map((c) => `${c.key} (${holderLine(c, now)})`).join("; ");
+  };
+
   const status = (): string => {
     const day = today();
     const pending = deps.repo.pending();
@@ -557,6 +598,7 @@ export const createCoordinator = (deps: CoordinatorDeps): Coordinator => {
       `*${deps.name}* - ${day}${quietNow() ? ", quiet hours" : ""}`,
       `- digest lines today: ${deps.repo.lines(day).length}`,
       `- blockers waiting on the owner: ${pending.length}${pending.length > 0 ? ` (${pending.map((b) => `#${b.id}${b.prod ? " prod" : ""}`).join(", ")})` : ""}`,
+      ...(deps.claims ? [`- writer claims held: ${claimLines()}`] : []),
       `- a turn is ${turnRunning ? "running" : "not running"}`,
     ].join("\n");
   };

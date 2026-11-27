@@ -157,6 +157,8 @@ import { parseExtraMethods } from "./domain/slackProxy.ts";
 import { createSelfPosts } from "./application/selfPosts.ts";
 import { scrubSecretEnv } from "./domain/turnEnv.ts";
 import { createWorkerTickets, revokeOnWorkerEnd } from "./application/workerTickets.ts";
+import { createWriterClaims, releaseClaimsOnWorkerEnd } from "./application/writerClaims.ts";
+import { createWriterClaimRepo } from "./infrastructure/db/writerClaimRepo.ts";
 import { createWorkerTicketRepo } from "./infrastructure/db/workerTicketRepo.ts";
 import { createWorkerTicketFiles } from "./infrastructure/system/workerTicketFiles.ts";
 import { createActivityLog } from "./infrastructure/logger.ts";
@@ -722,6 +724,9 @@ const main = async () => {
   // hands the rest to one turn in the owner's DM and keeps a single digest message edited all day.
   // See domain/coordinator.ts. Its turn goes through the same `runTurn` loops use, as the owner.
   const coordinatorRepo = createCoordinatorRepo(db);
+  // One writer per job: the claims a session takes before `worker-start`. Released by the `watch worker` hook when the
+  // worker ends, and by the coordinator's tick for one whose worker is gone without that hook firing.
+  const writerClaims = createWriterClaims(clock, createWriterClaimRepo(db));
   const coordinatorPrProbe = createCoordinatorPrProbe({
     gh: defaultRunner(repoPath),
     authors: [config.selfPrAccounts?.author, config.githubApp.slug ? `${config.githubApp.slug}[bot]` : undefined].filter(
@@ -748,6 +753,7 @@ const main = async () => {
       lapsedSince: (since) => watches.lapsedSince(since),
       rearm: (w, now) => rearmWatch(watches, w, now),
     },
+    claims: { live: writerClaims.live, release: writerClaims.releaseId },
     scan: stuckWorkProbe.scan,
     ownPrs: coordinatorPrProbe.scan,
     unanswered: (id, since, before) => messages.endedOnUser(id, since, before, 50),
@@ -788,6 +794,8 @@ const main = async () => {
     selfIssues,
     bugReportApproval: { bugReports, slack: slackAdmin, clock, ownerSlackId: config.ownerSlackId },
     coordinator,
+    coordinatorName: config.coordinator.name,
+    writerClaims,
     coordinatorApproval: { repo: coordinatorRepo, slack: slackAdmin, clock, ownerSlackId: config.ownerSlackId, name: config.coordinator.name, lang: config.coordinator.lang, onApproved: () => void coordinator.tick() },
     skillDrafts,
     skillDraftApproval,
@@ -1283,6 +1291,9 @@ const main = async () => {
       // A worker that finished or died keeps no GitHub App ticket.
       const n = revokeOnWorkerEnd(workerTickets, orcaWorkerWait[1] ?? "")(w, output);
       if (n > 0) console.error(`[worker-ticket] revoked ${n} on worker end`);
+      // ... and holds no job claim either.
+      const freed = releaseClaimsOnWorkerEnd(writerClaims, orcaWorkerWait[1] ?? "")(w, output);
+      if (freed > 0) console.error(`[claim] released ${freed} on worker end`);
     },
     onError: onDbError,
   });

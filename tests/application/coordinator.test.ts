@@ -6,6 +6,7 @@ import { DEFAULT_PROD_REPING_MS, HOUR_MS, DAY_MS, MINUTE_MS, MAX_UNBLOCKS_PER_DA
 import { NO_STUCK_WORK } from "../../src/domain/stuckWork.ts";
 import { createJourneyRepo } from "../../src/infrastructure/db/journeyRepo.ts";
 import { createCoordinatorRepo } from "../../src/infrastructure/db/coordinatorRepo.ts";
+import { createWriterClaimRepo } from "../../src/infrastructure/db/writerClaimRepo.ts";
 import { createWatchRepo } from "../../src/infrastructure/db/watchRepo.ts";
 import { migrate } from "../../src/infrastructure/db/schema.ts";
 import type { Watch } from "../../src/infrastructure/db/watchRepo.ts";
@@ -660,6 +661,21 @@ describe("a person other than the owner is stuck", () => {
     expect(s.asked).toHaveLength(1);
   });
 
+  test("the coordinator never approves an unblock itself, however low-risk the facts look", async () => {
+    const s = setup();
+    const out = await s.coordinator.blocker({
+      key: "u-low",
+      kind: "other",
+      text: "needs a go-ahead",
+      facts: facts({ reversible: true }),
+      subject: subject(),
+    });
+    expect(out).not.toContain("approved by me");
+    expect(out).toContain("raised to the owner");
+    expect(s.asked).toHaveLength(1);
+    expect(s.repo.blockerByKey("u-low")).toMatchObject({ kind: "unblock", state: "pending" });
+  });
+
   test("an approved unblock is never handed to the coordinator's turn as 'go ahead as the owner'", async () => {
     const s = setup();
     await unblock(s, "u1", "needs the staging grant");
@@ -719,6 +735,90 @@ describe("a person other than the owner is stuck", () => {
   });
 });
 
+
+describe("blockers: a low-risk non-prod one is approved by the coordinator, not put to the owner", () => {
+  test("approved on the spot, handled, one digest line, nothing asked, and the next tick does not hand it over", async () => {
+    const s = setup();
+    const out = await s.coordinator.blocker({ key: "retry-lint", kind: "other", text: "retry the failed lint step", facts: facts({ reversible: true }) });
+    expect(out).toContain("approved by me");
+    expect(s.asked).toHaveLength(0);
+    expect(s.repo.blockerByKey("retry-lint")).toMatchObject({ state: "approved" });
+    expect(s.repo.approvedUnhandled()).toHaveLength(0);
+    expect(s.posts[0]!.text).toContain("approved by me (non-prod, low-risk");
+    await s.coordinator.tick();
+    expect(s.turns).toHaveLength(0);
+  });
+
+  test("the same wall asked again is decided, not approved twice", async () => {
+    const s = setup();
+    await s.coordinator.blocker({ key: "retry-lint", kind: "other", text: "retry the failed lint step", facts: facts({ reversible: true }) });
+    const again = await s.coordinator.blocker({ key: "retry-lint", kind: "other", text: "retry the failed lint step", facts: facts({ reversible: true }) });
+    expect(again).toContain("owner already decided");
+  });
+
+  test("anything not provably low-risk still goes to the owner's buttons", async () => {
+    const s = setup();
+    await s.coordinator.blocker({ key: "a", kind: "other", text: "retry the failed lint step", facts: facts() });
+    await s.coordinator.blocker({ key: "b", kind: "other", text: "rotate the token", facts: facts({ reversible: true }) });
+    await s.coordinator.blocker({ key: "c", kind: "decision", text: "pick a vendor", facts: facts({ reversible: true }) });
+    expect(s.asked).toHaveLength(3);
+  });
+});
+
+describe("writer claims on the tick", () => {
+  const withClaims = () => {
+    const db = new Database(":memory:");
+    migrate(db);
+    const claims = createWriterClaimRepo(db);
+    const s = setup(NOON, {
+      claims: { live: claims.live, release: (id, why) => claims.release(id, why, NOON) },
+    });
+    return { s, claims };
+  };
+  const take = (claims: ReturnType<typeof createWriterClaimRepo>, key: string, dispatch: string, at = NOON - HOUR_MS) => {
+    const c = claims.add({ key, channelId: "C1", threadTs: "1.1", actor: OWNER, createdAt: at }, at);
+    if (dispatch) claims.bind(c.id, dispatch);
+    return c;
+  };
+
+  test("a claim whose worker is dead is released by the tick and reported in the digest", async () => {
+    const { s, claims } = withClaims();
+    take(claims, "bug:23", "ctx_dead");
+    take(claims, "bug:24", "ctx_alive");
+    s.set.scan({ tasks: [{ taskId: "t1", dispatchId: "ctx_dead", title: "fix", why: "worker gone" }], prs: [] } as never);
+    await s.coordinator.tick();
+    expect(claims.live().map((c) => c.key)).toEqual(["bug:24"]);
+    expect(s.posts[0]!.text).toContain("released the claim on bug:23: its worker ctx_dead is gone");
+  });
+
+  test("a claim never bound to a writer is released once it is old enough", async () => {
+    const { s, claims } = withClaims();
+    take(claims, "bug:25", "", NOON - HOUR_MS);
+    take(claims, "bug:26", "", NOON - 60_000);
+    await s.coordinator.tick();
+    expect(claims.live().map((c) => c.key)).toEqual(["bug:26"]);
+    expect(s.posts[0]!.text).toContain("no writer was ever started for it");
+  });
+
+  test("two writers on one key are reported, once a day, and neither is released", async () => {
+    const { s, claims } = withClaims();
+    take(claims, "bug:27", "ctx_a");
+    take(claims, "bug:27", "ctx_b");
+    await s.coordinator.tick();
+    expect(s.posts[0]!.text).toContain("two writers on bug:27");
+    expect(claims.live()).toHaveLength(2);
+    s.clock.t += 30 * MINUTE_MS;
+    await s.coordinator.tick();
+    const digest = s.updates.at(-1)?.text ?? s.posts[0]!.text;
+    expect(digest.split("two writers on bug:27")).toHaveLength(2);
+  });
+
+  test("status lists the live claims", async () => {
+    const { s, claims } = withClaims();
+    take(claims, "bug:28", "ctx_a");
+    expect(s.coordinator.status()).toContain("bug:28 (worker ctx_a");
+  });
+});
 
 const usage = (over: Partial<FooterUsage> = {}): FooterUsage => ({
   model: "claude-sonnet-5-5", inputTokens: 1000, outputTokens: 500, cacheReadTokens: 10_000, cacheWriteTokens: 500, costUsd: 0.25, durationMs: 62_000, ...over,

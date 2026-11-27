@@ -6,6 +6,7 @@ import type { ReviewRounds } from "../reviewRounds.ts";
 import type { WorkerUsagePort } from "../workerCost.ts";
 import type { WorkerTickets } from "../workerTickets.ts";
 import type { Coordinator } from "../coordinator.ts";
+import type { WriterClaims } from "../writerClaims.ts";
 import type { InternalKind } from "../../domain/internalMessages.ts";
 import { DEFAULT_BOT_NAME } from "../../domain/personality.ts";
 import { ALWAYS_ON_BUDGET } from "../../domain/adapterCheck.ts";
@@ -137,6 +138,10 @@ export type CommandDeps = {
   journeys?: JourneyRepo;
   /** The coordinator, the housekeeping coordinator of the owner's DM, for the internal `coordinator` command. */
   coordinator?: Coordinator;
+  /** The coordinator's display name, for the notice of a bug report it approved. */
+  coordinatorName?: string;
+  /** Who holds which writer job, for the `claim` command. */
+  writerClaims?: WriterClaims;
   /** The bug reports the bot raised about itself, for the `bug-report` command. */
   bugReports?: BugReportRepo;
   /** The inner child's queue of issues, for the open count in `inner-child`. */

@@ -36,6 +36,16 @@ describe("selfUpdateRules is the whole procedure, from the codebase", () => {
     expect(rules).toContain("Orca unreachable or refused");
   });
 
+  test("one writer per job: the job is claimed before the writer starts and bound after", () => {
+    expect(rules).toContain("One writer per job: before any writer starts, take its job through the run helper (`claim take bug:<id>`");
+    expect(rules).toContain("never start a second writer");
+    expect(rules).toContain("`claim bind <dispatchId> <the same keys>`");
+    expect(rules.indexOf("`claim take bug:<id>`")).toBeLessThan(rules.indexOf("`orca orchestration run-create"));
+    // below owner there is no dispatch id to bind, the claim is taken and lapses
+    expect(agentRules).toContain("`claim take bug:<id>`");
+    expect(agentRules).not.toContain("claim bind");
+  });
+
   test("below owner the writer is never an Orca worker", () => {
     expect(agentRules).toContain("never `orca`");
     expect(agentRules).not.toContain("worker-ticket");

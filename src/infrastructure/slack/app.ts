@@ -912,7 +912,7 @@ export const createKitListeners = (
   coordinatorApproval?: CoordinatorApprovalDeps,
 ) => {
   type Context = InboxContext & { teamId?: string };
-  const kitTurn = async (client: unknown, context: Context | undefined, userId: string, thread: KitThread, text: string) => {
+  const kitTurn = async (client: unknown, context: Context | undefined, userId: string, thread: KitThread, text: string, composed = false) => {
     const web = client as KitClient;
     await handle({
       channelId: thread.channelId,
@@ -920,6 +920,8 @@ export const createKitListeners = (
       teamId: context?.teamId,
       inbox: context ? inboxOf(context) : undefined,
       text,
+      // A text the bot built (a bug report's brief) is no one's typed message: the turn gets no owner bit.
+      ...(composed ? { composed: true } : {}),
       threadTs: thread.threadTs,
       messageTs: syntheticTs(),
       client: client as SlackClient,
@@ -985,7 +987,9 @@ export const createKitListeners = (
           .catch(logAndIgnore("bug report press notice"));
       }
       if (outcome.kind === "approved") {
-        await kitTurn(client, context, by, { channelId: outcome.channel, threadTs: outcome.threadTs }, outcome.brief);
+        await kitTurn(client, context, by, { channelId: outcome.channel, threadTs: outcome.threadTs }, outcome.brief, true);
+      } else if (outcome.kind === "rejected" && outcome.stop) {
+        await kitTurn(client, context, by, { channelId: outcome.stop.channel, threadTs: outcome.stop.threadTs }, outcome.stop.brief, true);
       }
     } catch (err) {
       log(`bug report press failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -1023,7 +1027,8 @@ export const createKitListeners = (
       // or tell them no in one line (a reject, plain code, no turn).
       if (outcome.kind === "approved" && outcome.unblock) {
         const { channelId, threadTs, brief } = outcome.unblock;
-        await kitTurn(client, context, by, { channelId, threadTs }, brief);
+        // The brief carries text a non-owner session wrote (the need and the plan): the turn is no one's typed message, so it runs without the owner bit.
+        await kitTurn(client, context, by, { channelId, threadTs }, brief, true);
       } else if (outcome.kind === "rejected" && outcome.unblock) {
         const { channelId, threadTs, notice: text } = outcome.unblock;
         await (client as KitClient).chat
