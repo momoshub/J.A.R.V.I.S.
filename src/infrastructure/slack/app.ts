@@ -892,7 +892,6 @@ export const idleSession = async (
 /** Nothing a reader would count as a reply: no words, or a note about not replying. */
 const isQuiet = (text: string): boolean => !text.trim() || isSilenceNote(text);
 
-/** Delete stream messages that ended up saying nothing. */
 /**
  * Put the turn's footer under a message the turn posted itself, when its closing reply (which would have carried
  * it) was dropped. The message is read back for its blocks, so the update keeps them. Nothing here may break the
@@ -916,6 +915,7 @@ const footSelfPost = async (msg: Incoming, ts: string, line: string, log: (m: st
   }
 };
 
+/** Delete stream messages that ended up saying nothing. */
 const dropQuiet = async (msg: Incoming, parts: readonly { ts: string }[], log: (m: string) => void): Promise<void> => {
   for (const part of parts) {
     await msg.client.chat.delete?.({ channel: msg.channelId, ts: part.ts }).catch((e: unknown) => {

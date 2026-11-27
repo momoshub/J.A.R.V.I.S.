@@ -173,7 +173,7 @@ const build = (opts: {
               if (opts.repliesThrows) throw new Error("ratelimited");
               const found = opts.stored?.[String(a.latest)];
               // like Slack: the thread's parent comes first, whatever the bounds
-              return { messages: [{ ts: String(a.ts), text: "the question" }, ...(found ? [{ ts: String(a.latest), ...found }] : [])] };
+              return { messages: [{ ts: String(a.ts), text: "the question" }, ...(found ? [{ ts: String(a.latest), ...found }] : [])].slice(0, Number(a.limit ?? 1000)) };
             },
           },
         }
