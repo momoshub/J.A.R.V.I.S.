@@ -44,8 +44,7 @@ export type GatePr = {
   /** GitHub's `mergeable_state` (`dirty` = conflicts, `unknown` = not computed yet). */
   mergeState: string;
 };
-/** `id`: GitHub's check-run id, which grows with every run, so the biggest of a name is its latest. */
-export type GateCheck = { name: string; status: string; conclusion: string | null; id?: number };
+export type GateCheck = { name: string; status: string; conclusion: string | null };
 export type GateReview = { login: string; body: string; commitId: string };
 /** `edited`: the comment's `updated_at` is not its `created_at`. Anyone with write access can edit another's issue comment, keeping its author, so an edited `[verify]` proves nothing. */
 export type GateComment = { login: string; body: string; edited?: boolean };
@@ -74,18 +73,19 @@ const lc = (s: string): string => s.toLowerCase();
 const GOOD = new Set(["success", "neutral", "skipped"]);
 
 /**
- * What a check name stands for on this sha. CI cancels a run when a newer push supersedes it, so a head usually
- * carries a `cancelled` run next to the green one (13 of the last 15 PR heads did): only the latest run that was not
- * cancelled or skipped decides. Nothing but cancelled runs is red (a cancelled-only `checks` never passed); nothing but
- * skipped ones is fine.
+ * What a check name stands for on this sha. CI cancels a run when a newer push supersedes it, and a push-only run of
+ * `checks` is skipped by its own `if:`, so a head usually carries cancelled and skipped runs next to the real one (13 of
+ * the last 15 PR heads did): those say nothing either way and are set aside. Every other run speaks: any completed red
+ * one refuses (a later green run of the same name does NOT hide it: anyone who can push a branch could post one),
+ * any unfinished one waits. A name left with nothing but cancelled or skipped runs has not really run on this head.
  */
-const verdictOf = (runs: readonly GateCheck[]): "good" | "running" | { red: string } => {
-  const ordered = runs.map((c, i) => ({ c, id: c.id ?? i })).sort((a, b) => a.id - b.id).map((x) => x.c);
-  const decisive = ordered.filter((c) => !(c.status === "completed" && (c.conclusion === "cancelled" || c.conclusion === "skipped")));
-  const last = decisive[decisive.length - 1];
-  if (!last) return ordered.some((c) => c.conclusion === "cancelled") ? { red: "cancelled" } : "good";
-  if (last.status !== "completed") return "running";
-  return GOOD.has(last.conclusion ?? "") ? "good" : { red: last.conclusion ?? "unknown" };
+const verdictOf = (runs: readonly GateCheck[]): "good" | "running" | "none-cancelled" | "none-skipped" | { red: string } => {
+  const decisive = runs.filter((c) => !(c.status === "completed" && (c.conclusion === "cancelled" || c.conclusion === "skipped")));
+  const red = decisive.find((c) => c.status === "completed" && !GOOD.has(c.conclusion ?? ""));
+  if (red) return { red: red.conclusion ?? "unknown" };
+  if (decisive.some((c) => c.status !== "completed")) return "running";
+  if (decisive.length === 0) return runs.some((c) => c.conclusion === "cancelled") ? "none-cancelled" : "none-skipped";
+  return "good";
 };
 
 /** The last non-empty line of a body: where a verdict lives. */
@@ -148,8 +148,11 @@ export const evaluateGate = (input: GateInput): GateDecision => {
   const names = [...new Set(input.checks.map((c) => c.name))];
   for (const name of names) {
     const v = verdictOf(input.checks.filter((c) => c.name === name));
+    const required = input.requiredChecks.includes(name);
     if (typeof v === "object") refused.push(`check ${name}: ${v.red}`);
     else if (v === "running") pending.push(`check ${name} is still running`);
+    else if (v === "none-cancelled" && !required) refused.push(`check ${name}: cancelled`);
+    else if (v !== "good" && required) pending.push(`required check ${name} has not run on this head (only ${v === "none-cancelled" ? "cancelled" : "skipped"} runs so far)`);
   }
   for (const name of input.requiredChecks) if (!names.includes(name)) pending.push(`required check ${name} has not appeared yet`);
 

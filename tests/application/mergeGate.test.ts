@@ -9,7 +9,7 @@ const config: MergeGateConfig = { enabled: true, requiredChecks: ["checks", "git
 type World = {
   pull?: Record<string, unknown>;
   files?: ({ filename: string; previous_filename?: string } | string)[];
-  checks?: { name: string; status: string; conclusion: string | null; id?: number }[];
+  checks?: { name: string; status: string; conclusion: string | null }[];
   reviews?: { user: { login: string }; body: string; commit_id: string }[];
   comments?: { user: { login: string }; body: string; created_at?: string; updated_at?: string }[];
   mergeFails?: Error;
@@ -64,15 +64,21 @@ describe("runMergeGate", () => {
   test("real shape: GitHub returns a cancelled and a skipped `checks` run next to the green one, and the PR merges", async () => {
     const g = github({
       checks: [
-        { id: 11, name: "checks", status: "completed", conclusion: "success" },
-        { id: 12, name: "gitleaks", status: "completed", conclusion: "success" },
-        { id: 7, name: "checks", status: "completed", conclusion: "cancelled" },
-        { id: 8, name: "gitleaks", status: "completed", conclusion: "success" },
-        { id: 3, name: "checks", status: "completed", conclusion: "skipped" },
-        { id: 4, name: "gitleaks", status: "completed", conclusion: "success" },
+        { name: "checks", status: "completed", conclusion: "success" },
+        { name: "gitleaks", status: "completed", conclusion: "success" },
+        { name: "checks", status: "completed", conclusion: "cancelled" },
+        { name: "gitleaks", status: "completed", conclusion: "success" },
+        { name: "checks", status: "completed", conclusion: "skipped" },
+        { name: "gitleaks", status: "completed", conclusion: "success" },
       ],
     });
     expect(await runMergeGate(config, g.request, "o/r", 9, SHA)).toMatchObject({ decision: "merged" });
+  });
+
+  test("real shape of a head with no pull_request run yet: `checks` only skipped (push run) -> pending, never merged", async () => {
+    const g = github({ checks: [{ name: "checks", status: "completed", conclusion: "skipped" }, { name: "gitleaks", status: "completed", conclusion: "success" }] });
+    expect(await runMergeGate(config, g.request, "o/r", 9, SHA)).toMatchObject({ decision: "pending" });
+    expect(g.calls.some((c) => c.startsWith("PUT"))).toBe(false);
   });
 
   test("checks still running -> pending", async () => {

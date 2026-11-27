@@ -66,30 +66,42 @@ describe("evaluateGate", () => {
 
   test("a red or cancelled check is refused, even a non-required one", () => {
     refusedWith(base({ checks: [...base().checks, { name: "other", status: "completed", conclusion: "failure" }] }), "other: failure");
-    refusedWith(base({ checks: [{ name: "checks", status: "completed", conclusion: "cancelled" }, base().checks[1]!] }), "checks: cancelled");
+    expect(evaluateGate(base({ checks: [{ name: "checks", status: "completed", conclusion: "cancelled" }, base().checks[1]!] })).decision).toBe("pending");
   });
 
-  test("a superseded cancelled run next to a green one does not make the check red (CI cancels on every new push)", () => {
-    const run = (id: number, status: string, conclusion: string | null) => ({ name: "checks", status, conclusion, id });
-    const gl = { name: "gitleaks", status: "completed", conclusion: "success", id: 9 };
-    // the very shape this PR's head returned from GitHub: success, cancelled, skipped for `checks`
-    expect(evaluateGate(base({ checks: [run(1, "completed", "success"), run(2, "completed", "cancelled"), run(3, "completed", "skipped"), gl] })).decision).toBe("merge");
-    expect(evaluateGate(base({ checks: [run(2, "completed", "cancelled"), run(5, "completed", "success"), gl] })).decision).toBe("merge");
+  test("a superseded cancelled run and a push-skipped run next to the green one do not make the check red (the shape real heads have)", () => {
+    const run = (status: string, conclusion: string | null) => ({ name: "checks", status, conclusion });
+    const gl = { name: "gitleaks", status: "completed", conclusion: "success" };
+    expect(evaluateGate(base({ checks: [run("completed", "success"), run("completed", "cancelled"), run("completed", "skipped"), gl] })).decision).toBe("merge");
   });
 
-  test("only cancelled runs is red, a later failure after a success is red, a later running rerun waits, only skipped is fine", () => {
-    const run = (id: number, status: string, conclusion: string | null) => ({ name: "checks", status, conclusion, id });
-    const gl = { name: "gitleaks", status: "completed", conclusion: "success", id: 9 };
-    refusedWith(base({ checks: [run(1, "completed", "cancelled"), gl] }), "checks: cancelled");
-    refusedWith(base({ checks: [run(1, "completed", "success"), run(2, "completed", "failure"), gl] }), "checks: failure");
-    expect(evaluateGate(base({ checks: [run(1, "completed", "success"), run(2, "in_progress", null), gl] })).decision).toBe("pending");
-    expect(evaluateGate(base({ checks: [run(1, "completed", "skipped"), gl] })).decision).toBe("merge");
+  test("a required check with only skipped or only cancelled runs has not run: pending, never merge (a push-only `checks` run skips by its own `if:`)", () => {
+    const gl = { name: "gitleaks", status: "completed", conclusion: "success" };
+    for (const conclusion of ["skipped", "cancelled"]) {
+      const d = evaluateGate(base({ checks: [{ name: "checks", status: "completed", conclusion }, gl] }));
+      expect(d.decision).toBe("pending");
+      expect("reasons" in d && d.reasons.join()).toContain("has not run on this head");
+    }
   });
 
-  test("a required check missing or still running waits; skipped and neutral count as green", () => {
+  test("a non-required name with only skipped runs is fine, only cancelled is red", () => {
+    const ok = [...base().checks];
+    expect(evaluateGate(base({ checks: [...ok, { name: "extra", status: "completed", conclusion: "skipped" }] })).decision).toBe("merge");
+    refusedWith(base({ checks: [...ok, { name: "extra", status: "completed", conclusion: "cancelled" }] }), "extra: cancelled");
+  });
+
+  test("a red run is never hidden by a later green one of the same name (a second producer could post it); a running one waits", () => {
+    const gl = { name: "gitleaks", status: "completed", conclusion: "success" };
+    refusedWith(base({ checks: [{ name: "checks", status: "completed", conclusion: "failure" }, { name: "checks", status: "completed", conclusion: "success" }, gl] }), "checks: failure");
+    refusedWith(base({ checks: [{ name: "checks", status: "completed", conclusion: "success" }, { name: "checks", status: "completed", conclusion: "failure" }, gl] }), "checks: failure");
+    expect(evaluateGate(base({ checks: [{ name: "checks", status: "completed", conclusion: "success" }, { name: "checks", status: "in_progress", conclusion: null }, gl] })).decision).toBe("pending");
+  });
+
+  test("a required check missing or still running waits; neutral counts as green, skipped alone does not", () => {
     expect(evaluateGate(base({ checks: [base().checks[0]!] })).decision).toBe("pending");
     expect(evaluateGate(base({ checks: [{ name: "checks", status: "in_progress", conclusion: null }, base().checks[1]!] })).decision).toBe("pending");
-    expect(evaluateGate(base({ checks: [{ name: "checks", status: "completed", conclusion: "neutral" }, { name: "gitleaks", status: "completed", conclusion: "skipped" }] })).decision).toBe("merge");
+    expect(evaluateGate(base({ checks: [{ name: "checks", status: "completed", conclusion: "neutral" }, { name: "gitleaks", status: "completed", conclusion: "success" }] })).decision).toBe("merge");
+    expect(evaluateGate(base({ checks: [{ name: "checks", status: "completed", conclusion: "success" }, { name: "gitleaks", status: "completed", conclusion: "skipped" }] })).decision).toBe("pending");
   });
 
   test("a PR with no files is refused", () => {
