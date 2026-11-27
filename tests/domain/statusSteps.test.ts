@@ -10,6 +10,7 @@ import {
   STATUS_TITLE_CHARS,
   finalStatus,
   renderStatus,
+  scrubStatusText,
   taskTitle,
   type StatusStep,
 } from "../../src/domain/statusSteps.ts";
@@ -401,5 +402,43 @@ describe("card content", () => {
       expect(JSON.stringify(v?.blocks).length).toBeLessThan(40_000);
       expect(v?.blocks.some((b) => b.type === "plan")).toBe(false);
     }
+  });
+});
+
+describe("the secret scrub stays linear on a long run", () => {
+  const timed = (text: string): number => {
+    const t = performance.now();
+    scrubStatusText(text);
+    return performance.now() - t;
+  };
+
+  test("a 100k-char word run, a dotted one and a keyword-dense one scrub in well under 100ms", () => {
+    for (const text of ["a".repeat(100_000), "a.".repeat(50_000), "a-".repeat(50_000), "token".repeat(20_000), `${"a".repeat(100_000)}_key`]) {
+      expect(timed(text)).toBeLessThan(100);
+    }
+  });
+
+  test("a secret key at the end of a long run is still redacted, in time", () => {
+    const text = `${"a".repeat(100_000)}_token=hunter2`;
+    const t = performance.now();
+    const out = scrubStatusText(text);
+    expect(performance.now() - t).toBeLessThan(100);
+    expect(out).toBe(`${"a".repeat(100_000)}_token=[redacted]`);
+  });
+
+  test("the redactions are unchanged", () => {
+    const cases: [string, string][] = [
+      ["slack_bot_token=abc123 next", "slack_bot_token=[redacted] next"],
+      ["export OPENAI_API_KEY=sk-test and more", "export OPENAI_API_KEY=[redacted] and more"],
+      [`{"api_key": "abc", "name": "x"}`, `{"api_key": [redacted], "name": "x"}`],
+      ["a=token=x", "a=token=[redacted]"],
+      ["x.session-id: 42, y", "x.session-id: [redacted], y"],
+      ["x\"token\":v", "x\"token\":[redacted]"],
+      ["clone https://user:pw@host/repo", "clone https://[redacted]@host/repo"],
+      ["a.b://u@h and 1.http://u:p@h", "a.b://[redacted]@h and 1.http://[redacted]@h"],
+      ["no keyword here=1", "no keyword here=1"],
+      ["login --password hunter2 now", "login --password [redacted] now"],
+    ];
+    for (const [input, expected] of cases) expect(scrubStatusText(input)).toBe(expected);
   });
 });
