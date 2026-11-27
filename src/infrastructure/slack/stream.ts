@@ -456,6 +456,9 @@ export const createSlackStream = (
       title: event.title,
       state: event.status,
       ...(pointer?.[1] ? { logLine: pointer[1] } : {}),
+      ...(event.detail ? { detail: event.detail } : {}),
+      ...(event.target || event.command ? { command: event.target ?? event.command } : {}),
+      ...(event.output ? { output: event.output } : {}),
     });
   };
 
@@ -468,7 +471,17 @@ export const createSlackStream = (
    * and an MCP call's title is only the tool name, so grouping on it merged
    * five different SQL queries into one line that showed just the first.
    */
-  type Group = { id: string; title: string; details?: string; count: number; open: number; failed: boolean };
+  type Group = {
+    id: string;
+    title: string;
+    details?: string;
+    detail?: string;
+    target?: string;
+    command?: string;
+    count: number;
+    open: number;
+    failed: boolean;
+  };
   const groups = new Map<string, Group>();
   const groupOf = new Map<string, Group>();
   /**
@@ -478,12 +491,16 @@ export const createSlackStream = (
    */
   let usage: LlmUsage | undefined;
   const runsLabel = (title: string, count: number): string => `${title} (${count} runs)`;
-  const groupStep = (g: Group, state: "in_progress" | "complete" | "error"): LlmStreamEvent => ({
+  const groupStep = (g: Group, state: "in_progress" | "complete" | "error", output?: string): LlmStreamEvent => ({
     type: "tool",
     id: g.id,
     title: runsLabel(g.title, g.count),
     status: state,
     ...(g.details ? { details: g.details } : {}),
+    ...(g.detail ? { detail: g.detail } : {}),
+    ...(g.target ? { target: g.target } : {}),
+    ...(g.command ? { command: g.command } : {}),
+    ...(output ? { output } : {}),
   });
 
   /** The event to show for a tool step, or undefined when its group's line already covers it. */
@@ -494,7 +511,17 @@ export const createSlackStream = (
       const key = event.command ?? event.title;
       const g = groups.get(key);
       if (!g) {
-        const fresh = { id: event.id, title: event.title, details: event.details, count: 1, open: 1, failed: false };
+        const fresh = {
+          id: event.id,
+          title: event.title,
+          details: event.details,
+          detail: event.detail,
+          target: event.target,
+          command: event.command,
+          count: 1,
+          open: 1,
+          failed: false,
+        };
         groups.set(key, fresh);
         groupOf.set(event.id, fresh);
         return event;
@@ -510,7 +537,7 @@ export const createSlackStream = (
     g.failed ||= event.status === "error";
     if (g.count === 1) return event;
     if (g.open > 0) return undefined;
-    return groupStep(g, g.failed ? "error" : "complete");
+    return groupStep(g, g.failed ? "error" : "complete", event.output);
   };
 
   let holding = options.holdUntilWorking === true;

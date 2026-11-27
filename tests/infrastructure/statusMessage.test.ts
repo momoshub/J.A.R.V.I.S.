@@ -10,8 +10,12 @@ const fake = (opts: { failures?: (call: number, op: string) => unknown } = {}) =
   const t0 = Date.now();
   let n = 0;
   const textOf = (v: StatusView): string => {
-    const [head, ...cards] = v.blocks as unknown as [{ elements: { text: string }[] }, ...{ status: string; title: string }[]];
-    return [head.elements[0]?.text ?? "", ...cards.map((t) => `${t.status}: ${t.title}`)].join("\n");
+    // the header is the first task card, the count is the context line last
+    const [head, ...cards] = v.blocks as unknown as { type: string; status: string; title: string; elements?: { text: string }[] }[];
+    return [
+      head?.title ?? "",
+      ...cards.map((t) => (t.type === "context" ? (t.elements?.[0]?.text ?? "") : `${t.status}: ${t.title}`)),
+    ].join("\n");
   };
   const hit = (op: Call["op"], ts: string | undefined, text: string): void => {
     const failure = opts.failures?.(++n, op);
@@ -45,7 +49,7 @@ describe("the status message while the turn runs", () => {
     m.step({ id: "a", title: "Reading a file", state: "complete" });
     await Bun.sleep(80);
     expect(f.calls.map((c) => c.op)).toEqual(["post", "update"]);
-    expect(f.calls[1]?.text).toBe("Burning token… 1 step\ncomplete: Reading a file");
+    expect(f.calls[1]?.text).toBe("Burning token…\ncomplete: Reading a file\n1 step");
     await m.end();
     await m.idle();
   });
@@ -66,6 +70,17 @@ describe("the status message while the turn runs", () => {
     for (let i = 1; i < f.calls.length; i++) expect((f.calls[i]?.at ?? 0) - (f.calls[i - 1]?.at ?? 0)).toBeGreaterThanOrEqual(45);
     await m.end();
     await m.idle();
+  });
+
+  test("the header card's title is the label given (the dashboard thinking label), in the running and the final message", async () => {
+    const f = fake();
+    const m = createStatusMessage({ api: f.api, ...FAST, label: () => "Cooking…" });
+    m.step({ id: "a", title: "A", state: "error" });
+    await Bun.sleep(15);
+    expect(f.calls[0]?.text).toBe("Cooking…\nerror: A\n1 step");
+    await m.end();
+    await m.idle();
+    expect(f.calls.at(-1)?.text).toBe("Cooking…\nerror: A\n🔧 1 steps, 1 failed");
   });
 
   test("a finishing update keeps the log line the step started with, and the step its place", async () => {
@@ -97,7 +112,7 @@ describe("the status message while the turn runs", () => {
     m.step({ id: "a", title: "A", state: "complete" });
     await Bun.sleep(200);
     expect(limited).toBe(2);
-    expect(f.calls.filter((c) => c.op === "update").at(-1)?.text).toBe("Burning token… 1 step\ncomplete: A");
+    expect(f.calls.filter((c) => c.op === "update").at(-1)?.text).toBe("Burning token…\ncomplete: A\n1 step");
     await m.end();
     await m.idle();
   });
@@ -126,7 +141,7 @@ describe("the status message while the turn runs", () => {
     expect(f.calls[0]).toMatchObject({ op: "post", text: "Burning token…\nin_progress: working on it..." });
     m.step({ id: "a", title: "A", state: "in_progress" });
     await Bun.sleep(80);
-    expect(f.calls.at(-1)).toMatchObject({ op: "update", text: "Burning token… 1 step\nin_progress: A" });
+    expect(f.calls.at(-1)).toMatchObject({ op: "update", text: "Burning token…\nin_progress: A\n1 step" });
     await m.end();
     await m.idle();
   });
@@ -188,7 +203,7 @@ describe("the status message when the turn ends", () => {
     await m.idle();
     await Bun.sleep(60);
     expect(f.calls.some((c) => c.op === "remove")).toBe(false);
-    expect(f.calls.at(-1)).toMatchObject({ op: "update", ts: "100.1", text: "🔧 3 steps, 1 failed\nerror: Run: gh pr view" });
+    expect(f.calls.at(-1)).toMatchObject({ op: "update", ts: "100.1", text: "Burning token…\nerror: Run: gh pr view\n🔧 3 steps, 1 failed" });
     expect(f.store.removed).toEqual(["100.1"]);
   });
 
@@ -201,7 +216,7 @@ describe("the status message when the turn ends", () => {
     await m.end();
     await m.idle();
     expect(f.calls.map((c) => c.op)).toEqual(["post"]);
-    expect(f.calls[0]?.text).toBe("🔧 2 steps, 1 failed\nerror: B");
+    expect(f.calls[0]?.text).toBe("Burning token…\nerror: B\n🔧 2 steps, 1 failed");
   });
 
   test("nothing shown, nothing posted", async () => {
@@ -224,7 +239,7 @@ describe("the status message when the turn ends", () => {
     m.step({ id: "b", title: "B", state: "error" });
     await m.end();
     await m.idle();
-    expect(f.calls.at(-1)).toMatchObject({ op: "update", text: "🔧 2 steps, 1 failed\nerror: B" });
+    expect(f.calls.at(-1)).toMatchObject({ op: "update", text: "Burning token…\nerror: B\n🔧 2 steps, 1 failed" });
     expect(f.store.removed).toEqual(["100.1"]);
   });
 

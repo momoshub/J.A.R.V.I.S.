@@ -330,17 +330,37 @@ const touchesMemory = (name: string, input: Record<string, unknown>): boolean =>
     ? /\/api\/learnings\b/i.test(str(input.command))
     : /\/memory\//.test(str(input.file_path)) && ["Read", "Edit", "MultiEdit", "Write"].includes(name);
 
+/** What a non-Bash step touched, for its status card: a path, a pattern or query, a url. Never the model's free text. */
+const stepTarget = (name: string, input: Record<string, unknown>): string | undefined => {
+  const pick = (...keys: string[]): string =>
+    keys
+      .map((k) => str(input[k]).trim())
+      .filter(Boolean)
+      .join(" ");
+  const found =
+    name === "Read" || name === "Edit" || name === "Write" || name === "NotebookEdit"
+      ? pick("file_path", "notebook_path")
+      : name === "Grep" || name === "Glob"
+        ? pick("pattern", "path")
+        : name === "WebFetch"
+          ? pick("url")
+          : name === "WebSearch"
+            ? pick("query")
+            : "";
+  return found ? found.slice(0, 1000) : undefined;
+};
+
 /**
  * Turn a tool_use name + accumulated input JSON into a card: a title in the
  * shape `<Name>: <emoji> <what>` that says the step in plain English, and
  * `details` that says where the full record is (`log at: <file> - line <n>`,
- * the per-thread trace, when the sink reported one). The command, path or query
- * behind a step is never shown.
+ * the per-thread trace, when the sink reported one). The title never carries the command; the status card
+ * shows it (and `target`, `detail`) after `scrubStatusText` - see domain/statusSteps.ts.
  *
  * Names: Run (Bash), Agent (background, the default), FAgent (foreground), WAgent (an Orca worker or
  * a Workflow agent), Memory, Skill, MCP, and Tool for every other built-in.
  *
- * `command` carries the Bash command in full: it is never shown, but consumers
+ * `command` carries the Bash command in full: never in the title, but consumers
  * that match on what ran (the review command's progress lines, the stream's
  * grouping and hidden-action check) need the whole thing - a `gh pr review` can
  * sit past 200 chars, after a heredoc body.
@@ -349,7 +369,7 @@ export const summarizeTool = (
   name: string,
   jsonStr: string,
   spot?: TraceSpot,
-): { title: string; details?: string; command?: string } => {
+): { title: string; details?: string; command?: string; detail?: string; target?: string } => {
   let input: Record<string, unknown> = {};
   try {
     input = jsonStr ? (JSON.parse(jsonStr) as Record<string, unknown>) : {};
@@ -381,10 +401,13 @@ export const summarizeTool = (
     const [emoji, what] = TOOL_STEPS[name] ?? ["🔧", `Using ${name}`];
     label = `Tool: ${emoji} ${what}`;
   }
+  const target = stepTarget(name, input);
   return {
     title: truncate(label, 200),
     ...(spot ? { details: `log at: ${spot.file} - line ${spot.line}` } : {}),
     ...(command !== undefined ? { command } : {}),
+    ...(described ? { detail: described } : {}),
+    ...(target ? { target } : {}),
   };
 };
 
@@ -818,7 +841,7 @@ export const createClaudeCliLlm = (config: ClaudeCliConfig = {}): LlmPort => {
 
     // index -> in-flight tool_use block; id -> resolved card, replayed on the result.
     const toolByIndex = new Map<number, { id: string; name: string; json: string }>();
-    const cardById = new Map<string, { title: string; command?: string }>();
+    const cardById = new Map<string, { title: string; command?: string; detail?: string; target?: string }>();
     let finalText = "";
     let lastResult = "";
     let streamedText = "";
@@ -936,9 +959,18 @@ export const createClaudeCliLlm = (config: ClaudeCliConfig = {}): LlmPort => {
             }
           }
           if (tb && !isNoiseTool(tb.name)) {
-            const { title, details, command } = summarizeTool(tb.name, tb.json, spot);
-            cardById.set(tb.id, { title, command });
-            emit({ type: "tool", id: tb.id, title, details, command, status: "in_progress" });
+            const { title, details, command, detail, target } = summarizeTool(tb.name, tb.json, spot);
+            cardById.set(tb.id, { title, command, detail, target });
+            emit({
+              type: "tool",
+              id: tb.id,
+              title,
+              details,
+              command,
+              ...(detail ? { detail } : {}),
+              ...(target ? { target } : {}),
+              status: "in_progress",
+            });
           }
         }
       } else if (e.type === "assistant" && typeof e.parent_tool_use_id === "string") {
@@ -971,11 +1003,16 @@ export const createClaudeCliLlm = (config: ClaudeCliConfig = {}): LlmPort => {
             // subagent's own step. Closing it anyway drew a bare "tool" card.
             const card = cardById.get(c.tool_use_id);
             if (!card) continue;
+            // Kept short: the status card clips and scrubs it again (the full output is in the tool log when a trace sink is wired).
+            const output = toolOutput(c.content).trim().slice(0, 2000);
             emit({
               type: "tool",
               id: c.tool_use_id,
               title: card.title,
               command: card.command,
+              ...(card.detail ? { detail: card.detail } : {}),
+              ...(card.target ? { target: card.target } : {}),
+              ...(output ? { output } : {}),
               status: c.is_error ? "error" : "complete",
             });
           }

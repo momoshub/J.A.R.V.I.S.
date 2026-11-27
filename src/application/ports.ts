@@ -24,6 +24,12 @@ export type LlmStreamEvent =
        * spotting `gh pr review` at the end of a heredoc - must use this.
        */
       readonly command?: string;
+      /** The tool's own one-line description of the step (unclipped; the status card scrubs and clips). */
+      readonly detail?: string;
+      /** What the step touched: a file path, a search pattern or query, a url (Bash has `command`). */
+      readonly target?: string;
+      /** What the result said, or the error; set on the finishing event only. */
+      readonly output?: string;
       readonly status: "in_progress" | "complete" | "error";
     }
   /**

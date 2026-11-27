@@ -585,6 +585,36 @@ describe("createClaudeCliLlm", () => {
     expect(out.command).toBe("ls -la");
   });
 
+  test("summarizeTool hands the status card the description and what the step touched", () => {
+    const bash = summarizeTool("Bash", '{"command":"cd x && cat a","description":"Read the linked thread"}');
+    expect(bash.detail).toBe("Read the linked thread");
+    expect(bash.target).toBeUndefined();
+    expect(summarizeTool("Read", '{"file_path":"/a/b.ts"}').target).toBe("/a/b.ts");
+    expect(summarizeTool("Grep", '{"pattern":"foo","path":"src"}').target).toBe("foo src");
+    expect(summarizeTool("WebFetch", '{"url":"https://x.test/p"}').target).toBe("https://x.test/p");
+    expect(summarizeTool("WebSearch", '{"query":"bun test"}').target).toBe("bun test");
+    expect(summarizeTool("Read", "{}").target).toBeUndefined();
+  });
+
+  test("the finishing tool event carries the result, the opening one does not", async () => {
+    const se = (event: unknown) => ({ type: "stream_event", event });
+    const events = [
+      se({ type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "t1", name: "Read" } }),
+      se({ type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"file_path":"/a/b.ts"}' } }),
+      se({ type: "content_block_stop", index: 0 }),
+      { type: "user", message: { content: [{ type: "tool_result", tool_use_id: "t1", is_error: true, content: "ENOENT: no such file" }] } },
+    ];
+    const llm = createClaudeCliLlm({ binPath: fakeStreamBin(events) });
+    const tools: { status: string; target?: string; output?: string }[] = [];
+    await llm.stream!({ system: "s", messages: [{ role: "user", content: "hi" }] }, (e) => {
+      if (e.type === "tool") tools.push({ status: e.status, target: e.target, output: e.output });
+    });
+    expect(tools).toEqual([
+      { status: "in_progress", target: "/a/b.ts", output: undefined },
+      { status: "error", target: "/a/b.ts", output: "ENOENT: no such file" },
+    ]);
+  });
+
   test("summarizeTool does not fall back to the raw command without a description", () => {
     const out = summarizeTool("Bash", '{"command":"curl -H secret https://x"}');
     expect(out.title).toBe("Run: 🏃 Calling a URL");
@@ -704,7 +734,7 @@ describe("createClaudeCliLlm", () => {
   });
 
   test("summarizeTool names each kind of step", () => {
-    expect(summarizeTool("Read", '{"file_path":"/x"}')).toEqual({ title: "Tool: 📖 Reading a file" });
+    expect(summarizeTool("Read", '{"file_path":"/x"}')).toEqual({ title: "Tool: 📖 Reading a file", target: "/x" });
     expect(summarizeTool("Edit", '{"file_path":"/x"}').title).toBe("Tool: ✏️ Editing a file");
     expect(summarizeTool("WebSearch", '{"query":"q"}').title).toBe("Tool: 🌐 Searching the web");
     expect(summarizeTool("Agent", '{"description":"Review the diff","prompt":"p"}').title).toBe("Agent: 🧩 Review the diff");

@@ -41,6 +41,8 @@ export type StatusMessageOptions = {
   minIntervalMs?: number;
   /** How long a clean turn's message stays after the turn ends. */
   deleteDelayMs?: number;
+  /** The header card's title: the dashboard's thinking label. Empty or absent falls back to `STATUS_LABEL`. */
+  label?: () => string;
   /** Retries after a failed send. The final write gets `FINAL_RETRIES`. */
   retries?: number;
 };
@@ -115,7 +117,7 @@ export const createStatusMessage = (opts: StatusMessageOptions): StatusMessage =
   let endPromise: Promise<void> | undefined;
   let pendingDelete: Promise<void> = Promise.resolve();
 
-  const view = (): StatusView => renderStatus([...steps.values()], thinkingLabel);
+  const view = (): StatusView => renderStatus([...steps.values()], thinkingLabel, opts.label?.());
   /** Nothing worth a message yet: no step and no placeholder. */
   const empty = (): boolean => steps.size === 0 && !thinkingLabel;
 
@@ -239,7 +241,7 @@ export const createStatusMessage = (opts: StatusMessageOptions): StatusMessage =
     endPromise ??= (async () => {
       await settleChain();
       // A turn whose reply was dropped has nothing to explain its failures: they go too.
-      const final = endOpts.discard ? undefined : finalStatus([...steps.values()]);
+      const final = endOpts.discard ? undefined : finalStatus([...steps.values()], opts.label?.());
       if (!final) {
         // Nothing failed. If it was ever posted it goes after a short wait.
         const at = ts;
