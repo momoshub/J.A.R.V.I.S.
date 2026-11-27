@@ -89,6 +89,17 @@ describe("bin/verify-brief.ts", () => {
     expect(run("agent", "--available", "claude,codex").out).toContain("VERIFIER_AGENT='codex'");
   });
 
+  test("check refuses a file that is not a brief, but takes a docs-only brief with no items", () => {
+    const notBrief = join(dir, "nb.md");
+    const docs = join(dir, "docs.md");
+    const comment = join(dir, "c.md");
+    writeFileSync(notBrief, "hello\n");
+    writeFileSync(docs, "REQUIRED_ITEMS: (none)\n");
+    writeFileSync(comment, "VERDICT: verified\n");
+    expect(run("check", "--brief", notBrief, "--comment", comment).code).toBe(1);
+    expect(run("check", "--brief", docs, "--comment", comment).code).toBe(0);
+  });
+
   test("no arguments is a usage error, an explicit help is not", () => {
     const none = run();
     expect(none.code).toBe(2);

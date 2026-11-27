@@ -388,10 +388,11 @@ export const buildBrief = (input: BriefInput): string => {
   return `${out.join("\n\n")}\n`;
 };
 
-/** Item ids a brief requires, read back from its `REQUIRED_ITEMS:` line. */
-export const requiredItemsOf = (brief: string): readonly string[] => {
+/** Item ids a brief requires, read back from its `REQUIRED_ITEMS:` line; `undefined` when the text has no such line (not a brief). */
+export const requiredItemsOf = (brief: string): readonly string[] | undefined => {
   const line = brief.split("\n").find((l) => l.startsWith(REQUIRED_PREFIX));
-  const rest = line?.slice(REQUIRED_PREFIX.length).trim() ?? "";
+  if (line === undefined) return undefined;
+  const rest = line.slice(REQUIRED_PREFIX.length).trim();
   return rest && rest !== "(none)" ? rest.split(",").map((s) => s.trim()).filter(Boolean) : [];
 };
 
@@ -515,6 +516,7 @@ export const parseVerifyBriefArgs = (argv: readonly string[]): VerifyBriefArgs =
     known(["--pr", "--base", "--head", "--repo", "--out", "--no-gh", "--agent-note"]);
     const pr = flags.get("--pr");
     if (pr !== undefined && !/^\d+$/.test(pr)) throw new Error("--pr takes a number");
+    if (pr !== undefined && (flags.has("--base") || flags.has("--head"))) throw new Error("--pr takes the head and base from GitHub: drop --base / --head");
     for (const f of ["--base", "--head"]) if (flags.get(f)?.startsWith("-")) throw new Error(`${f} takes a ref, not an option`);
     return {
       cmd,

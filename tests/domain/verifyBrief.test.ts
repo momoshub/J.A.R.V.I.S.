@@ -137,6 +137,7 @@ describe("buildBrief", () => {
   test("a docs-only diff has no required items and says what to grep", () => {
     const a = buildBrief({ ...base, paths: ["README.md"] });
     expect(requiredItemsOf(a)).toEqual([]);
+    expect(requiredItemsOf("no such line")).toBeUndefined();
     expect(a).toContain("Docs-only");
   });
 
@@ -233,6 +234,7 @@ describe("parseVerifyBriefArgs", () => {
     expect(() => parseVerifyBriefArgs(["brief", "--nope", "1"])).toThrow();
     expect(() => parseVerifyBriefArgs(["brief", "--base", "--output=x"])).toThrow();
     expect(() => parseVerifyBriefArgs(["brief", "--head", "-x"])).toThrow();
+    expect(() => parseVerifyBriefArgs(["brief", "--pr", "7", "--base", "main"])).toThrow();
     expect(() => parseVerifyBriefArgs(["check", "--brief", "a"])).toThrow();
     expect(() => parseVerifyBriefArgs(["frob"])).toThrow();
     expect(() => parseVerifyBriefArgs([])).toThrow();

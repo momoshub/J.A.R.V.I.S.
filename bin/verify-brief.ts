@@ -26,6 +26,7 @@ import {
   parseVerifyBriefArgs,
   pickVerifierAgent,
   prNumberOf,
+  REQUIRED_PREFIX,
   requiredItemsOf,
   reviewBlockers,
   VERIFY_BRIEF_USAGE,
@@ -67,6 +68,7 @@ if (args.cmd === "help") {
   console.log(agentAssignments(pick));
 } else if (args.cmd === "check") {
   const required = requiredItemsOf(readFileSync(args.brief, "utf8"));
+  if (required === undefined) fail(`${args.brief} has no ${REQUIRED_PREFIX} line: not a brief from this script`);
   const res = checkVerdict(required, readFileSync(args.comment, "utf8"));
   console.log(`verdict: ${res.verdict}; exercised: ${res.exercised.join(",") || "-"}; missing: ${res.missing.join(",") || "-"}`);
   process.exit(res.ok ? 0 : 1);
