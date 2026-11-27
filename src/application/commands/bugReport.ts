@@ -83,9 +83,10 @@ export const BUG_REPORT_COMMANDS: readonly CommandDef[] = [
       if (route.route === "approve") {
         // The owner may have pressed Reject in the instant since the notice went out: then it is decided already, and that is what is said.
         if (!repo.decide(b.id, "approved", now, "coordinator")) return `Bug #${b.id} was already decided (${repo.get(b.id)?.state ?? "gone"}) before it could be approved. Do not fix it.`;
-        // Not awaited: the fix runs for as long as it runs, in the notice's thread, as the owner, exactly as the press would start it.
+        // Not awaited: the fix runs for as long as it runs, in the notice's thread, as the owner, as the press would start it. Marked `unprompted`:
+        // the brief is built from a report's words, so the turn has no owner bit and a report it files itself goes to the owner's buttons.
         void Promise.resolve(
-          deps.runTurn?.({ channelId: notice.channel, threadTs: notice.ts, slackUserId: deps.ownerSlackId, text: approvedByCoordinatorBrief(b.id, input, route.reason) }),
+          deps.runTurn?.({ channelId: notice.channel, threadTs: notice.ts, slackUserId: deps.ownerSlackId, text: approvedByCoordinatorBrief(b.id, input, route.reason), unprompted: true }),
         ).catch(logAndIgnore("bug report fix turn"));
         void deps.coordinator?.act(`bug #${b.id} approved by me: ${route.reason}`).catch(logAndIgnore("bug report digest"));
         return `Bug #${b.id} approved by the coordinator (${route.reason}): the fix turn is starting in the owner's DM and the owner can still reject it. Tell the person in one line that the owner was told and the coordinator approved it. Do not fix it in this turn.`;

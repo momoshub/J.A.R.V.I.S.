@@ -392,7 +392,7 @@ export type InboundMessage = {
 };
 
 /** The message was typed by the person it is from: not started by the bot (`trigger`, `unprompted`, `autoContinue`), not a followed thread's chatter. */
-export const typedByPerson = (m: InboundMessage): boolean => !m.trigger && !m.unprompted && !m.autoContinue && !m.following && !m.batched;
+export const typedByPerson = (m: InboundMessage): boolean => !m.trigger && !m.unprompted && !m.autoContinue && !m.composed && !m.following && !m.batched;
 
 /**
  * The turn runs on words that `actor` typed themselves, followed thread or not. `typedByPerson` is false for a followed thread's

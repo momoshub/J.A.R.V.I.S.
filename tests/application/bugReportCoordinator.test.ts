@@ -54,6 +54,8 @@ describe("bug-report: the coordinator approves the owner's own ask", () => {
     expect(turns[0]).toMatchObject({ channelId: OWNER, threadTs: "notice-1", slackUserId: OWNER });
     expect(turns[0]!.text.startsWith("Bug #1 is approved by the coordinator")).toBe(true);
     expect(turns[0]!.text).toContain("dedupe on message ts");
+    // The brief is built from a report's words: its turn is marked so it carries no owner bit and can never file a self-approving report.
+    expect(turns[0]).toMatchObject({ unprompted: true });
     expect(acts[0]).toContain("bug #1 approved by me");
   });
 

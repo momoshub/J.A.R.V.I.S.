@@ -242,7 +242,7 @@ no classes.
   bot's own source filed from the owner's own conversation; everything else, and
   every report from someone else's conversation, still waits for the owner's
   buttons, and the owner can Reject what the coordinator approved. Nothing a
-  non-owner writes can cause an approval. Its tick also holds the writer claims:
+  non-owner writes can cause an approval, and the fix and stop turns the bot starts itself from a report's brief carry no owner bit (`unprompted` / `composed`). Its tick also holds the writer claims:
   one writer per job (`bug:<id>`, `journey:<id>`, `branch:<name>`), taken before
   `worker-start`, refused for a second claimant with the holder's dispatch id and
   thread, released when the worker ends or dies, with dead and duplicate ones
