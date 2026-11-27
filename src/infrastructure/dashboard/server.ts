@@ -34,6 +34,7 @@ import { createNameResolver } from "../../application/nameResolver.ts";
 import type { SlackProxy } from "../../application/slackProxy.ts";
 import type { OwnerTickets } from "../../application/ownerTickets.ts";
 import { ignoreQuietly } from "../../application/ignoredError.ts";
+import type { ExecRequest, ExecResult } from "../../application/execProxy.ts";
 
 export type DashboardConfig = {
   port: number;
@@ -119,6 +120,11 @@ export type DashboardDeps = {
    * the ticket resolves to. Returns GitHub's JSON.
    */
   githubAction?: (req: { ticket: string } & Record<string, unknown>) => Promise<Record<string, unknown>>;
+  /**
+   * The exec proxy a sandboxed caller's `gh` and `orca` shims call (`application/execProxy.ts`): the command line
+   * and the caller's bearer in, the real command's output out. Absent means the proxy is not configured.
+   */
+  execProxy?: (req: ExecRequest) => Promise<ExecResult>;
   /**
    * The bot's side of the turn's Slack helpers: a ticketed, allowlisted call to
    * the Slack Web API, and a ticketed download of a private file. The turn never
@@ -508,6 +514,20 @@ export const createDashboard = (config: DashboardConfig, deps: DashboardDeps) =>
           } catch (e) {
             return jsonError(e instanceof Error ? e.message : String(e), 500);
           }
+        }
+        case "/api/proxy/exec": {
+          if (!deps.execProxy) return jsonError("The sandbox proxy is not configured", 503);
+          const argv = Array.isArray(body.argv) ? body.argv : undefined;
+          if (!argv || argv.some((a) => typeof a !== "string") || (body.tool !== "gh" && body.tool !== "orca")) return jsonError("tool (gh|orca) and argv (strings) are required");
+          const answer = await deps.execProxy({
+            bearer: typeof body.bearer === "string" ? body.bearer : "",
+            tool: body.tool,
+            argv: argv as string[],
+            ...(typeof body.stdin === "string" ? { stdin: body.stdin } : {}),
+            ...(typeof body.repoHint === "string" ? { repoHint: body.repoHint } : {}),
+            ...(typeof body.handle === "string" ? { handle: body.handle } : {}),
+          });
+          return answer.ok ? Response.json(answer) : jsonError(answer.error, answer.status);
         }
         case "/api/restart": {
           // Loopback-only like the rest of this API, and deferred by the

@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# `orca` inside the sandbox: the sandbox cannot read Orca's runtime token or reach its
+# socket (through them a process could open an unsandboxed terminal), so the command
+# goes to the bot, which runs the real orca. Only `orca orchestration <verb>` (send,
+# check, reply, ask, worker-start --agent claude, ...) and `orca status` are served;
+# terminals, agents and worktrees are not. See src/domain/proxyPolicy.ts.
+set -uo pipefail
+HERE=$(cd "$(dirname "$0")" && pwd -P)
+# shellcheck source=_proxy.sh
+. "$HERE/_proxy.sh"
+
+rewrite_file_args "$@"
+proxy_exec orca "$STDIN_FILE" ${REWRITTEN[@]+"${REWRITTEN[@]}"}

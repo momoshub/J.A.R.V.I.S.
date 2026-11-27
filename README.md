@@ -988,6 +988,22 @@ the console routes (`/api/slack/post`, ...) with `curl` and act as the bot in an
 channel. Closing those is a separate decision about what a full-access turn may
 read and call.
 
+## Seatbelt
+
+Every turn, every Orca worker and the bot are one macOS user, so a worker's shell could read the GitHub App key and run `gh auth token`. The seatbelt takes those credentials out of reach of anything the bot or Orca *starts*, with no second user and no sudo. It is **off by default**: until you switch it on, nothing changes.
+
+What runs under it is cut off from the keychain, `~/.config/gh`, `~/.config/jarvis` (a worker keeps only its own ticket file), `~/.ssh` and the ssh agent, the cloud credential folders, the Orca runtime token, the bot's `.env` and databases, and from starting anything outside it (`launchctl`, `open`, `osascript`, cron, `at`). It cannot write shell startup files, LaunchAgents, Claude's settings, Orca's profiles or the checkout's `bin/` and hooks. Its `gh`, `orca` and `git` push credential are shims that ask the bot over loopback with the caller's ticket; the bot decides (merge is never available to a worker) and runs the real command.
+
+**Switch it on** (owner, once):
+
+1. `claude setup-token`, then `umask 077; pbpaste > ~/.config/jarvis/sandbox-claude-token` (Claude Code's own login lives in the keychain, which the sandbox denies).
+2. In Orca: Settings, Agents, `claude`, command override: `<checkout>/bin/sandboxed-claude.sh`. This is what wraps every Orca worker, including one a worker starts itself.
+3. In `.env`: `SEATBELT=on`. Restart the bot.
+4. Mint a reviewer's or verifier's ticket with `comment review` so its `gh pr review` is accepted.
+5. Run `bin/sandbox-selftest.sh` (macOS) to see every escape refused. Switch off: `SEATBELT=off` and clear the Orca override.
+
+Limits, honestly: a process outside the sandbox (your own terminal, the host's `gh` login) still holds the credentials; the checkout's shared `.git/config` is writable from a worktree; owner turns lose the claude.ai connectors and desktop control while it is on. The real fix is a separate macOS user for the keys (not built here).
+
 ## Stopping a turn
 
 A chat turn can run for the better part of an hour, so there is a way to end one
@@ -1300,7 +1316,7 @@ is written once to a mode-0600 file in a 0700 folder
 path, to `export` before `bin/github-app.sh` (the helper reads the first line of
 that file; the brain never reads, prints or posts it, and the file is deleted
 when the ticket ends). The ticket works for that one repo and those actions only
-(default `pr-create`, `comment`, `pr-edit` and the app's commit identity; never review, merge or close), cannot
+(default `pr-create`, `comment`, `pr-edit` and the app's commit identity; review only when the mint names it; never merge or close), cannot
 run any command, is checked against the minting person's role on every call,
 expires in 3 hours (max 6) and ends when the worker finishes or dies (the turn's
 `watch worker`), on `worker-ticket revoke`, or at expiry. Tickets are rows in

@@ -49,10 +49,13 @@ export type WorkerGrant = ActionName | typeof COMMIT_IDENTITY;
  */
 export const DEFAULT_WORKER_ACTIONS: readonly WorkerGrant[] = ["pr-create", "comment", "pr-edit", COMMIT_IDENTITY];
 /**
- * The most a worker ticket can ever grant. No review (a worker approving its own
- * PR), no merge, no close/reopen, no label removal: those stay with a turn.
+ * The most a worker ticket can ever grant. `review` is here for a REVIEWER or
+ * VERIFIER worker, whose GitHub review goes through the sandbox proxy (a sandboxed
+ * worker holds no `gh` login of its own): it is never a default, so a writer's
+ * ticket cannot approve its own PR unless whoever minted it said so. No merge, no
+ * close/reopen, no label removal: those stay with a turn.
  */
-export const WORKER_ACTION_CEILING: readonly WorkerGrant[] = [...DEFAULT_WORKER_ACTIONS, "git-auth", "labels-add", "reviewers-request"];
+export const WORKER_ACTION_CEILING: readonly WorkerGrant[] = [...DEFAULT_WORKER_ACTIONS, "git-auth", "labels-add", "reviewers-request", "review"];
 
 /** The brain says `git` / `push`; on the wire both are the `git-auth` action (a push-capable token). */
 const ALIASES: Readonly<Record<string, WorkerGrant>> = { git: "git-auth", push: "git-auth" };

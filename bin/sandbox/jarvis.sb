@@ -1,0 +1,97 @@
+;; Seatbelt profile for every process that acts on a model's behalf (a turn, an
+;; Orca worker). Rendered by bin/sandboxed.sh, which fills in the words between two at-signs
+;; (paths are checked first: no quote or backslash in them) and starts the
+;; command under `sandbox-exec -p`. Evaluation is "last matching rule wins", so
+;; an allow written after a deny carves an exception out of it.
+;;
+;; The idea: the model's shell can do anything a person can, so the profile takes
+;; away every CREDENTIAL (the keychain, gh's login, the App key, the bot's .env and
+;; databases, the Orca runtime token, the SSH agent) and every way to start
+;; something OUTSIDE the sandbox (launchd, LaunchServices, Apple Events, cron/at,
+;; files the host runs on login). What a sandboxed caller still needs from those
+;; credentials goes through the bot's ticketed proxy (bin/sandbox-shims/*).
+;; The file is covered by tests/infrastructure/sandboxProfile.test.ts.
+(version 1)
+(allow default)
+
+;; --- the keychain: `security`, gh's stored token, Claude's own login ---------
+(deny mach-lookup
+  (global-name "com.apple.SecurityServer")
+  (global-name "com.apple.securityd.xpc")
+  (global-name "com.apple.security.agent"))
+
+;; --- starting something outside the sandbox ---------------------------------
+;; launchd (launchctl submit / bootstrap / kickstart), LaunchServices (open,
+;; osascript "tell application", Terminal), Apple Events.
+(deny mach-lookup
+  (global-name-prefix "com.apple.xpc.launchd")
+  (global-name-prefix "com.apple.coreservices")
+  (global-name-prefix "com.apple.lsd"))
+;; Scheduled and one-shot jobs run later, outside the sandbox.
+(deny process-exec
+  (literal "/usr/bin/crontab") (literal "/usr/bin/at") (literal "/usr/bin/atq") (literal "/usr/bin/atrm") (literal "/usr/bin/batch")
+  (literal "/usr/bin/osascript") (literal "/usr/bin/open") (literal "/bin/launchctl") (literal "/usr/bin/security"))
+
+;; --- agents that sign or fetch for the user ---------------------------------
+;; The ssh agent (a launchd Listeners socket or a password manager's agent.sock).
+(deny network-outbound
+  (remote unix-socket (path-regex #"^/(private/)?(var/run|tmp)/com\.apple\.launchd\.[^/]+/Listeners$"))
+  (remote unix-socket (path-regex #"/agent\.sock$"))
+  (remote unix-socket (path-literal "@SSH_AUTH_SOCK@")))
+;; Orca's runtime socket: through it a process can open an unsandboxed terminal and type into it.
+(deny network-outbound
+  (remote unix-socket (path-regex #"/Application Support/orca/[^/]*\.sock$")))
+
+;; --- secrets nobody in the sandbox may read ---------------------------------
+(deny file-read*
+  (subpath "@HOME@/.config/gh")
+  (subpath "@HOME@/.config/jarvis")
+  (subpath "@HOME@/.config/op")
+  (subpath "@HOME@/.ssh")
+  (subpath "@HOME@/.aws")
+  (subpath "@HOME@/.gnupg")
+  (subpath "@HOME@/.kube")
+  (literal "@HOME@/.netrc")
+  (literal "@HOME@/.npmrc")
+  (literal "@HOME@/.docker/config.json")
+  (literal "@HOME@/.claude/.credentials.json")
+  (subpath "@HOME@/Library/Keychains")
+  (subpath "/Library/Keychains")
+  ;; Orca: the runtime token (it is the CLI's only credential), the account store, the device keys.
+  (literal "@HOME@/Library/Application Support/orca/orca-runtime.json")
+  (literal "@HOME@/Library/Application Support/orca/orca-e2ee-keypair.json")
+  (literal "@HOME@/Library/Application Support/orca/agent-session-authority.key")
+  (subpath "@HOME@/Library/Application Support/orca/profiles")
+  (subpath "@HOME@/Library/Application Support/orca/ai-vault")
+  ;; The bot: its .env and its databases (tokens, sessions, command log).
+  (literal "@REPO@/.env")
+  (regex #"^@REPO_RE@/data/[^/]*\.db"))
+;; A worker reads ITS OWN ticket file, named in its brief: the files are `<8 hex>`, the
+;; directory cannot be listed, so another worker's ticket cannot be found.
+(allow file-read*
+  (regex #"^@HOME_RE@/\.config/jarvis/worker-tickets/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]$"))
+(deny file-read-data (literal "@HOME@/.config/jarvis/worker-tickets"))
+
+;; --- things the host runs later, outside the sandbox: no writing them ---------
+(deny file-write*
+  ;; shell startup files (every new terminal, including the owner's)
+  (regex #"^@HOME_RE@/\.(zshrc|zshenv|zprofile|zlogin|zlogout|bashrc|bash_profile|bash_login|profile)[^/]*$")
+  (subpath "@HOME@/.oh-my-zsh")
+  (subpath "@HOME@/.config/zsh")
+  ;; login items and agents
+  (subpath "@HOME@/Library/LaunchAgents")
+  ;; the credentials' own homes (a login added here would be used by the next unsandboxed gh or ssh)
+  (subpath "@HOME@/.config/gh")
+  (subpath "@HOME@/.config/jarvis")
+  (subpath "@HOME@/.ssh")
+  ;; the user's Claude settings: hooks, status line and API key helpers run in the owner's own sessions
+  (literal "@HOME@/.claude/settings.json")
+  (literal "@HOME@/.claude/settings.local.json")
+  (literal "@HOME@/.claude/CLAUDE.md")
+  (subpath "@HOME@/.claude/hooks")
+  ;; Orca's saved settings, where the per-agent launch command (this wrapper) is stored
+  (subpath "@HOME@/Library/Application Support/orca/profiles")
+  ;; the wrapper, this profile and the shims, which run UNsandboxed at the next launch, and git hooks run by the bot
+  (subpath "@REPO@/bin")
+  (subpath "@REPO@/.githooks")
+  (subpath "@REPO@/.git/hooks"))
