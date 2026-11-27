@@ -13,7 +13,7 @@ export const JUEKI_COMMANDS: readonly CommandDef[] = [
     ownHelp: true,
     usage:
       'act "<what I did>" | blocker <key> --kind <permission|prod-write|decision|repeat-failure|other> [--prod] [--incident] [--customer-impact] [--deadline-min N] [--reversible] [--data-write] [--schema-change] [--secret-iam] [--beyond-role] [--owner-decision] "<sentence>" | fixed <key> "<what I did>" | status | help',
-    summary: "Jueki's own housekeeping: digest line, blocker for the owner, prod self-fix report, status",
+    summary: "Jueki's own housekeeping: digest line, blocker (low-risk non-prod ones approved by me, the rest put to the owner), prod self-fix report, status",
     run: async ({ deps, actor, rest, prefix }) => {
       const jueki = deps.jueki;
       if (!jueki) return "Jueki is off right now.";
@@ -27,7 +27,7 @@ export const JUEKI_COMMANDS: readonly CommandDef[] = [
           "*jueki* - the owner's housekeeping coordinator (DM only; state in the database, never in a session)",
           `- \`${prefix} jueki act "<what I did>"\` - one line in today's digest`,
           `- \`${prefix} jueki blocker <key> --kind <permission|prod-write|decision|repeat-failure|other> [--prod] [--incident] [--customer-impact] [--deadline-min N] [--reversible] [--data-write] [--schema-change] [--secret-iam] [--beyond-role] [--owner-decision] "<sentence>"\``,
-          "  routed in code: non-prod is put to the owner once; prod is put again until they act; prod that is urgent (incident, customer impact, or a deadline within 2h) AND low-risk (reversible, no data write, no schema change, no secret or IAM change, within the owner's role) answers `self-fix`. A fact not stated is false, `--reversible` included.",
+          "  routed in code: a non-prod `--kind other` blocker that is low-risk (`--reversible`, no data write, no schema change, no secret or IAM change, inside the owner's role, no owner decision, and no role, permission, auth, ticket, token, secret, approval or prod word in the sentence) is approved by me and answers `approved`; any other non-prod is put to the owner once; prod is put again until they act; prod that is urgent (incident, customer impact, or a deadline within 2h) AND low-risk (reversible, no data write, no schema change, no secret or IAM change, within the owner's role) answers `self-fix`. A fact not stated is false, `--reversible` included.",
           `- \`${prefix} jueki fixed <key> "<what I did>"\` - report a self-fixed prod item: digest line plus one direct DM line`,
           `- \`${prefix} jueki status\``,
         ].join("\n");

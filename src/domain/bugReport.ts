@@ -9,6 +9,7 @@
  * an approve starts the fix, in the notice's thread, as the owner.
  */
 import { cleanLine, tokenize, unwrapLink } from "./journey.ts";
+import { touchesSensitive } from "./lowRisk.ts";
 
 /** Buttons with this prefix are decided in code by their own listener, never a turn for the model. */
 export const BUG_REPORT_ACTION_PREFIX = "jv:bug-report:";
@@ -38,14 +39,52 @@ export type BugReportInput = {
 
 const FLAGS = ["thread", "issue", "summary", "plan"] as const;
 
-/** `--thread <link> --issue "..." --summary "..." --plan "..."`, in any order, `--flag=value` too. */
-export const parseReport = (rest: string): { ok: true; input: BugReportInput } | { ok: false; error: string } => {
+/** What the report's author states about the fix, for `routeBugReport`. A fact not stated is false, and `reversible` must be claimed: silence is never low-risk. */
+export type BugRisk = {
+  readonly reversible: boolean;
+  /** Writes, changes or deletes data. */
+  readonly dataWrite: boolean;
+  readonly schemaChange: boolean;
+  /** A secret, a credential or IAM. */
+  readonly secretOrIam: boolean;
+  /** Roles, permissions, auth, tickets, tokens or the approval code itself. */
+  readonly touchesAccess: boolean;
+  /** Prod data or prod behaviour. */
+  readonly prod: boolean;
+};
+
+/** What `--owner-asked` and the risk flags said; only ever a claim, `routeBugReport` is what decides. */
+export type BugClaims = { readonly ownerAsked: boolean; readonly risk: BugRisk };
+
+const BOOL_FLAGS: Readonly<Record<string, "ownerAsked" | keyof BugRisk>> = {
+  "owner-asked": "ownerAsked",
+  reversible: "reversible",
+  "data-write": "dataWrite",
+  "schema-change": "schemaChange",
+  "secret-iam": "secretOrIam",
+  "touches-access": "touchesAccess",
+  prod: "prod",
+};
+
+/**
+ * `--thread <link> --issue "..." --summary "..." --plan "..."`, in any order, `--flag=value` too, and
+ * the bare facts `--owner-asked --reversible --data-write --schema-change --secret-iam --touches-access --prod`.
+ */
+export const parseReport = (
+  rest: string,
+): { ok: true; input: BugReportInput; claims: BugClaims } | { ok: false; error: string } => {
   const found: Record<string, string> = {};
+  const bools: { -readonly [K in "ownerAsked" | keyof BugRisk]?: boolean } = {};
   const tokens = tokenize(rest);
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i] ?? "";
     const m = /^--([\w-]+)(?:=([\s\S]*))?$/.exec(t);
     const name = m?.[1];
+    const flag = name ? BOOL_FLAGS[name] : undefined;
+    if (m && flag && m[2] === undefined) {
+      bools[flag] = true;
+      continue;
+    }
     if (!name || !(FLAGS as readonly string[]).includes(name)) return { ok: false, error: `I do not know \`${t}\`` };
     const value = m[2] ?? tokens[++i];
     if (value === undefined || value.startsWith("--")) return { ok: false, error: `\`--${name}\` needs a value` };
@@ -57,7 +96,21 @@ export const parseReport = (rest: string): { ok: true; input: BugReportInput } |
   const plan = cleanLine(found.plan ?? "", MAX_PLAN);
   if (!issue) return { ok: false, error: "`--issue` says what is wrong" };
   if (!plan) return { ok: false, error: "`--plan` says how you would fix it" };
-  return { ok: true, input: { thread: link, issue, summary: cleanLine(found.summary ?? "", MAX_SUMMARY), plan } };
+  return {
+    ok: true,
+    input: { thread: link, issue, summary: cleanLine(found.summary ?? "", MAX_SUMMARY), plan },
+    claims: {
+      ownerAsked: bools.ownerAsked === true,
+      risk: {
+        reversible: bools.reversible === true,
+        dataWrite: bools.dataWrite === true,
+        schemaChange: bools.schemaChange === true,
+        secretOrIam: bools.secretOrIam === true,
+        touchesAccess: bools.touchesAccess === true,
+        prod: bools.prod === true,
+      },
+    },
+  };
 };
 
 /** What makes two reports the same one: the thread and the issue's words, case and spacing aside. */
@@ -89,6 +142,50 @@ export const reportsCover = (
   });
 };
 
+/** Low-risk: stated reversible and none of the risky facts, all of them, never some. */
+export const isLowRiskFix = (r: BugRisk): boolean =>
+  r.reversible && !r.dataWrite && !r.schemaChange && !r.secretOrIam && !r.touchesAccess && !r.prod;
+
+/** Whether a report's link points at the conversation (channel and thread) the turn is running in. */
+export const linkIsThread = (link: string, channelId: string, threadTs: string | undefined, messageTs: string | undefined): boolean => {
+  const t = linkThread(link);
+  if (!t || t.channelId !== channelId) return false;
+  return t.threadTs === threadTs || (!threadTs && t.threadTs === messageTs);
+};
+
+/**
+ * What the turn filing the report is, as the code knows it (never as the turn says it):
+ * - `fromOwner`: the turn runs as the owner (the ticket's actor), so it is the owner's own conversation or DM and not a pal's;
+ * - `ownerTurn`: the turn ticket's owner bit, set only when the owner's own Slack message started this very turn;
+ * - `sameThread`: the report's link is the thread this turn runs in, so the owner's message is the one in that thread.
+ */
+export type BugFiling = { readonly fromOwner: boolean; readonly ownerTurn: boolean; readonly sameThread: boolean };
+
+export type BugRoute =
+  /** Jueki starts the fix; `reason` is what the notice says. */
+  | { readonly route: "approve"; readonly reason: string }
+  /** The owner's buttons, as before. */
+  | { readonly route: "ask"; readonly why: string };
+
+/**
+ * Who decides a new bug report. Jueki approves in two cases only:
+ * 1. the owner himself asked for the fix (or said to approve it) in the conversation it was filed from: the turn claims
+ *    it (`--owner-asked`) and the code checks it against the ticket's owner bit and the thread;
+ * 2. it is a low-risk fix to my own source, filed from the owner's own conversation: it states `--reversible`, none of the
+ *    risky facts, and the text it wrote names no role, permission, auth, ticket, token, secret, approval or prod word.
+ * Anything else, and every report filed from someone else's conversation, goes to the owner's buttons.
+ */
+export const routeBugReport = (i: BugReportInput, claims: BugClaims, filing: BugFiling): BugRoute => {
+  if (!filing.fromOwner) return { route: "ask", why: "filed from someone else's conversation" };
+  if (claims.ownerAsked && filing.ownerTurn && filing.sameThread) {
+    return { route: "approve", reason: "the owner asked for the fix in that thread" };
+  }
+  if (isLowRiskFix(claims.risk) && !touchesSensitive(i.issue, i.summary, i.plan)) {
+    return { route: "approve", reason: "low-risk fix in my own source (reversible, no data, access, secrets, approvals or prod)" };
+  }
+  return { route: "ask", why: claims.ownerAsked ? "the owner's own message in this thread did not start this turn" : "not low-risk, or not stated as such" };
+};
+
 /** The owner's DM: where, what, why, the plan, and what each button does. */
 export const approvalText = (id: number, i: BugReportInput): string =>
   [
@@ -112,3 +209,26 @@ export const approvedBrief = (id: number, i: BugReportInput): string =>
     ...(i.summary ? [`cause: ${i.summary}`] : []),
     `plan: ${i.plan}`,
   ].join("\n");
+
+/** The notice of a report Jueki approved: what it decided, why, and the one button left. */
+export const approvedByJuekiText = (id: number, i: BugReportInput, reason: string): string =>
+  [
+    `🐞 bug #${id} - approved by Jueki: ${cleanLine(reason, 160)}, fixing it`,
+    `*Issue:* ${i.issue}`,
+    `<${i.thread}|the thread>`,
+    "Press Reject to stop it.",
+  ].join("\n");
+
+/** What the fix turn Jueki's approval starts is told to do (the same ask as an owner's Approve). */
+export const approvedByJuekiBrief = (id: number, i: BugReportInput, reason: string): string =>
+  [
+    `Bug #${id} is approved by Jueki (${cleanLine(reason, 160)}), the owner's coordinator deciding for them, and the owner can still reject it: this is the owner's ask for the fix, so fix it now, in the usual way (a worktree and a PR), and tell the owner here when it is up.`,
+    `thread: ${i.thread}`,
+    `issue: ${i.issue}`,
+    ...(i.summary ? [`cause: ${i.summary}`] : []),
+    `plan: ${i.plan}`,
+  ].join("\n");
+
+/** Told to the fix turn when the owner presses Reject on a report Jueki approved. */
+export const stoppedBrief = (id: number): string =>
+  `Bug #${id} was approved by Jueki and the owner then rejected it (they pressed Reject): stop. Change nothing more, do not merge or restart anything, close any PR you opened for it unmerged, and say so.`;

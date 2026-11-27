@@ -14,6 +14,7 @@
  */
 import { ciStatusOf, type RollupEntry } from "./ciGate.ts";
 import { cleanLine } from "./journey.ts";
+import { touchesSensitive } from "./lowRisk.ts";
 import { humanDuration, watchesWorker } from "./watch.ts";
 import { WORKER_LIFETIME_MAX_MS } from "./workerTicket.ts";
 
@@ -299,6 +300,16 @@ export const isLowRisk = (f: BlockerFacts): boolean => f.reversible && !f.dataWr
 export const mayFixProdItself = (f: BlockerFacts): boolean =>
   f.prod && isUrgent(f) && isLowRisk(f) && !f.beyondRole && !f.ownerDecision;
 
+/**
+ * The non-prod rule: Jueki approves a blocker itself, the small approvals the owner built it to take off
+ * their hands. Only a plain `other` wall (a `permission` wall needs a grant, a `prod-write` one writes prod,
+ * a `decision` is the owner's, a `repeat-failure` is a stuck fix and wants a human look) that is not prod,
+ * is low-risk by the same four facts as the prod rule, is within the owner's role, needs no owner decision,
+ * and whose sentence names no role, permission, auth, ticket, token, secret, approval or prod word.
+ */
+export const mayApproveItself = (f: BlockerFacts, kind: BlockerKind, text: string): boolean =>
+  !f.prod && kind === "other" && isLowRisk(f) && !f.beyondRole && !f.ownerDecision && !touchesSensitive(text);
+
 export type BlockerRow = {
   /** `fixed`: Jueki fixed it itself under the prod rule; a later recurrence of the key is a new blocker. */
   readonly state: "pending" | "approved" | "rejected" | "fixed";
@@ -313,6 +324,8 @@ export type BlockerRoute =
   | { readonly route: "self-fix" }
   /** Put it to the owner with Approve / Reject. `repeat` = a prod blocker, which is raised again until decided. */
   | { readonly route: "raise"; readonly repeat: boolean }
+  /** Non-prod and low-risk: Jueki approves it itself and carries on; nothing is put to the owner. */
+  | { readonly route: "approve" }
   /** Already put to the owner (non-prod, once only), or not yet due to be put again. */
   | { readonly route: "hold"; readonly why: "already-raised" | "decided" | "not-due" | "quiet-hours" };
 
@@ -320,13 +333,14 @@ export type BlockerRoute =
  * How a blocker is routed. A non-prod blocker is raised once, ever (the key is
  * its identity: the same wall is never repeated), and waits out quiet hours. A
  * prod blocker is raised again every `repingMs` until the owner acts, quiet
- * hours do not hold it back, and the one exception is `mayFixProdItself`.
+ * hours do not hold it back, and the one exception is `mayFixProdItself`. A non-prod blocker that
+ * `mayApproveItself` is approved by Jueki and never raised, unless the owner was already asked about it.
  */
 export const routeBlocker = (
   f: BlockerFacts,
   stored: BlockerRow | undefined,
   now: number,
-  opts: { readonly quiet: boolean; readonly repingMs?: number },
+  opts: { readonly quiet: boolean; readonly repingMs?: number; readonly kind?: BlockerKind; readonly text?: string },
 ): BlockerRoute => {
   // Fixed by Jueki: the wall is gone, a new one under the same key starts from nothing.
   const prior = stored?.state === "fixed" ? undefined : stored;
@@ -337,6 +351,7 @@ export const routeBlocker = (
     return { route: "raise", repeat: true };
   }
   if (prior && prior.lastRaisedAt > 0) return { route: "hold", why: "already-raised" };
+  if (opts.kind !== undefined && mayApproveItself(f, opts.kind, opts.text ?? "")) return { route: "approve" };
   if (opts.quiet) return { route: "hold", why: "quiet-hours" };
   return { route: "raise", repeat: false };
 };

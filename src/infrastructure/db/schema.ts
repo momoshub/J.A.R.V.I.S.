@@ -126,6 +126,7 @@ export const migrate = (db: Database): void => {
   migrateMessageViaBot(db);
   migrateReviewRounds(db);
   migrateJueki(db);
+  migrateWriterClaims(db);
 };
 
 /**
@@ -1631,4 +1632,37 @@ const migrateJueki = (db: Database): void => {
     user_version: 0,
   };
   if (user_version < 54) db.exec("PRAGMA user_version = 54;");
+};
+
+/**
+ * Migration v55: one writer per job, and who decided a bug report.
+ *
+ * `writer_claims`: a row per job (`bug:<id>`, `journey:<id>`, `branch:<name>`) a writer was started for, with
+ * the dispatch it runs as (empty until `worker-start` printed it), the thread that holds it, and when it ended.
+ * `bug_reports.decided_by`: `jueki` when Jueki approved the report, so the owner's Reject can still stop it.
+ */
+const migrateWriterClaims = (db: Database): void => {
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS writer_claims (
+      id          INTEGER PRIMARY KEY AUTOINCREMENT,
+      key         TEXT NOT NULL,
+      dispatch_id TEXT NOT NULL DEFAULT '',
+      channel_id  TEXT NOT NULL DEFAULT '',
+      thread_ts   TEXT NOT NULL DEFAULT '',
+      actor       TEXT NOT NULL DEFAULT '',
+      created_at  INTEGER NOT NULL,
+      released_at INTEGER,
+      released_why TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX IF NOT EXISTS idx_writer_claims_key ON writer_claims (key, released_at);
+    CREATE INDEX IF NOT EXISTS idx_writer_claims_dispatch ON writer_claims (dispatch_id);
+  `);
+  const cols = db.query<{ name: string }, []>("PRAGMA table_info(bug_reports)").all();
+  if (!cols.some((c) => c.name === "decided_by")) {
+    db.exec("ALTER TABLE bug_reports ADD COLUMN decided_by TEXT NOT NULL DEFAULT ''");
+  }
+  const { user_version } = db.query<{ user_version: number }, []>("PRAGMA user_version").get() ?? {
+    user_version: 0,
+  };
+  if (user_version < 55) db.exec("PRAGMA user_version = 55;");
 };

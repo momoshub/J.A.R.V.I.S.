@@ -61,3 +61,20 @@ describe("bug report repo", () => {
     expect(repo.get(1)).toBeUndefined();
   });
 });
+
+describe("bug report repo: Jueki's approval", () => {
+  test("decide records who approved, and only Jueki's own approval can be revoked by the owner's Reject", () => {
+    const repo = createBugReportRepo(openDatabase(":memory:"));
+    repo.add(base, 100);
+    repo.add({ ...base, fingerprint: "other" }, 110);
+    expect(repo.decide(1, "approved", 200, "jueki")).toBe(true);
+    expect(repo.get(1)).toMatchObject({ state: "approved", decidedBy: "jueki" });
+    expect(repo.revokeJueki(1, 300)).toBe(true);
+    expect(repo.get(1)).toMatchObject({ state: "rejected", decidedAt: 300, decidedBy: "" });
+    expect(repo.revokeJueki(1, 400)).toBe(false);
+    // the owner's own approval is final
+    expect(repo.decide(2, "approved", 200)).toBe(true);
+    expect(repo.revokeJueki(2, 300)).toBe(false);
+    expect(repo.get(2)).toMatchObject({ state: "approved", decidedBy: "" });
+  });
+});

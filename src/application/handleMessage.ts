@@ -62,6 +62,7 @@ import type { BugReportApprovalDeps } from "./bugReportApproval.ts";
 import type { ReviewRunApprovalDeps } from "./reviewRunApproval.ts";
 import type { JuekiApprovalDeps } from "./juekiApproval.ts";
 import type { Jueki } from "./jueki.ts";
+import type { WriterClaims } from "./writerClaims.ts";
 import type { McpToolsPort } from "../infrastructure/mcp/approvals.ts";
 import type { SettingsRepo } from "../infrastructure/db/settingsRepo.ts";
 import { requestAccess } from "./accessRequests.ts";
@@ -127,6 +128,8 @@ export type HandleMessageDeps = {
   journeys?: JourneyRepo;
   /** Jueki, the owner's housekeeping coordinator, for the internal `jueki` command. */
   jueki?: Jueki;
+  /** Who holds which writer job, for the internal `claim` command. */
+  writerClaims?: WriterClaims;
   /** The bug reports the bot raised about itself, for the `bug-report` command. */
   bugReports?: BugReportRepo;
   /** The inner child's issue queue, for the `inner-child` command. */

@@ -977,6 +977,8 @@ export const createKitListeners = (
       }
       if (outcome.kind === "approved") {
         await kitTurn(client, context, by, { channelId: outcome.channel, threadTs: outcome.threadTs }, outcome.brief);
+      } else if (outcome.kind === "rejected" && outcome.stop) {
+        await kitTurn(client, context, by, { channelId: outcome.stop.channel, threadTs: outcome.stop.threadTs }, outcome.stop.brief);
       }
     } catch (err) {
       log(`bug report press failed: ${err instanceof Error ? err.message : String(err)}`);
