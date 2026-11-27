@@ -462,7 +462,9 @@ export const parseBlockerArgs = (
   const text = words.slice(1).join(" ").trim();
   if (!key) return { ok: false, error: "name the wall with a short key first" };
   if (!text) return { ok: false, error: "say what is in the way in a sentence" };
-  if (forUser === undefined && thread === undefined) return { ok: true, key, kind, text, facts };
+  if (forUser === undefined && thread === undefined) {
+    return kind === "unblock" ? { ok: false, error: "`--kind unblock` needs `--for <user> --thread <link>`" } : { ok: true, key, kind, text, facts };
+  }
   const who = subjectOf(forUser, thread, "");
   if (!who.ok) return who;
   return { ok: true, key, kind: "unblock", text, facts, subject: who.subject };

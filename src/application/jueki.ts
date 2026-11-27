@@ -160,6 +160,8 @@ export type JuekiDeps = {
   readonly staleJourneyMs?: number;
   readonly repingMs?: number;
   readonly prefix: string;
+  /** False when no tick is scheduled (`JUEKI_INTERVAL_MS=0`): nothing would raise a held blocker later, so an unblock is put at once. */
+  readonly scheduled?: boolean;
   readonly log?: (msg: string) => void;
 };
 
@@ -238,7 +240,7 @@ export const createJueki = (deps: JuekiDeps): Jueki => {
   };
 
   /** Put a blocker to the owner now: a new message, and the previous one (a prod re-ask) is settled. */
-  const raise = async (b: JuekiBlocker): Promise<void> => {
+  const raise = async (b: JuekiBlocker): Promise<boolean> => {
     const posted = await deps.slack.postDmInteractive(
       deps.ownerSlackId,
       blockerText(b, b.raisedCount),
@@ -250,7 +252,7 @@ export const createJueki = (deps: JuekiDeps): Jueki => {
     );
     if (!posted) {
       log(`could not raise blocker ${b.id}; trying again next tick`);
-      return;
+      return false;
     }
     const before = { channel: b.noticeChannel, ts: b.noticeTs };
     deps.repo.setNotice(b.id, posted.channel, posted.ts);
@@ -261,6 +263,7 @@ export const createJueki = (deps: JuekiDeps): Jueki => {
         .catch(logAndIgnore("jueki superseded blocker"));
     }
     await act(`${b.prod ? "prod " : ""}blocker #${b.id} (${b.kind}) put to you: ${b.forUser ? `<@${b.forUser}> is stuck: ` : ""}${b.text}`);
+    return true;
   };
 
   /** A pending blocker Jueki fixed itself: closed, and the message that asked is settled so nobody presses it. */
@@ -277,8 +280,10 @@ export const createJueki = (deps: JuekiDeps): Jueki => {
   /** What a turn that asked the owner to unblock a person is told (it then tells that person in one line). */
   const unblockReply = async (b: JuekiBlocker, route: BlockerRoute): Promise<string> => {
     if (route.route === "raise") {
-      await raise(b);
-      return "raised to the owner. Do not ask again. Tell the person in one line that the owner was asked.";
+      if (await raise(b)) return "raised to the owner. Do not ask again. Tell the person in one line that the owner was asked.";
+      return deps.scheduled === false
+        ? "the owner could not be reached just now and nothing retries it. Tell the person to ask the owner directly."
+        : "the owner could not be reached just now; it is tried again soon. Tell the person in one line that the owner will be asked.";
     }
     if (route.route === "self-fix") return "held: nothing to do here.";
     const why: Record<typeof route.why, string> = {
@@ -296,7 +301,9 @@ export const createJueki = (deps: JuekiDeps): Jueki => {
     if (!key || !text) return "A blocker needs a key and a sentence of what is in the way. Nothing was raised.";
     const now = deps.clock();
     const prior = deps.repo.blockerByKey(key);
-    const route: BlockerRoute = routeBlocker(input.facts, prior, now, { quiet: quietNow(), repingMs });
+    // With no tick scheduled nothing would raise a held unblock later, so quiet hours do not hold it.
+    const quiet = quietNow() && !(input.subject && deps.scheduled === false);
+    const route: BlockerRoute = routeBlocker(input.facts, prior, now, { quiet, repingMs });
     if (route.route === "self-fix") {
       // The grant `fixed` checks, and the end of any earlier ask: an owner asked about something Jueki is now fixing would be asked all night.
       deps.repo.mark("selffix", key, now);

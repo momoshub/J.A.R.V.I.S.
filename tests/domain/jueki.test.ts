@@ -396,6 +396,10 @@ describe("a blocker about another person", () => {
     expect(parseBlockerArgs(["k", "--for", "U0PAL000001", "--thread", "https://example.com/x", "x"])).toMatchObject({ ok: false });
   });
 
+  test("`--kind unblock` without a subject is refused", () => {
+    expect(parseBlockerArgs(["k", "--kind", "unblock", "x"])).toMatchObject({ ok: false });
+  });
+
   test("a blocker with no subject is read as before", () => {
     const r = parseBlockerArgs(["k", "--kind", "decision", "x"]);
     expect(r).toMatchObject({ ok: true, kind: "decision" });

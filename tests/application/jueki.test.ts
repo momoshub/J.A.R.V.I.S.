@@ -697,5 +697,20 @@ describe("a person other than the owner is stuck", () => {
     expect(lineOf(theirs.id)).toContain(`--for ${PAL} --thread ${link}`);
     expect(lineOf(mine.id)).not.toContain("NOT the owner's own");
   });
+
+  test("with no tick scheduled, quiet hours do not hold an unblock: nothing would raise it later", async () => {
+    const s = setup(NIGHT, { scheduled: false });
+    expect(await unblock(s, "u1", "needs the staging grant")).toContain("owner was asked");
+    expect(s.asked).toHaveLength(1);
+  });
+
+  test("when the owner cannot be reached the session is not told they were asked", async () => {
+    const s = setup(NOON, { slack: { postDm: async () => undefined, update: async () => {}, postDmInteractive: async () => undefined, settleInteractive: async () => {} } as never });
+    const out = await unblock(s, "u1", "needs the staging grant");
+    expect(out).toContain("could not be reached");
+    expect(out).not.toContain("raised to the owner");
+    const off = setup(NOON, { scheduled: false, slack: { postDm: async () => undefined, update: async () => {}, postDmInteractive: async () => undefined, settleInteractive: async () => {} } as never });
+    expect(await unblock(off, "u1", "needs the staging grant")).toContain("ask the owner directly");
+  });
 });
 

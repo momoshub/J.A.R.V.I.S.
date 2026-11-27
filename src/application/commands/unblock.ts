@@ -11,7 +11,7 @@ export const UNBLOCK_COMMANDS: readonly CommandDef[] = [
     minRole: "pal",
     usage: '--thread <slack link> --for <user> --need "<what is blocking them>" [--plan "<what I will do once approved>"]',
     summary: "ask the owner to unblock a person who is stuck, and carry on in their thread once approved",
-    run: async ({ deps, rest, prefix }) => {
+    run: async ({ deps, actor, channelId, threadTs, messageTs, rest, prefix }) => {
       const jueki = deps.jueki;
       if (!jueki) return "I cannot reach the owner about this right now.";
       const word = rest.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
@@ -21,6 +21,14 @@ export const UNBLOCK_COMMANDS: readonly CommandDef[] = [
       }
       const read = parseUnblock(rest);
       if (!read.ok) return `${read.error}. \`${prefix} unblock --thread <link> --for <user> --need "..." --plan "..."\``;
+      const where = read.input.subject;
+      // The ask is about THIS thread and, unless the owner runs it, THIS person: an approval starts a turn as the owner in the thread named, so a session cannot point it elsewhere.
+      if (where.channelId !== channelId || where.threadTs !== (threadTs || messageTs)) {
+        return "`--thread` must be the thread this conversation is in. Nothing was sent.";
+      }
+      if (actor.slackId !== deps.ownerSlackId && where.forUser !== actor.slackId) {
+        return "`--for` must be the person you are talking to. Nothing was sent.";
+      }
       if (read.input.subject.forUser === deps.ownerSlackId) return "The owner needs no unblocking from the owner. Nothing was sent.";
       return jueki.blocker({
         key: unblockKey(read.input),

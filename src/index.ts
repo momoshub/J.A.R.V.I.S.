@@ -756,6 +756,7 @@ const main = async () => {
     staleJourneyMs: config.jueki.staleJourneyMs,
     repingMs: config.jueki.prodRepingMs,
     prefix: config.commandPrefix,
+    scheduled: config.jueki.intervalMs > 0,
     log: (msg) => console.error(`[jueki] ${msg}`),
   });
   const deps: RespondDeps = {
