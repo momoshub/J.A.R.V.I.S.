@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import {
   STATUS_FINISHED_SHOWN,
+  STATUS_LABEL,
   STATUS_RUNNING_SHOWN,
   STATUS_TASKS_MAX,
-  STATUS_LABEL,
   STATUS_TITLE_CHARS,
   finalStatus,
   renderStatus,
@@ -87,7 +87,7 @@ describe("the running message", () => {
     expect(planOf(renderStatus([step("a")])).title).toBe("Burning token… 1 step");
   });
 
-  test("never more tasks than one plan may carry, however long the titles", () => {
+  test("never more task cards than the cap, however long the titles", () => {
     const steps = Array.from({ length: 60 }, (_, i) => step(String(i), i % 2 ? "complete" : "in_progress", "y".repeat(500)));
     const tasks = tasksOf(steps);
     expect(tasks.length).toBeLessThanOrEqual(STATUS_TASKS_MAX);
@@ -113,7 +113,7 @@ describe("what is left when the turn ends", () => {
     expect(finalStatus([])).toBeUndefined();
   });
 
-  test("a plan titled with the summary and the failures as error cards", () => {
+  test("a header with the summary and the failures as error cards", () => {
     const view = finalStatus([step("a"), step("b", "error", "Run: gh pr view"), step("c")]);
     expect(view?.text).toBe("🔧 3 steps, 1 failed");
     const plan = planOf(view);

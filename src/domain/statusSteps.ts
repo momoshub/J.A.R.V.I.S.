@@ -3,9 +3,11 @@
  *
  * Tool steps used to be cards inside the streamed answer, which shared its
  * character budget and could never be taken away. They now live in one
- * message of their own: one Slack `plan` block with a `task_card` per step
- * (Slack draws the progress look), rewritten as the turn goes, then deleted -
- * or collapsed to its failures - when the turn ends.
+ * message of their own: a plain-text `context` header line, then one top-level
+ * `task_card` per step (Slack draws the progress look), rewritten as the turn
+ * goes, then deleted - or collapsed to its failures - when the turn ends. There
+ * is no `plan` block: Slack folds a plan, which hid the tool names, and refuses
+ * more than one per message ("Cannot have more than 1 plan block").
  *
  * Pure: the throttling, posting and deleting are in infrastructure/slack/statusMessage.ts.
  */
@@ -102,7 +104,7 @@ export const renderStatus = (steps: readonly StatusStep[], thinking?: string): S
 /**
  * The message left behind when the turn ended, or undefined when it should be
  * deleted. A turn whose steps all worked leaves nothing: the answer is what
- * matters. One where a step failed keeps "N steps" as the header line and the
+ * matters. One where a step failed keeps "🔧 N steps, M failed" as the header line and the
  * failures as error cards, because those are the part somebody may have to act on.
  */
 export const finalStatus = (steps: readonly StatusStep[]): StatusView | undefined => {
