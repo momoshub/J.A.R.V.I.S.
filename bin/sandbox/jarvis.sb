@@ -8,7 +8,8 @@
 ;; away every CREDENTIAL it knows of (the keychain, gh's login, the App key, the bot's .env and
 ;; databases, the Orca runtime token, the SSH agent) and every way it knows to start
 ;; something OUTSIDE the sandbox (launchd, LaunchServices, Apple Events, cron/at,
-;; files the host runs on login). The home folder is deny-by-default for reads and writes, with an
+;; files the host runs on login). KNOWN OPEN HOLES (see CLAUDE.md, "Seatbelt": do not switch it on yet): Claude's shell
+;; snapshots, other repos under ~/Workspaces, some home dot-files, package caches. The home folder is deny-by-default for reads and writes, with an
 ;; allowlist; outside the home, and outside the bot's checkout, it is still a denylist. What a sandboxed caller still needs from those
 ;; credentials goes through the bot's ticketed proxy (bin/sandbox-shims/*).
 ;; The file is covered by tests/infrastructure/sandboxProfile.test.ts.
