@@ -18,6 +18,7 @@ import type { Streamer } from "../../src/infrastructure/slack/stream.ts";
 import { openDatabase } from "../../src/infrastructure/db/client.ts";
 import { createThreadBriefRepo } from "../../src/infrastructure/db/threadBriefRepo.ts";
 import { createBugReportRepo } from "../../src/infrastructure/db/bugReportRepo.ts";
+import { createJuekiRepo } from "../../src/infrastructure/db/juekiRepo.ts";
 import type { SlackAdminPort } from "../../src/application/slackAdmin.ts";
 import { createUserRepo } from "../../src/infrastructure/db/userRepo.ts";
 import { createMuteRepo, type MuteRepo } from "../../src/infrastructure/db/muteRepo.ts";
@@ -2082,6 +2083,72 @@ describe("bug report press listener", () => {
     });
     expect(r.turns).toHaveLength(0);
     expect(r.bugReports.get(r.id)?.state).toBe("pending");
+  });
+});
+
+describe("jueki blocker press listener", () => {
+  const NOTICE = { channel: "D0OWNER", ts: "400.4" };
+  const rig = () => {
+    const turns: Incoming[] = [];
+    const ephemeral: Record<string, unknown>[] = [];
+    const settled: string[] = [];
+    let approvedHook = 0;
+    const repo = createJuekiRepo(openDatabase(":memory:"));
+    const b = repo.openBlocker({ key: "k", kind: "permission", prod: false, text: "needs a grant" }, 1);
+    repo.setNotice(b.id, NOTICE.channel, NOTICE.ts);
+    const slack = { settleInteractive: async (_c: string, _t: string, text: string) => void settled.push(text) } as unknown as SlackAdminPort;
+    const listeners = createKitListeners(undefined, async (m) => void turns.push(m), () => {}, undefined, undefined, undefined, [], {
+      repo,
+      slack,
+      clock: () => 5,
+      ownerSlackId: OWNER,
+      onApproved: () => void approvedHook++,
+    });
+    const client = { chat: { postMessage: async () => ({}), postEphemeral: async (a: Record<string, unknown>) => void ephemeral.push(a) } };
+    const press = (over: { user?: string; channel?: string; ts?: string; actionId?: string } = {}) =>
+      listeners.onJuekiPress({
+        ack: async () => {},
+        client,
+        body: { user: { id: over.user ?? OWNER }, channel: { id: over.channel ?? NOTICE.channel }, message: { ts: over.ts ?? NOTICE.ts } },
+        action: { action_id: over.actionId ?? "jv:jueki:approve", type: "button", value: String(b.id) },
+      });
+    return { press, turns, ephemeral, settled, repo, id: b.id, listeners, client, hook: () => approvedHook };
+  };
+
+  test("the owner's approve press is decided in code: stored, settled, the tick told, no model turn", async () => {
+    const r = rig();
+    await r.press();
+    expect(r.repo.blocker(r.id)?.state).toBe("approved");
+    expect(r.settled).toHaveLength(1);
+    expect(r.settled[0]).toContain("Approved by");
+    expect(r.hook()).toBe(1);
+    expect(r.turns).toHaveLength(0);
+  });
+
+  test("reject settles and starts nothing; a non-owner, a wrong message and a second press change nothing", async () => {
+    const r = rig();
+    await r.press({ user: "U0OTHER" });
+    await r.press({ ts: "999.9" });
+    expect(r.repo.blocker(r.id)?.state).toBe("pending");
+    expect(r.ephemeral).toHaveLength(2);
+    await r.press({ actionId: "jv:jueki:reject" });
+    expect(r.repo.blocker(r.id)?.state).toBe("rejected");
+    await r.press();
+    expect(r.repo.blocker(r.id)?.state).toBe("rejected");
+    expect(r.hook()).toBe(0);
+    expect(r.turns).toHaveLength(0);
+  });
+
+  test("the generic kit listener never turns a Jueki press into a model turn", async () => {
+    const r = rig();
+    await r.listeners.onKitAction({
+      ack: async () => {},
+      client: r.client,
+      body: { user: { id: OWNER }, channel: { id: NOTICE.channel }, message: { ts: NOTICE.ts } },
+      action: { action_id: "jv:jueki:approve", type: "button", value: String(r.id) },
+    });
+    expect(r.turns).toHaveLength(0);
+    expect(r.repo.blocker(r.id)?.state).toBe("pending");
   });
 });
 

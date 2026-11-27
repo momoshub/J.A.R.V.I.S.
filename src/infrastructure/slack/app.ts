@@ -21,6 +21,8 @@ import { LOOP_ACTION_PREFIX } from "../../domain/loop.ts";
 import { decideLearningPress } from "../../application/learningApproval.ts";
 import { bugPressNotice, decideBugReportPress, type BugReportApprovalDeps } from "../../application/bugReportApproval.ts";
 import { BUG_REPORT_ACTION_PREFIX } from "../../domain/bugReport.ts";
+import { decideJuekiPress, juekiPressNotice, type JuekiApprovalDeps } from "../../application/juekiApproval.ts";
+import { JUEKI_ACTION_PREFIX } from "../../domain/jueki.ts";
 import { REVIEW_RUN_ACTION_PREFIX } from "../../domain/reviewIdentity.ts";
 import { decideReviewRunPress, reviewRunPressNoticeOf, type ReviewRunApprovalDeps } from "../../application/reviewRunApproval.ts";
 import { LEARNING_ACTION_PREFIX, refusalText } from "../../domain/learning.ts";
@@ -898,6 +900,7 @@ export const createKitListeners = (
   bugReportApproval?: BugReportApprovalDeps,
   reviewRunApproval?: ReviewRunApprovalDeps,
   acceptedBotIds: readonly string[] = [],
+  juekiApproval?: JuekiApprovalDeps,
 ) => {
   type Context = InboxContext & { teamId?: string };
   const kitTurn = async (client: unknown, context: Context | undefined, userId: string, thread: KitThread, text: string) => {
@@ -981,6 +984,37 @@ export const createKitListeners = (
   };
 
   /**
+   * Approve / Reject on a Jueki blocker. Decided HERE and never handed to the model
+   * (`onKitAction` skips `JUEKI_ACTION_PREFIX`): only the owner's press on the latest
+   * notice counts, checked in `decideJuekiPress`. An approval is stored; Jueki's next tick acts on it.
+   */
+  const onJuekiPress = async ({ ack, body, action, client }: KitActionArgs) => {
+    await ack();
+    const by = body.user?.id;
+    const value = action.value;
+    if (!by || !value || !juekiApproval) return;
+    try {
+      const outcome = await decideJuekiPress(juekiApproval, {
+        slackUserId: by,
+        actionId: action.action_id ?? "",
+        value,
+        channel: body.channel?.id,
+        messageTs: body.message?.ts,
+      });
+      log(`jueki press ${outcome.kind} by ${by}`);
+      const notice = juekiPressNotice(outcome);
+      const channel = body.channel?.id;
+      if (notice && channel) {
+        await (client as KitClient).chat
+          .postEphemeral?.({ channel, user: by, thread_ts: body.message?.thread_ts ?? body.message?.ts, text: notice })
+          .catch(logAndIgnore("jueki press notice"));
+      }
+    } catch (err) {
+      log(`jueki press failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  };
+
+  /**
    * Approve / Reject on a review that has no token to run on. Decided HERE and
    * never handed to the model (`onKitAction` skips `REVIEW_RUN_ACTION_PREFIX`):
    * only the owner's press counts, checked in `decideReviewRunPress`.
@@ -1023,6 +1057,7 @@ export const createKitListeners = (
       actionId.startsWith(LEARNING_ACTION_PREFIX) ||
       actionId.startsWith(HARVEST_ACTION_PREFIX) ||
       actionId.startsWith(BUG_REPORT_ACTION_PREFIX) ||
+      actionId.startsWith(JUEKI_ACTION_PREFIX) ||
       actionId.startsWith(REVIEW_RUN_ACTION_PREFIX)
     ) return;
     const modal = body.view;
@@ -1170,7 +1205,7 @@ export const createKitListeners = (
     await kitTurn(client, context, by, thread, text);
   };
 
-  return { onKitAction, onKitView, onBugReportPress, onReviewRunPress };
+  return { onKitAction, onKitView, onBugReportPress, onReviewRunPress, onJuekiPress };
 };
 
 /** The calls retiring open questions makes. */
@@ -1968,9 +2003,10 @@ export const createSlackApp = (config: SlackAppConfig, deps: Deps) => {
   }) as never);
 
 
-  const { onKitAction, onKitView, onBugReportPress, onReviewRunPress } = createKitListeners(deps.kitViews, handle, log, inboxOf, deps.bugReportApproval, deps.reviewRunApproval, acceptedBotIds);
+  const { onKitAction, onKitView, onBugReportPress, onReviewRunPress, onJuekiPress } = createKitListeners(deps.kitViews, handle, log, inboxOf, deps.bugReportApproval, deps.reviewRunApproval, acceptedBotIds, deps.juekiApproval);
   app.action(new RegExp(`^${BUG_REPORT_ACTION_PREFIX}`), onBugReportPress as never);
   app.action(new RegExp(`^${REVIEW_RUN_ACTION_PREFIX}`), onReviewRunPress as never);
+  app.action(new RegExp(`^${JUEKI_ACTION_PREFIX}`), onJuekiPress as never);
   app.action(KIT_PATTERN, onKitAction as never);
   app.view({ callback_id: KIT_PATTERN, type: "view_submission" }, onKitView as never);
   app.view({ callback_id: KIT_PATTERN, type: "view_closed" }, onKitView as never);

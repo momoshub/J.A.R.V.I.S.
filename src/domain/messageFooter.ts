@@ -44,6 +44,8 @@ export const SIGNATURES = {
   githubApp: "GitHub app",
   offlineAlarm: "offline alarm",
   stuckSweeper: "stuck-work sweeper",
+  /** The housekeeping coordinator that lives only in the owner's DM. */
+  jueki: "Jueki",
 } as const;
 
 /** `by` for a post or edit that is not in the turn's own thread: no footer at all. */

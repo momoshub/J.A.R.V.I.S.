@@ -11,6 +11,23 @@ const base = {
 };
 
 describe("loadConfig", () => {
+  test("Jueki ticks every 30 min, quiet 22 -> 5 in UTC+7, stale after 3 days, prod asked again every 30 min; each is configurable and 0 is off", () => {
+    expect(loadConfig(base).jueki).toEqual({
+      intervalMs: 30 * 60_000,
+      staleJourneyMs: 3 * 24 * 60 * 60_000,
+      prodRepingMs: 30 * 60_000,
+      quietStartHour: 22,
+      quietEndHour: 5,
+      tzOffsetMin: 420,
+    });
+    expect(loadConfig({ ...base, JUEKI_INTERVAL_MS: "0" }).jueki.intervalMs).toBe(0);
+    expect(loadConfig({ ...base, JUEKI_INTERVAL_MS: "900000", JUEKI_QUIET_START_HOUR: "23", JUEKI_TZ_OFFSET_MIN: "0" }).jueki).toMatchObject({
+      intervalMs: 900_000,
+      quietStartHour: 23,
+      tzOffsetMin: 0,
+    });
+  });
+
   test("workers start in their own folder: ~/.jarvis/worker-home by default, blank included, ~ expanded", () => {
     expect(loadConfig(base).workerHomeDir).toBe(join(homedir(), ".jarvis", "worker-home"));
     expect(loadConfig({ ...base, WORKER_HOME_DIR: " " }).workerHomeDir).toBe(join(homedir(), ".jarvis", "worker-home"));

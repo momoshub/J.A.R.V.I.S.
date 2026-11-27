@@ -33,6 +33,8 @@ export type WorkerTicketRepo = {
   /** Move the expiry (a renewal). */
   setExpiry: (tokenHash: string, expiresAt: number) => void;
   revoke: (tokenHash: string, at: number) => void;
+  /** Every bound ticket never revoked, live or lapsed: what a renewal can still revive. */
+  bound: () => WorkerTicketRow[];
   /** Rows that expired at or before `now`, revoked or not. */
   expired: (now: number) => WorkerTicketRow[];
   delete: (tokenHash: string) => void;
@@ -94,6 +96,7 @@ export const createWorkerTicketRepo = (db: DbClient): WorkerTicketRepo => {
   );
   const expiryStmt = db.query("UPDATE worker_tickets SET expires_at = $expires WHERE token_hash = $hash");
   const revokeStmt = db.query("UPDATE worker_tickets SET revoked_at = $at WHERE token_hash = $hash AND revoked_at IS NULL");
+  const boundStmt = db.query<Row, []>("SELECT * FROM worker_tickets WHERE dispatch_id != '' AND revoked_at IS NULL");
   const expiredStmt = db.query<Row, [number]>("SELECT * FROM worker_tickets WHERE expires_at <= ?");
   const deleteStmt = db.query("DELETE FROM worker_tickets WHERE token_hash = ?");
 
@@ -125,6 +128,7 @@ export const createWorkerTicketRepo = (db: DbClient): WorkerTicketRepo => {
     bind: (hash, dispatch, bound, expires) => void bindStmt.run({ $hash: hash, $dispatch: dispatch, $bound: bound, $expires: expires }),
     setExpiry: (hash, expires) => void expiryStmt.run({ $hash: hash, $expires: expires }),
     revoke: (hash, at) => void revokeStmt.run({ $hash: hash, $at: at }),
+    bound: () => boundStmt.all().map(fromRow),
     expired: (now) => expiredStmt.all(now).map(fromRow),
     delete: (h) => void deleteStmt.run(h),
   };

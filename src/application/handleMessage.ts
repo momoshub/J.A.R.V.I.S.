@@ -60,6 +60,8 @@ import type { LoopApprovalDeps } from "./loopApproval.ts";
 import type { LearningApprovalDeps } from "./learningApproval.ts";
 import type { BugReportApprovalDeps } from "./bugReportApproval.ts";
 import type { ReviewRunApprovalDeps } from "./reviewRunApproval.ts";
+import type { JuekiApprovalDeps } from "./juekiApproval.ts";
+import type { Jueki } from "./jueki.ts";
 import type { McpToolsPort } from "../infrastructure/mcp/approvals.ts";
 import type { SettingsRepo } from "../infrastructure/db/settingsRepo.ts";
 import { requestAccess } from "./accessRequests.ts";
@@ -123,6 +125,8 @@ export type HandleMessageDeps = {
   reminders?: ReminderRepo;
   /** The bot's own record of its work, for the `journey` command. */
   journeys?: JourneyRepo;
+  /** Jueki, the owner's housekeeping coordinator, for the internal `jueki` command. */
+  jueki?: Jueki;
   /** The bug reports the bot raised about itself, for the `bug-report` command. */
   bugReports?: BugReportRepo;
   /** The inner child's issue queue, for the `inner-child` command. */
@@ -135,6 +139,8 @@ export type HandleMessageDeps = {
   bugReportApproval?: BugReportApprovalDeps;
   /** The owner's Approve / Reject on a review with nobody's token to run on, decided in code. */
   reviewRunApproval?: ReviewRunApprovalDeps;
+  /** The owner's Approve / Reject on a Jueki blocker, decided in code; the press never reaches a turn. */
+  juekiApproval?: JuekiApprovalDeps;
   /** Recurring prompts, for the `loop` command. */
   loops?: LoopRepo;
   /** Owner approval of a script loop a turn wrote, and its Approve / Reject buttons. */

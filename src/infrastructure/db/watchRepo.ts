@@ -100,6 +100,8 @@ export type WatchRepo = {
   cancelThread: (channelId: string, threadTs: string, at: number) => number;
   /** Waiting watches bound to a thread. */
   waitingAt: (channelId: string, threadTs: string) => number;
+  /** Watches that ran out of time or kept failing (`expired`, `failed`) since `since` (ms), newest first. */
+  lapsedSince: (since: number, limit?: number) => Watch[];
   /** Re-bind the waiting watches of one thread to another; returns how many. */
   rebind: (channelId: string, fromTs: string, toTs: string) => number;
 };
@@ -136,6 +138,9 @@ export const createWatchRepo = (db: DbClient): WatchRepo => {
     "UPDATE watches SET state = 'cancelled', updated_at = $at WHERE channel_id = $channelId AND thread_ts = $threadTs AND state = 'waiting'",
   );
 
+  const lapsedStmt = db.query<Row, [number, number]>(
+    "SELECT * FROM watches WHERE state IN ('expired', 'failed') AND updated_at >= ? ORDER BY updated_at DESC LIMIT ?",
+  );
   const waitingAtStmt = db.query<{ n: number }, [string, string]>(
     "SELECT COUNT(*) AS n FROM watches WHERE channel_id = ? AND thread_ts = ? AND state = 'waiting'",
   );
@@ -144,6 +149,7 @@ export const createWatchRepo = (db: DbClient): WatchRepo => {
   );
 
   return {
+    lapsedSince: (since, limit = 50) => lapsedStmt.all(since, Math.max(1, limit)).map(toWatch),
     waitingAt: (channelId, threadTs) => waitingAtStmt.get(channelId, threadTs)?.n ?? 0,
     rebind: (channelId, fromTs, toTs) => rebindStmt.run({ $channelId: channelId, $fromTs: fromTs, $toTs: toTs }).changes,
     add: (w, at) =>
