@@ -62,7 +62,7 @@ describe("classifyGh: writes are named by the action whose grant they need", () 
     const need = (line: string) => ok(classifyGh(line.split(" "), "o/r")).need;
     expect(need("pr comment 1 --body hi")).toEqual({ kind: "write", action: "comment" });
     expect(need("issue comment 1 --body hi")).toEqual({ kind: "write", action: "comment" });
-    expect(need("pr review 1 --approve")).toEqual({ kind: "write", action: "review" });
+    expect(need("pr review 1 --comment -b looks-ok")).toEqual({ kind: "write", action: "comment" });
     expect(need("pr edit 1 --title x")).toEqual({ kind: "write", action: "pr-edit" });
     expect(need("pr close 1")).toEqual({ kind: "write", action: "pr-close" });
     expect(need("pr reopen 1")).toEqual({ kind: "write", action: "pr-reopen" });
@@ -164,5 +164,46 @@ describe("classifyOrca", () => {
     expect(start("--spec x --agent claude --on remote").ok).toBe(false);
     expect(start("--spec x --agent claude --environment prod").ok).toBe(false);
     expect(start("--spec x --agent claude --pairing-code orca://pair").ok).toBe(false);
+  });
+});
+
+describe("classifyGh: what the first review found", () => {
+  const line = (l: string, hint = "o/r") => classifyGh(l.split(" "), hint);
+  const no = (c: ReturnType<typeof classifyGh>): string => (c.ok ? "ALLOWED" : c.error);
+
+  test("a short flag with its value attached is refused, not read past (-F/path is --body-file path)", () => {
+    expect(no(line("pr comment 1 -F/etc/hosts"))).toContain("two words");
+    expect(no(line("pr comment 1 -F=/etc/hosts"))).toContain("two words");
+    expect(no(line("pr view 1 -Rother/repo"))).toContain("two words");
+    expect(no(line("pr view 1 -- -R x/y"))).toContain("--");
+  });
+
+  test("a flag nobody listed is refused (an allowlist), whatever its name", () => {
+    expect(no(line("pr create --recover /etc/hosts --title t"))).toContain("--recover");
+    expect(no(line("pr view 1 --made-up"))).toContain("--made-up");
+    expect(no(line("pr merge 1 --admin"))).toContain("merge-when-green");
+  });
+
+  test("a boolean flag does not swallow the next word: --comment then --body-file is still a body file", () => {
+    expect(no(line("pr review 1 --comment --body-file /etc/hosts"))).toContain("stdin");
+    expect(line("pr review 1 --comment --body-file -").ok).toBe(true);
+  });
+
+  test("a url and -R naming different repos are refused; the same repo twice is fine", () => {
+    expect(no(line("pr comment https://github.com/o/other/pull/1 -R o/r -b x"))).toContain("different repositories");
+    expect(line("pr comment https://github.com/O/R/pull/1 -R o/r -b x").ok).toBe(true);
+    expect(no(line("pr view https://github.com/o/a/pull/1 https://github.com/o/b/pull/2"))).toContain("too many");
+  });
+
+  test("a proxied review is a comment: approving would be recorded under the host's own account", () => {
+    expect(no(line("pr review 1 --approve -b x"))).toContain("comment only");
+    expect(no(line("pr review 1 --request-changes -b x"))).toContain("comment only");
+  });
+
+  test("orca: a repeated flag is refused (the proxy and orca could read different ones), and so is a short flag", () => {
+    expect(no(classifyOrca(["orchestration", "worker-start", "--agent", "codex", "--agent", "claude"]))).toContain("twice");
+    expect(no(classifyOrca(["orchestration", "worker-start", "--agent=codex", "--agent", "claude"]))).toContain("twice");
+    expect(no(classifyOrca(["orchestration", "check", "-x"]))).toContain("--like-this");
+    expect(classifyOrca(["orchestration", "check", "--wait"]).ok).toBe(true);
   });
 });

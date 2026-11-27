@@ -2,7 +2,7 @@
 //
 // Mints a proxy session for a sandboxed process (see src/domain/sandboxSession.ts).
 //
-//   sandbox-session.ts mint <secret-file> <hours>   print a session token; creates the secret file (0600) when it is missing
+//   sandbox-session.ts mint <secret-file> <hours> [term_handle]   print a session token; creates the secret file (0600) when it is missing
 //
 // Run by bin/sandboxed.sh BEFORE the sandbox starts: the secret file lives under
 // ~/.config/jarvis, which the sandbox cannot read. Exit: 0 printed, 1 failed, 2 usage.
@@ -11,10 +11,10 @@ import { randomBytes } from "node:crypto";
 import { dirname } from "node:path";
 import { mintSession } from "../src/domain/sandboxSession.ts";
 
-const [cmd, file, hoursArg] = process.argv.slice(2);
+const [cmd, file, hoursArg, handleArg] = process.argv.slice(2);
 const hours = Number(hoursArg ?? "12");
 if (cmd !== "mint" || !file || !Number.isFinite(hours) || hours <= 0) {
-  console.error("usage: sandbox-session.ts mint <secret-file> <hours>");
+  console.error("usage: sandbox-session.ts mint <secret-file> <hours> [term_handle]");
   process.exit(2);
 }
 try {
@@ -24,7 +24,7 @@ try {
     chmodSync(file, 0o600);
   }
   const secret = readFileSync(file, "utf8").trim();
-  console.log(mintSession(secret, Math.floor(Date.now() / 1000) + Math.round(hours * 3600)));
+  console.log(mintSession(secret, Math.floor(Date.now() / 1000) + Math.round(hours * 3600), /^term_[\w-]{1,80}$/.test(handleArg ?? "") ? handleArg : ""));
 } catch (e) {
   console.error(`sandbox-session: ${e instanceof Error ? e.message : String(e)}`);
   process.exit(1);

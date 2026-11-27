@@ -47,7 +47,13 @@ const VALUE_FLAGS = new Set([
   "-R", "--repo", "-b", "--body", "-F", "--body-file", "-t", "--title", "-B", "--base", "-H", "--head", "--json", "-q", "--jq",
   "-L", "--limit", "-s", "--state", "-a", "--assignee", "-A", "--author", "-l", "--label", "--search", "-S", "-w", "--workflow",
   "--branch", "-u", "--user", "-e", "--event", "--commit", "--cache", "-X", "--method", "--add-label", "--remove-label", "--add-reviewer",
-  "--remove-reviewer", "--milestone", "--reason", "-c", "--comment", "--job", "-j", "--template", "-T", "--color", "--fields", "-f", "--field", "--raw-field", "--input", "--hostname", "--preview", "-p", "--base-branch",
+  "--remove-reviewer", "--milestone", "--reason", "--job", "-j", "--template", "-T", "--color", "--fields", "-f", "--field", "--raw-field", "--input", "--hostname", "--preview", "-p", "--base-branch",
+]);
+
+/** Flags with no value a proxied `gh` command may carry. Anything not here or in VALUE_FLAGS is refused: an allowlist, not a denylist. */
+const GH_BOOLEAN_FLAGS = new Set([
+  "--draft", "--comment", "--comments", "--approve", "--request-changes", "--paginate", "--slurp", "--include", "--silent", "--fill", "--all", "--watch", "--exit-status", "--fail-fast",
+  "--verbose", "--patch", "--name-only", "--log", "--log-failed", "--no-maintainer-edit", "--required", "--help", "-h",
 ]);
 
 type Parsed = { positional: string[]; flags: Map<string, string | true> };
@@ -93,7 +99,7 @@ const GH_READ: Readonly<Record<string, readonly string[]>> = {
   repo: ["view"],
 };
 const GH_WRITE: Readonly<Record<string, Readonly<Record<string, GhWriteAction>>>> = {
-  pr: { comment: "comment", review: "review", edit: "pr-edit", close: "pr-close", reopen: "pr-reopen", create: "pr-create" },
+  pr: { comment: "comment", review: "comment", edit: "pr-edit", close: "pr-close", reopen: "pr-reopen", create: "pr-create" },
   issue: { comment: "comment" },
 };
 
@@ -123,8 +129,14 @@ const classifyApi = (p: Parsed): Classified => {
 export const classifyGh = (argv: readonly string[], repoHint?: string): Classified => {
   const [group, ...rest] = argv;
   if (!group || group.startsWith("-")) return fail("name a gh command: pr, issue, run, workflow, repo or api");
+  // One flag spelling only: `-Fvalue` and `-F=value` are read by gh as `--body-file value`, which this parser would not see.
+  for (const a of argv) {
+    if (a === "--") return fail("`--` is not available through the proxy");
+    if (/^-[A-Za-z]./.test(a)) return fail(`write ${a.slice(0, 2)} and its value as two words: attached short-flag values are not accepted through the proxy`);
+  }
   const p = parseWords(rest);
   for (const f of GH_REFUSED_FLAGS) if (hasFlag(p, f)) return fail(`${f} is not available through the proxy`);
+  if (hasFlag(p, "--recover")) return fail("--recover is not available through the proxy");
   const bodyFile = flagValue(p, "-F", "--body-file");
   if (bodyFile !== undefined && bodyFile !== "-") return fail("a body file is read on the caller's side: the shim sends it as stdin (`--body-file -`)");
 
@@ -133,14 +145,25 @@ export const classifyGh = (argv: readonly string[], repoHint?: string): Classifi
   if (!verb) return fail(`gh ${group} needs a subcommand`);
   if (group === "pr" && verb === "merge") return fail("merging is not something a proxied gh does: run bin/merge-when-green.sh, which asks the bot's merge gate");
 
+  if (group !== "api") {
+    for (const f of p.flags.keys()) {
+      if (!(VALUE_FLAGS.has(f) || GH_BOOLEAN_FLAGS.has(f) || GH_REFUSED_FLAGS.includes(f))) return fail(`${f} is not available through the proxy`);
+    }
+  }
   const reads = GH_READ[group];
   const write = GH_WRITE[group]?.[verb];
   if (!(reads?.includes(verb) || write)) return fail(`gh ${group} ${verb} is not available through the proxy`);
 
+  if (group === "pr" && verb === "review" && hasFlag(p, "--approve", "--request-changes")) {
+    return fail("a proxied review is a comment only: approving or requesting changes would be recorded under the host's own account, not the app's");
+  }
+  if (p.positional.length > 2) return fail("too many arguments");
   const flagRepo = flagValue(p, "-R", "--repo");
   if (flagRepo !== undefined && !REPO.test(flagRepo)) return fail("-R wants owner/name");
   // `gh repo view o/r` and a PR url name the repo themselves; otherwise the clone the caller is in does.
   const urlRepo = p.positional.map(repoFromUrl).find(Boolean) ?? (group === "repo" && REPO.test(p.positional[1] ?? "") ? p.positional[1] : undefined);
+  // The ticket is checked against ONE repo: a url and -R that name two different ones would check one and act on the other.
+  if (flagRepo !== undefined && urlRepo !== undefined && flagRepo.toLowerCase() !== urlRepo.toLowerCase()) return fail("-R and the url name different repositories");
   const repo = flagRepo ?? urlRepo ?? (repoHint && REPO.test(repoHint) ? repoHint : undefined);
   if (!repo) return fail("say which repository: -R owner/name (or run it in a clone whose origin is on GitHub)");
   // The repo the command acts on is the one named here: carry it as -R so the bot's own working directory never decides it.
@@ -168,7 +191,15 @@ export const classifyOrca = (argv: readonly string[]): Classified => {
   if (group !== "orchestration" || !verb) return fail("inside the sandbox orca only does `orca orchestration <verb>` (and `orca status`): terminals, agents and worktrees would start something outside it");
   const level = ORCA_LEVEL[verb];
   if (!level) return fail(`orca orchestration ${verb} is not available inside the sandbox`);
+  for (const a of rest) if (/^-[^-]/.test(a) && a !== "-") return fail("orca flags are written --like-this inside the sandbox");
   const p = parseWords(rest, true);
+  const seenFlags = new Set<string>();
+  for (const a of rest) {
+    const f = flagOf(a)?.[0];
+    if (!f) continue;
+    if (seenFlags.has(f)) return fail(`${f} is given twice: the proxy and orca could read different ones`);
+    seenFlags.add(f);
+  }
   for (const f of ORCA_REFUSED_FLAGS) if (hasFlag(p, f)) return fail(`${f} is not available inside the sandbox`);
   if (verb === "worker-start") {
     if (hasFlag(p, "--terminal")) return fail("worker-start --terminal would put the worker on an existing terminal, outside the sandbox: start a fresh one");

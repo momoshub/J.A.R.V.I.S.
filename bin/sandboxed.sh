@@ -23,7 +23,8 @@
 #
 # Environment (all optional): JARVIS_SANDBOX_HOME (the home to protect, default $HOME),
 # JARVIS_REPO (the bot's checkout, default the one this script is in),
-# SEATBELT_SESSION_HOURS (life of the proxy session token, default 12), SEATBELT_SECRET_PATH (the signing secret),
+# SEATBELT_SESSION_HOURS (life of the proxy session token, default 12), SEATBELT_SECRET_PATH (the signing secret; else the
+# checkout's .env, else the default), ORCA_TERMINAL_HANDLE (an Orca worker's own terminal, signed into its session),
 # SEATBELT_NO_SESSION=1 (mint no session: what the bot sets for a turn),
 # DASHBOARD_PORT (where the bot's proxy listens; default read from the checkout's .env, else 2002).
 set -uo pipefail
@@ -32,7 +33,10 @@ PRINT=0
 [ "${1:-}" = "--print-profile" ] && { PRINT=1; shift; }
 [ "${1:-}" = "--" ] && shift
 
-if [ "${JARVIS_SANDBOXED:-}" = 1 ] && [ "$PRINT" = 0 ]; then
+# Already inside? Ask the OS, never an environment variable: a parent that set JARVIS_SANDBOXED=1 and is not
+# sandboxed would otherwise get its command run bare. The OS refuses a nested sandbox-exec; that refusal IS the test.
+if [ "${JARVIS_SANDBOXED:-}" = 1 ] && [ "$PRINT" = 0 ] && command -v sandbox-exec >/dev/null 2>&1 \
+  && ! sandbox-exec -p '(version 1)(allow default)' /usr/bin/true >/dev/null 2>&1; then
   [ "$#" -gt 0 ] || { echo "usage: sandboxed.sh [--] <command> [args...]" >&2; exit 2; }
   exec "$@"
 fi
@@ -90,11 +94,17 @@ port=${port:-2002}
 # Signed with a secret only the unsandboxed side can read (this script, the bot).
 # The bot starts a turn with SEATBELT_NO_SESSION=1: a turn stands on its ticket and its role, never on a session.
 session=""
+secret_path=${SEATBELT_SECRET_PATH:-}
+if [ -z "$secret_path" ] && [ -r "$REPO/.env" ]; then
+  # the bot reads SEATBELT_SECRET_PATH from .env; an Orca-launched wrapper has no such variable, so read the same line
+  secret_path=$(sed -n 's/^SEATBELT_SECRET_PATH=//p' "$REPO/.env" | tail -1 | sed -e 's/^["'"'"']//' -e 's/["'"'"']$//' -e "s|^~/|$HOME_DIR/|")
+fi
+secret_path=${secret_path:-$HOME_DIR/.config/jarvis/sandbox-secret}
 if [ "${SEATBELT_NO_SESSION:-}" != 1 ]; then
   BUN=$(command -v bun || true)
   [ -n "$BUN" ] || BUN="$HOME_DIR/.bun/bin/bun"
   if [ -x "$BUN" ]; then
-    session=$("$BUN" "$HERE/sandbox-session.ts" mint "${SEATBELT_SECRET_PATH:-$HOME_DIR/.config/jarvis/sandbox-secret}" "${SEATBELT_SESSION_HOURS:-12}" 2>/dev/null) || session=""
+    session=$("$BUN" "$HERE/sandbox-session.ts" mint "$secret_path" "${SEATBELT_SESSION_HOURS:-12}" "${ORCA_TERMINAL_HANDLE:-}" 2>/dev/null) || session=""
   fi
   [ -n "$session" ] || die "could not mint the proxy session (is bun installed, and is $HOME_DIR/.config/jarvis writable?)" 78
 fi

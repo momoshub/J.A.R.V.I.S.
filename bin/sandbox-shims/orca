@@ -10,4 +10,5 @@ HERE=$(cd "$(dirname "$0")" && pwd -P)
 . "$HERE/_proxy.sh"
 
 rewrite_file_args "$@"
+trap '[ -z "${TMP_STDIN:-}" ] || rm -f "$TMP_STDIN"' EXIT
 proxy_exec orca "$STDIN_FILE" ${REWRITTEN[@]+"${REWRITTEN[@]}"}

@@ -13,6 +13,8 @@ PROXY_URL=${JARVIS_PROXY_URL:-}
 
 proxy_bearer() { # <tool>
   local ticket=${JARVIS_RUN_TICKET:-}
+  # A worker ticket is not an Orca credential (the bot refuses it there): orca stands on the session.
+  case "$ticket" in jvwk_*) [ "$1" = gh ] || ticket="" ;; esac
   if [ -z "$ticket" ] && [ -n "${JARVIS_RUN_TICKET_FILE:-}" ] && [ "$1" = gh ]; then
     ticket=$(sed -n 1p "$JARVIS_RUN_TICKET_FILE" 2>/dev/null | tr -d '[:space:]')
   fi
@@ -45,7 +47,7 @@ proxy_exec() { # <tool> <stdin-file|""> <arg>...
   fi
   printf '%s' "$answer" | jq -j '.stdout'
   printf '%s' "$answer" | jq -j '.stderr' >&2
-  rc=$(printf '%s' "$answer" | jq -r '.code')
+  rc=$(printf '%s' "$answer" | jq -r '.code // 1')
   return "$rc"
 }
 
@@ -55,6 +57,7 @@ proxy_exec() { # <tool> <stdin-file|""> <arg>...
 rewrite_file_args() {
   REWRITTEN=()
   STDIN_FILE=""
+  TMP_STDIN=""
   local a next
   while [ "$#" -gt 0 ]; do
     a=$1
@@ -63,12 +66,12 @@ rewrite_file_args() {
       --body-file | -F | --spec-file)
         next=${1:-}
         [ "$#" -gt 0 ] && shift
-        if [ "$next" = "-" ]; then STDIN_FILE=$(mktemp); cat >"$STDIN_FILE"; else STDIN_FILE=$next; fi
+        if [ "$next" = "-" ]; then TMP_STDIN=$(mktemp); cat >"$TMP_STDIN"; STDIN_FILE=$TMP_STDIN; else STDIN_FILE=$next; fi
         REWRITTEN+=("$a" "-")
         ;;
       --body-file=* | --spec-file=*)
         next=${a#*=}
-        if [ "$next" = "-" ]; then STDIN_FILE=$(mktemp); cat >"$STDIN_FILE"; else STDIN_FILE=$next; fi
+        if [ "$next" = "-" ]; then TMP_STDIN=$(mktemp); cat >"$TMP_STDIN"; STDIN_FILE=$TMP_STDIN; else STDIN_FILE=$next; fi
         REWRITTEN+=("${a%%=*}" "-")
         ;;
       *) REWRITTEN+=("$a") ;;

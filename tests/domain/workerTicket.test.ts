@@ -39,17 +39,10 @@ describe("parseWorkerTicketArgs", () => {
   });
 
   test("an action beyond the ceiling is refused, never dropped", () => {
-    for (const a of ["pr-merge", "pr-close", "labels-remove", "nope"]) {
+    for (const a of ["pr-merge", "review", "pr-close", "labels-remove", "nope"]) {
       const r = parseWorkerTicketArgs(["o/r", "pending", "comment", a]);
       expect(r.ok).toBe(false);
     }
-  });
-
-  test("review is grantable for a reviewer's ticket but is never a default", () => {
-    const r = parseWorkerTicketArgs(["o/r", "pending", "comment", "review"]);
-    expect(r.ok && r.req.actions).toEqual(["comment", "review", "git-commit"]);
-    const bare = parseWorkerTicketArgs(["o/r", "pending"]);
-    expect(bare.ok && bare.req.actions).not.toContain("review");
   });
 
   test("ttl is parsed and capped at 6h, and says so", () => {

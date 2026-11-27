@@ -70,7 +70,7 @@ describe("exec proxy: who may write", () => {
   test("a bare session never writes, whatever it asks", async () => {
     const { call, ran } = setup();
     expect(refused(await call({ argv: write }))).toContain("cannot write");
-    expect(refused(await call({ argv: ["pr", "review", "1", "--approve", "-R", "momoshub/x"] }))).toContain("cannot write");
+    expect(refused(await call({ argv: ["pr", "review", "1", "--comment", "-b", "x", "-R", "momoshub/x"] }))).toContain("cannot write");
     expect(ran).toEqual([]);
   });
 
@@ -84,9 +84,11 @@ describe("exec proxy: who may write", () => {
   test("a worker ticket writes only what it was minted with, and the repo is the ticket's", async () => {
     const { call, ran } = setup({ workerOk: (c) => c.action === "comment" && c.repo === "momoshub/x" });
     expect((await call({ argv: write, bearer: "jvwk_ticket" })).ok).toBe(true);
-    expect(refused(await call({ argv: ["pr", "review", "1", "--approve", "-R", "momoshub/x"], bearer: "jvwk_ticket" }))).toContain("does not grant review");
     expect(refused(await call({ argv: ["pr", "comment", "1", "--body", "x", "-R", "momoshub/other"], bearer: "jvwk_ticket" }))).toContain("does not grant comment");
-    expect(ran).toHaveLength(1);
+    // a proxied review is a comment: the same grant, never an approval
+    expect((await call({ argv: ["pr", "review", "1", "--comment", "-b", "x", "-R", "momoshub/x"], bearer: "jvwk_ticket" })).ok).toBe(true);
+    expect(refused(await call({ argv: ["pr", "review", "1", "--approve", "-R", "momoshub/x"], bearer: "jvwk_ticket" }))).toContain("comment only");
+    expect(ran).toHaveLength(2);
   });
 
   test("a worker ticket whose minter lost the worker-ticket grant stops working at once", async () => {
@@ -109,16 +111,43 @@ describe("exec proxy: who may write", () => {
 });
 
 describe("exec proxy: orca", () => {
-  test("a session messages, reads and starts a claude worker; the caller's terminal handle rides along", async () => {
+  const withHandle = mintSession(SECRET, NOW / 1000 + 3600, "term_abc-1");
+
+  test("a session messages and reads as ITS terminal (signed in), and cannot start, stop or resolve", async () => {
     const { call, ran } = setup();
-    expect((await call({ tool: "orca", argv: ["orchestration", "check"], handle: "term_abc-1" })).ok).toBe(true);
+    expect((await call({ tool: "orca", argv: ["orchestration", "check"], bearer: withHandle })).ok).toBe(true);
     expect(ran[0]?.env).toEqual({ ORCA_TERMINAL_HANDLE: "term_abc-1" });
-    expect((await call({ tool: "orca", argv: ["orchestration", "worker-start", "--spec", "x", "--agent", "claude"] })).ok).toBe(true);
+    for (const verb of ["worker-start", "worker-stop", "gate-resolve", "task-update"]) {
+      expect(refused(await call({ tool: "orca", argv: ["orchestration", verb, "--agent", "claude"], bearer: withHandle }))).toContain("tools:orca");
+    }
+    expect(ran).toHaveLength(1);
+  });
+
+  test("the handle in the request is ignored for a session: it cannot read another terminal's mail", async () => {
+    const { call, ran } = setup();
+    await call({ tool: "orca", argv: ["orchestration", "check"], bearer: withHandle, handle: "term_victim" });
+    expect(ran[0]?.env).toEqual({ ORCA_TERMINAL_HANDLE: "term_abc-1" });
+    expect(refused(await call({ tool: "orca", argv: ["orchestration", "check", "--terminal", "term_victim"], bearer: withHandle }))).toContain("own Orca terminal");
+    expect(refused(await call({ tool: "orca", argv: ["orchestration", "send", "--from=term_victim", "--to", "x"], bearer: withHandle }))).toContain("own Orca terminal");
+    expect((await call({ tool: "orca", argv: ["orchestration", "check", "--terminal", "term_abc-1"], bearer: withHandle })).ok).toBe(true);
+  });
+
+  test("a session minted without a terminal has no Orca mailbox to use", async () => {
+    const { call } = setup();
+    expect(refused(await call({ tool: "orca", argv: ["orchestration", "check"] }))).toContain("no Orca terminal");
+  });
+
+  test("a turn names its own handle, may start workers, and may read a run's mailbox", async () => {
+    const { call, ran } = setup();
+    expect((await call({ tool: "orca", argv: ["orchestration", "worker-start", "--agent", "claude"], bearer: "turn-owner", handle: "term_bot" })).ok).toBe(true);
+    expect(ran[0]?.env).toEqual({ ORCA_TERMINAL_HANDLE: "term_bot" });
+    expect((await call({ tool: "orca", argv: ["orchestration", "inbox", "--terminal", "run:run_1"], bearer: "turn-owner", handle: "term_bot" })).ok).toBe(true);
+    expect(refused(await call({ tool: "orca", argv: ["orchestration", "inbox", "--terminal", "run:run_1"], bearer: withHandle }))).toContain("own Orca terminal");
   });
 
   test("a handle that is not a handle is not passed on", async () => {
     const { call, ran } = setup();
-    await call({ tool: "orca", argv: ["orchestration", "check"], handle: "term_x; rm -rf /" });
+    await call({ tool: "orca", argv: ["orchestration", "check"], bearer: "turn-owner", handle: "term_x; rm -rf /" });
     expect(ran[0]?.env).toEqual({});
   });
 

@@ -13,7 +13,7 @@ import { join } from "node:path";
 
 const MAC = process.platform === "darwin" && existsSync("/usr/bin/sandbox-exec");
 if (!MAC) console.log(`SKIPPED sandbox profile tests: needs macOS sandbox-exec (platform=${process.platform})`);
-const t = test.skipIf(!MAC);
+const t = (name: string, fn: () => void): void => test.skipIf(!MAC)(name, fn, 60_000);
 
 const ROOT = join(import.meta.dir, "..", "..");
 const WRAPPER = join(ROOT, "bin", "sandboxed.sh");
@@ -53,6 +53,13 @@ beforeAll(() => {
   write(join(repo, ".githooks/pre-commit"), "#!/bin/sh\n");
   write(join(repo, ".git/hooks/pre-commit"), "#!/bin/sh\n");
   write(join(repo, "src/ok.ts"), "ok\n");
+  write(join(repo, "package.json"), "{}\n");
+  write(join(repo, ".git/config"), "[core]\n");
+  write(join(repo, ".claude/worktrees/w1/src/mine.ts"), "mine\n");
+  write(join(home, ".gitconfig"), "[user]\n");
+  write(join(home, ".claude.json"), "{}\n");
+  write(join(home, ".claude/plugins/p/hook.sh"), "#!/bin/sh\n");
+  write(join(home, ".config/other/keep"), "");
 });
 afterAll(() => {
   if (base) rmSync(base, { recursive: true, force: true });
@@ -136,6 +143,57 @@ describe("sandbox profile (macOS)", () => {
     });
   });
 
+  describe("round 1 of the review: renames, wider writes, keystrokes", () => {
+    t("renaming a protected file or folder away does not open it (mv, then cat)", () => {
+      closed(`mv '${repo}/.env' '${work}/e' && cat '${work}/e' >/dev/null`);
+      write(join(repo, ".env"), "SLACK_BOT_TOKEN=SECRET\n");
+      closed(`mv '${repo}/data/jarvis.db' '${work}/d' && cat '${work}/d' >/dev/null`);
+      write(join(repo, "data/jarvis.db"), "DB\n");
+      closed(`mv "$HOME/.aws" '${work}/aws' && cat '${work}/aws/credentials' >/dev/null`);
+      closed(`mv "$HOME/Library/Application Support/orca/orca-runtime.json" '${work}/o' && cat '${work}/o' >/dev/null`);
+      write(join(home, "Library/Application Support/orca/orca-runtime.json"), '{"token":"T"}\n');
+    });
+    t("nor does moving the folder that holds it (~/.config, the checkout's data/)", () => {
+      try {
+        closed(`mv "$HOME/.config" '${work}/cfg' && cat '${work}/cfg/gh/hosts.yml' >/dev/null`);
+      } finally {
+        if (!existsSync(join(home, ".config")) && existsSync(join(work, "cfg"))) Bun.spawnSync({ cmd: ["mv", join(work, "cfg"), join(home, ".config")] });
+      }
+      try {
+        closed(`mv '${repo}/data' '${work}/dd' && cat '${work}/dd/jarvis.db' >/dev/null`);
+      } finally {
+        if (!existsSync(join(repo, "data")) && existsSync(join(work, "dd"))) Bun.spawnSync({ cmd: ["mv", join(work, "dd"), join(repo, "data")] });
+      }
+    });
+    t("what the host runs later is not writable: .env, .git/config, src, package.json, gitconfig, claude config and plugins", () => {
+      closed(`echo x >> '${repo}/.env'`);
+      closed(`echo x >> '${repo}/.git/config'`);
+      closed(`echo x >> '${repo}/src/ok.ts'`);
+      closed(`echo x >> '${repo}/package.json'`);
+      closed(`echo x >> "$HOME/.gitconfig"`);
+      closed(`echo x >> "$HOME/.claude.json"`);
+      closed(`echo x >> "$HOME/.claude/plugins/p/hook.sh"`);
+    });
+    t("a worker's own worktree under the checkout, and the claude config's neighbours, stay writable", () => {
+      expect(boxed(`echo more >> '${repo}/.claude/worktrees/w1/src/mine.ts' && cat '${repo}/.claude/worktrees/w1/src/mine.ts'`)).toEqual({ code: 0, out: "mine\nmore\n" });
+      expect(boxed(`echo x > "$HOME/.config/other/new" && cat "$HOME/.config/other/new"`)).toEqual({ code: 0, out: "x\n" });
+    });
+    t("TIOCSTI (typing into the terminal that started us) is refused", () => {
+      const probe = join(work, "tiocsti.py");
+      writeFileSync(probe, "import fcntl,termios,sys\ntry:\n fcntl.ioctl(0, termios.TIOCSTI, b'X'); print('INJECTED')\nexcept OSError as e: print('REFUSED')\n");
+      const runPty = (boxedRun: boolean): string => {
+        const cmd = boxedRun ? `'${WRAPPER}' -- /usr/bin/python3 '${probe}'` : `/usr/bin/python3 '${probe}'`;
+        const driver = `import os,pty,select,sys\npid,fd=pty.fork()\nif pid==0: os.execvp('/bin/bash',['/bin/bash','-c',sys.argv[1]])\nout=b''\nwhile True:\n r,_,_=select.select([fd],[],[],8)\n if not r: break\n try: d=os.read(fd,1000)\n except OSError: break\n if not d: break\n out+=d\nprint(out.decode())\n`;
+        const p = Bun.spawnSync({ cmd: ["/usr/bin/python3", "-c", driver, cmd], cwd: work, env: { PATH: "/usr/bin:/bin", HOME: home, JARVIS_SANDBOX_HOME: home, JARVIS_REPO: repo, SEATBELT_NO_SESSION: "1" } });
+        return String(p.stdout);
+      };
+      expect(runPty(false)).toContain("INJECTED");
+      const shut = runPty(true);
+      expect(shut).toContain("REFUSED");
+      expect(shut).not.toContain("INJECTED");
+    });
+  });
+
   describe("starting something outside the sandbox", () => {
     // Copies of the system binaries: the profile must refuse the exec itself, not rely on a path.
     const copy = (src: string, name: string): string => {
@@ -163,8 +221,17 @@ describe("sandbox profile (macOS)", () => {
       expect(existsSync(join(work, "leak2"))).toBe(false);
     });
 
-    t("a copied launchctl is refused too (mach lookup to launchd, not only the path)", () => {
+    t("a copied (re-signed) launchctl is refused too: open outside, refused inside", () => {
       const lc = copy("/bin/launchctl", "lc");
+      // a plain copy of a system binary is killed by the OS; re-signing makes it a real copy that runs
+      Bun.spawnSync({ cmd: ["codesign", "-f", "-s", "-", lc] });
+      const ctl = join(work, "ctl.plist");
+      writeFileSync(ctl, `<?xml version="1.0"?><plist version="1.0"><dict><key>Label</key><string>seatbelt.test.ctl</string><key>ProgramArguments</key><array><string>/usr/bin/touch</string><string>${work}/leak-ctl</string></array><key>RunAtLoad</key><true/></dict></plist>`);
+      rmSync(join(work, "leak-ctl"), { force: true });
+      bare(`'${lc}' bootstrap gui/$(id -u) '${ctl}'; sleep 2`);
+      const wasOpen = existsSync(join(work, "leak-ctl"));
+      bare(`'${lc}' bootout gui/$(id -u)/seatbelt.test.ctl 2>/dev/null; true`);
+      expect(wasOpen).toBe(true);
       const plist = join(work, "job3.plist");
       writeFileSync(plist, `<?xml version="1.0"?><plist version="1.0"><dict><key>Label</key><string>seatbelt.test.cp</string><key>ProgramArguments</key><array><string>/usr/bin/touch</string><string>${work}/leak3</string></array><key>RunAtLoad</key><true/></dict></plist>`);
       rmSync(join(work, "leak3"), { force: true });
@@ -229,6 +296,10 @@ describe("sandbox profile (macOS)", () => {
   });
 
   describe("the wrapper itself", () => {
+    t("an exported JARVIS_SANDBOXED=1 does not skip the sandbox: the OS is asked, not the variable", () => {
+      const p = Bun.spawnSync({ cmd: [WRAPPER, "--", "/bin/bash", "-c", `cat '${repo}/.env' >/dev/null; echo "rc=$?"`], cwd: work, env: { PATH: "/usr/bin:/bin", HOME: home, JARVIS_SANDBOX_HOME: home, JARVIS_REPO: repo, SEATBELT_NO_SESSION: "1", JARVIS_SANDBOXED: "1" } });
+      expect(String(p.stdout)).not.toContain("rc=0");
+    });
     t("is a no-op when already inside (a worker that calls it again gains nothing)", () => {
       const r = boxed(`'${WRAPPER}' -- /bin/echo nested`);
       expect(r).toEqual({ code: 0, out: "nested\n" });

@@ -59,13 +59,24 @@ export type ExecProxyDeps = {
 };
 
 type Standing =
-  | { kind: "session" }
+  | { kind: "session"; handle?: string }
   | { kind: "turn"; actor: string; channel: string; user: AllowedUser }
   | { kind: "worker"; actor: string; channel: string; user: AllowedUser; id: string; dispatchId: string };
 
 const refuse = (status: number, error: string): ExecResult => ({ ok: false, status, error });
 const sessionWhy = (r: Extract<SessionCheck, { ok: false }>): string =>
   r.reason === "expired" ? "this sandbox session has expired: start the process again through bin/sandboxed.sh" : "that is not a valid sandbox session or ticket";
+
+/** Values of `--from` / `--terminal` (also `--flag=value`): whose mailbox or voice a command uses. */
+const namedTerminals = (argv: readonly string[]): string[] => {
+  const out: string[] = [];
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i] as string;
+    const m = a.match(/^--(?:from|terminal)(?:=(.*))?$/);
+    if (m) out.push(m[1] ?? argv[i + 1] ?? "");
+  }
+  return out;
+};
 
 export const createExecProxy = (deps: ExecProxyDeps): { handle: (req: ExecRequest) => Promise<ExecResult> } => {
   /** Who is calling, and may they do `need` on `repo`? A reason when not. */
@@ -78,7 +89,10 @@ export const createExecProxy = (deps: ExecProxyDeps): { handle: (req: ExecReques
       const check = verifySession(secret, bearer, Math.floor(deps.clock() / 1000));
       if (!check.ok) return { status: 403, error: sessionWhy(check) };
       if (need.kind === "write") return { status: 403, error: `a bare session cannot write to GitHub (${need.action}): it needs a ticket that carries \`${need.action}\`` };
-      return { kind: "session" };
+      // Starting, stopping and resolving is the owner's side of Orca: a session may only message and read.
+      if (need.kind === "orca" && need.level === "start") return { status: 403, error: "starting or managing workers needs a turn ticket with tools:orca; a sandbox session may only message and read" };
+      if (need.kind === "orca" && !check.handle) return { status: 403, error: "this process has no Orca terminal of its own (ORCA_TERMINAL_HANDLE was not set when it started through bin/sandboxed.sh)" };
+      return check.handle ? { kind: "session", handle: check.handle } : { kind: "session" };
     }
     // `ticket-renew` is allowed to every live worker ticket on its own repo: the way to ask "is this ticket live and for this repo".
     const action = need.kind === "write" ? need.action : "ticket-renew";
@@ -142,7 +156,18 @@ export const createExecProxy = (deps: ExecProxyDeps): { handle: (req: ExecReques
         return refuse(who.status, who.error);
       }
       const env: Record<string, string> = {};
-      if (classified.tool === "orca" && req.handle && /^term_[\w-]+$/.test(req.handle)) env.ORCA_TERMINAL_HANDLE = req.handle;
+      if (classified.tool === "orca") {
+        // A session's terminal is the one it was minted with; only a turn (the bot's own terminal) names its own.
+        const handle = who.kind === "session" ? who.handle : req.handle;
+        if (handle && /^term_[\w-]+$/.test(handle)) env.ORCA_TERMINAL_HANDLE = handle;
+        // Reading or speaking as another terminal is not for a caller to choose.
+        const named = namedTerminals(classified.argv);
+        if (named.some((t) => t !== handle && !(who.kind === "turn" && t.startsWith("run:")))) {
+          const error = "--from/--terminal may only name the caller's own Orca terminal (a turn may also name a run: mailbox)";
+          audit(who, classified, false, error);
+          return refuse(403, error);
+        }
+      }
       try {
         const out = await deps.run(classified.tool, classified.argv, { ...(req.stdin !== undefined ? { stdin: req.stdin } : {}), env });
         audit(who, classified, out.code === 0, out.code === 0 ? "ok" : `exit ${out.code}`);

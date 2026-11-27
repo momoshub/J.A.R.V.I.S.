@@ -72,6 +72,42 @@
   (regex #"^@HOME_RE@/\.config/jarvis/worker-tickets/[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f]$"))
 (deny file-read-data (literal "@HOME@/.config/jarvis/worker-tickets"))
 
+;; --- no renaming, deleting or writing what may not be read -------------------
+;; A read deny alone is not enough: `mv .env /tmp/e && cat /tmp/e` would move the
+;; file out from under its path. Everything read-denied above is write-denied too,
+;; and so are the directories that hold it (a rename of the parent moves it all).
+(deny file-write*
+  (subpath "@HOME@/.config/gh")
+  (subpath "@HOME@/.config/jarvis")
+  (subpath "@HOME@/.config/op")
+  (subpath "@HOME@/.ssh")
+  (subpath "@HOME@/.aws")
+  (subpath "@HOME@/.gnupg")
+  (subpath "@HOME@/.kube")
+  (literal "@HOME@/.netrc")
+  (literal "@HOME@/.npmrc")
+  (literal "@HOME@/.docker/config.json")
+  (literal "@HOME@/.claude/.credentials.json")
+  (subpath "@HOME@/Library/Keychains")
+  (subpath "/Library/Keychains")
+  (subpath "@HOME@/Library/Application Support/orca/profiles")
+  (subpath "@HOME@/Library/Application Support/orca/ai-vault")
+  (literal "@HOME@/Library/Application Support/orca/orca-runtime.json")
+  (literal "@HOME@/Library/Application Support/orca/orca-e2ee-keypair.json")
+  (literal "@HOME@/Library/Application Support/orca/agent-session-authority.key")
+  (literal "@REPO@/.env")
+  (regex #"^@REPO_RE@/data/[^/]*\.db"))
+(deny file-write-unlink
+  (literal "@HOME@/.config")
+  (literal "@HOME@/.docker")
+  (literal "@HOME@/.claude")
+  (literal "@HOME@/Library")
+  (literal "@HOME@/Library/Application Support")
+  (literal "@HOME@/Library/Application Support/orca")
+  (literal "@REPO@")
+  (literal "@REPO@/data")
+  (literal "@REPO@/.git"))
+
 ;; --- things the host runs later, outside the sandbox: no writing them ---------
 (deny file-write*
   ;; shell startup files (every new terminal, including the owner's)
@@ -80,18 +116,38 @@
   (subpath "@HOME@/.config/zsh")
   ;; login items and agents
   (subpath "@HOME@/Library/LaunchAgents")
-  ;; the credentials' own homes (a login added here would be used by the next unsandboxed gh or ssh)
-  (subpath "@HOME@/.config/gh")
-  (subpath "@HOME@/.config/jarvis")
-  (subpath "@HOME@/.ssh")
-  ;; the user's Claude settings: hooks, status line and API key helpers run in the owner's own sessions
+  ;; git config of the user (core.fsmonitor, hooksPath, aliases run on the next unsandboxed git)
+  (literal "@HOME@/.gitconfig")
+  (subpath "@HOME@/.config/git")
+  ;; the user's Claude settings, MCP servers and plugins: hooks and commands run in the owner's own sessions
   (literal "@HOME@/.claude/settings.json")
   (literal "@HOME@/.claude/settings.local.json")
   (literal "@HOME@/.claude/CLAUDE.md")
+  (literal "@HOME@/.claude.json")
   (subpath "@HOME@/.claude/hooks")
-  ;; Orca's saved settings, where the per-agent launch command (this wrapper) is stored
-  (subpath "@HOME@/Library/Application Support/orca/profiles")
-  ;; the wrapper, this profile and the shims, which run UNsandboxed at the next launch, and git hooks run by the bot
+  (subpath "@HOME@/.claude/plugins")
+  ;; programs the wrapper and the bot run unsandboxed (bun mints the session, gh answers the proxy)
+  (subpath "@HOME@/.bun/bin")
+  (subpath "/opt/homebrew/bin")
+  (subpath "/usr/local/bin")
+  ;; Orca's saved settings, where the per-agent launch command (this wrapper) is stored: covered above
+  ;; the bot's own checkout: what the bot runs again at its next start, and git's shared config and hooks.
+  ;; (A worker's worktree sits under .claude/worktrees and stays writable.)
   (subpath "@REPO@/bin")
+  (subpath "@REPO@/src")
+  (subpath "@REPO@/web")
+  (subpath "@REPO@/node_modules")
+  (literal "@REPO@/package.json")
+  (literal "@REPO@/bun.lock")
+  (literal "@REPO@/bunfig.toml")
+  (literal "@REPO@/.mcp.json")
   (subpath "@REPO@/.githooks")
-  (subpath "@REPO@/.git/hooks"))
+  (literal "@REPO@/.git/config")
+  (subpath "@REPO@/.git/hooks")
+  (literal "@REPO@/.claude/settings.json")
+  (literal "@REPO@/.claude/settings.local.json"))
+
+;; --- keystrokes into the terminal that started us ----------------------------
+;; TIOCSTI types into a terminal's input queue: the shell Orca leaves open after
+;; the agent exits would run it unsandboxed.
+(deny file-ioctl (ioctl-command TIOCSTI))

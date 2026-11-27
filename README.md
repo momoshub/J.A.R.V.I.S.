@@ -999,10 +999,10 @@ What runs under it is cut off from the keychain, `~/.config/gh`, `~/.config/jarv
 1. `claude setup-token`, then `umask 077; pbpaste > ~/.config/jarvis/sandbox-claude-token` (Claude Code's own login lives in the keychain, which the sandbox denies).
 2. In Orca: Settings, Agents, `claude`, command override: `<checkout>/bin/sandboxed-claude.sh`. This is what wraps every Orca worker, including one a worker starts itself.
 3. In `.env`: `SEATBELT=on`. Restart the bot.
-4. Mint a reviewer's or verifier's ticket with `comment review` so its `gh pr review` is accepted.
+4. A reviewer or verifier posts with a ticket that carries `comment` (a proxied review is a comment; approvals are not available inside).
 5. Run `bin/sandbox-selftest.sh` (macOS) to see every escape refused. Switch off: `SEATBELT=off` and clear the Orca override.
 
-Limits, honestly: a process outside the sandbox (your own terminal, the host's `gh` login) still holds the credentials; the checkout's shared `.git/config` is writable from a worktree; owner turns lose the claude.ai connectors and desktop control while it is on. The real fix is a separate macOS user for the keys (not built here).
+Limits, honestly: the dashboard's other endpoints have no authentication and loopback stays reachable (the proxy needs it), so a sandboxed process can still call them until a separate decision closes that; a push-grant ticket's token is held inside; `git push -u` cannot write the shared `.git/config` (push with an explicit branch); a process outside the sandbox (your own terminal, the host's `gh` login) still holds the credentials; the checkout's shared `.git/config` is writable from a worktree; owner turns lose the claude.ai connectors and desktop control while it is on. The real fix is a separate macOS user for the keys (not built here).
 
 ## Stopping a turn
 
@@ -1316,7 +1316,7 @@ is written once to a mode-0600 file in a 0700 folder
 path, to `export` before `bin/github-app.sh` (the helper reads the first line of
 that file; the brain never reads, prints or posts it, and the file is deleted
 when the ticket ends). The ticket works for that one repo and those actions only
-(default `pr-create`, `comment`, `pr-edit` and the app's commit identity; review only when the mint names it; never merge or close), cannot
+(default `pr-create`, `comment`, `pr-edit` and the app's commit identity; never review, merge or close), cannot
 run any command, is checked against the minting person's role on every call,
 expires in 3 hours (max 6) and ends when the worker finishes or dies (the turn's
 `watch worker`), on `worker-ticket revoke`, or at expiry. Tickets are rows in

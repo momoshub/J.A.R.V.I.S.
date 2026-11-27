@@ -19,5 +19,13 @@ for a in "$@"; do
 done
 [ "${1:-}" = help ] && { real=$(PATH=${PATH#"$HERE":} command -v gh) && exec "$real" "$@"; }
 
-rewrite_file_args "$@"
+# `gh api` takes -F key=value fields, not files (and the proxy refuses them): leave its arguments alone.
+if [ "${1:-}" = api ]; then
+  REWRITTEN=("$@")
+  STDIN_FILE=""
+  TMP_STDIN=""
+else
+  rewrite_file_args "$@"
+fi
+trap '[ -z "${TMP_STDIN:-}" ] || rm -f "$TMP_STDIN"' EXIT
 proxy_exec gh "$STDIN_FILE" ${REWRITTEN[@]+"${REWRITTEN[@]}"}

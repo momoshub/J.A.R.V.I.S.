@@ -90,6 +90,12 @@ describe("gh shim", () => {
     expect(seen[0]?.body.stdin).toBe("from stdin");
   });
 
+  test("gh api keeps its own -F key=value (it is a field, not a body file) and nothing is read from disk", async () => {
+    await run("gh", ["api", "repos/o/r/issues", "-F", "key=val"], { JARVIS_PROXY_SESSION: "s" });
+    expect(seen[0]?.body.argv).toEqual(["api", "repos/o/r/issues", "-F", "key=val"]);
+    expect(seen[0]?.body.stdin).toBeUndefined();
+  });
+
   test("a refusal is printed with its reason and exits 1", async () => {
     answer = () => ({ ok: false, error: "a bare session cannot write to GitHub (comment)" });
     const r = await run("gh", ["pr", "comment", "1", "--body", "x", "-R", "o/r"], { JARVIS_PROXY_SESSION: "s" });
@@ -126,6 +132,11 @@ describe("orca shim", () => {
   test("a turn's ticket is its orca credential, so the bot can check the role", async () => {
     await run("orca", ["orchestration", "check"], { JARVIS_PROXY_SESSION: "jvsb_s", JARVIS_RUN_TICKET: "turnticket" });
     expect(seen[0]?.body.bearer).toBe("turnticket");
+  });
+
+  test("a worker ticket in the environment is not sent to orca: the session is", async () => {
+    await run("orca", ["orchestration", "check"], { JARVIS_PROXY_SESSION: "jvsb_s", JARVIS_RUN_TICKET: "jvwk_abc" });
+    expect(seen[0]?.body.bearer).toBe("jvsb_s");
   });
 
   test("a spec file is read here and sent as stdin", async () => {
