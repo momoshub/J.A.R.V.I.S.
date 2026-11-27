@@ -4,7 +4,7 @@
  * Two sessions started a writer on the same bug within minutes, because nothing recorded who held it. A
  * claim is a row keyed by the job (`bug:<id>`, `journey:<id>`, `branch:<name>`), taken BEFORE `worker-start`,
  * bound to the dispatch id it printed, and released when that worker ends or dies. A second claimant is refused
- * with the holder's dispatch id and thread. Jueki's tick lists the live claims, reports a claim whose worker
+ * with the holder's dispatch id and thread. the coordinator's tick lists the live claims, reports a claim whose worker
  * is dead (and releases it) or two writers on one key.
  *
  * Pure: the key grammar, who may take, and what a tick finds. Rows: `infrastructure/db/writerClaimRepo.ts`.

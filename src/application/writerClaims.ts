@@ -1,6 +1,6 @@
 /**
  * One writer per job (domain/writerClaim.ts), the operations the `claim` command, the worker-end hook and
- * Jueki's tick share. A claim is taken before `worker-start`, bound to its dispatch after, released when the
+ * the coordinator's tick share. A claim is taken before `worker-start`, bound to its dispatch after, released when the
  * worker ends (the same `watch worker` hook that revokes its ticket) or, if that never fired, by the tick.
  */
 import {

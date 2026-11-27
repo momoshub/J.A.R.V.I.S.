@@ -7,7 +7,7 @@
  * could make, so the bot could approve its own fix with nobody pressing. Only a
  * press carries `body.user.id` and the channel/ts of the message pressed.
  *
- * A report Jueki approved at filing (`routeBugReport`) already has its fix turn running; the owner's Reject
+ * A report the coordinator approved at filing (`routeBugReport`) already has its fix turn running; the owner's Reject
  * on it stops that turn (`stoppedBrief`). Only that: an Approve on it, or a press on an approval the owner
  * gave himself, changes nothing.
  */
@@ -41,7 +41,7 @@ export type BugPressOutcome =
   | {
       readonly kind: "rejected";
       readonly id: number;
-      /** Set when Jueki had already approved it: the thread its fix turn runs in and what to tell that turn. */
+      /** Set when the coordinator had already approved it: the thread its fix turn runs in and what to tell that turn. */
       readonly stop?: { readonly channel: string; readonly threadTs: string; readonly brief: string };
     };
 
@@ -60,8 +60,8 @@ export const decideBugReportPress = async (
   if (!b.noticeChannel || !b.noticeTs || press.channel !== b.noticeChannel || press.messageTs !== b.noticeTs) {
     return { kind: "refused", why: "wrong-message", id: b.id };
   }
-  if (b.state === "approved" && b.decidedBy === "jueki" && press.actionId === BUG_REJECT_ACTION) {
-    if (!deps.bugReports.revokeJueki(b.id, deps.clock())) return { kind: "decided", id: b.id, state: b.state };
+  if (b.state === "approved" && b.decidedBy === "coordinator" && press.actionId === BUG_REJECT_ACTION) {
+    if (!deps.bugReports.revokeCoordinator(b.id, deps.clock())) return { kind: "decided", id: b.id, state: b.state };
     await deps.slack
       ?.settleInteractive(b.noticeChannel, b.noticeTs, settledText(b.id, inputOf(b), "rejected", press.slackUserId), SIGNATURES.bugReport)
       .catch(logAndIgnore("bug report settle"));

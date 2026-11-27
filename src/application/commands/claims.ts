@@ -33,7 +33,7 @@ export const CLAIM_COMMANDS: readonly CommandDef[] = [
           "*claim* - one writer per job; check it before every `worker-start` that writes code",
           `- \`${prefix} claim take bug:23 branch:fix/x\` - before the writer starts: every key or none. Refused when another thread or worker holds one (the answer names its dispatch id and thread): do not start a second writer, follow that one`,
           `- \`${prefix} claim bind <ctx_...> bug:23 branch:fix/x\` - right after \`worker-start\` printed the dispatch id (a claim never bound is released after 30 minutes)`,
-          `- \`${prefix} claim release <key>\` - the holding thread ends its claim early (the owner adds \`--force\`). Otherwise it is released when the worker ends or dies, by the watch on it or Jueki's tick`,
+          `- \`${prefix} claim release <key>\` - the holding thread ends its claim early (the owner adds \`--force\`). Otherwise it is released when the worker ends or dies, by the watch on it or the coordinator's tick`,
           `- \`${prefix} claim list\``,
         ].join("\n");
       }

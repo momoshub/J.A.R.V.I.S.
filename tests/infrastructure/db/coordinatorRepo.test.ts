@@ -1,16 +1,16 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { migrate } from "../../../src/infrastructure/db/schema.ts";
-import { createJuekiRepo } from "../../../src/infrastructure/db/juekiRepo.ts";
+import { createCoordinatorRepo } from "../../../src/infrastructure/db/coordinatorRepo.ts";
 
 const repo = () => {
   const db = new Database(":memory:");
   migrate(db);
   migrate(db); // idempotent
-  return createJuekiRepo(db);
+  return createCoordinatorRepo(db);
 };
 
-describe("juekiRepo", () => {
+describe("coordinatorRepo", () => {
   test("digest lines are kept per day, oldest first", () => {
     const r = repo();
     r.addLine("2026-11-27", 1, "a");
@@ -55,7 +55,7 @@ describe("juekiRepo", () => {
     expect(r.openBlocker({ key: "deploy-x", kind: "decision", prod: false, text: "third" }, 3).prod).toBe(true);
   });
 
-  test("close: a pending blocker Jueki fixed itself; a decided one is not touched; the same key opens again from nothing", () => {
+  test("close: a pending blocker the coordinator fixed itself; a decided one is not touched; the same key opens again from nothing", () => {
     const r = repo();
     const a = r.openBlocker({ key: "k", kind: "prod-write", prod: true, text: "old" }, 1);
     r.setNotice(a.id, "D1", "1.1");
@@ -89,7 +89,7 @@ describe("juekiRepo", () => {
   });
 });
 
-describe("the lookups Jueki reads other tables with", () => {
+describe("the lookups the coordinator reads other tables with", () => {
   test("lapsedSince: expired and failed watches since a time, not fired or waiting ones", async () => {
     const { createWatchRepo } = await import("../../../src/infrastructure/db/watchRepo.ts");
     const db = new Database(":memory:");

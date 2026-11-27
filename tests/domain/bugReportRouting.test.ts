@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
-  approvedByJuekiBrief,
-  approvedByJuekiText,
+  approvedByCoordinatorBrief,
+  approvedByCoordinatorText,
   linkIsThread,
   parseReport,
   routeBugReport,
@@ -43,7 +43,7 @@ describe("parseReport: the claims a report states", () => {
   });
 });
 
-describe("routeBugReport: Jueki decides the small ones, in code", () => {
+describe("routeBugReport: the coordinator decides the small ones, in code", () => {
   test("the owner asked for the fix in this very thread: approved", () => {
     expect(routeBugReport(input(), claims({ ownerAsked: true }), filing())).toMatchObject({ route: "approve" });
   });
@@ -103,17 +103,17 @@ describe("linkIsThread", () => {
   });
 });
 
-describe("what Jueki's approval says", () => {
-  test("the notice names Jueki and the reason and leaves Reject as the way to stop it", () => {
-    const t = approvedByJuekiText(4, input(), "the owner asked for the fix in that thread");
-    expect(t).toContain("approved by Jueki: the owner asked for the fix in that thread");
+describe("what the coordinator's approval says", () => {
+  test("the notice names the coordinator and the reason and leaves Reject as the way to stop it", () => {
+    const t = approvedByCoordinatorText("Boss", 4, input(), "the owner asked for the fix in that thread");
+    expect(t).toContain("approved by Boss: the owner asked for the fix in that thread");
     expect(t).toContain("Press Reject to stop it");
   });
 
   test("the fix turn is told it is the owner's ask, and what to do if it is rejected", () => {
-    const b = approvedByJuekiBrief(4, input(), "low-risk");
-    expect(b.startsWith("Bug #4 is approved by Jueki")).toBe(true);
+    const b = approvedByCoordinatorBrief(4, input(), "low-risk");
+    expect(b.startsWith("Bug #4 is approved by the coordinator")).toBe(true);
     expect(b).toContain("dedupe on message ts");
-    expect(stoppedBrief(4)).toContain("Bug #4 was approved by Jueki and the owner then rejected it");
+    expect(stoppedBrief(4)).toContain("Bug #4 was approved by the coordinator and the owner then rejected it");
   });
 });

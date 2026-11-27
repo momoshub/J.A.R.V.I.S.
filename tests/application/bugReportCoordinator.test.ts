@@ -23,7 +23,7 @@ const setup = (withRunTurn = true) => {
     clock: () => 1_000_000_000,
     roles: seededBook({ commands: listCommandInfo().map((c) => ({ name: c.name, minRole: c.minRole })) }),
     ...(withRunTurn ? { runTurn: async (req: Turn) => void turns.push(req) } : {}),
-    jueki: { act: async (l: string) => void acts.push(l) } as unknown as CommandDeps["jueki"],
+    coordinator: { act: async (l: string) => void acts.push(l) } as unknown as CommandDeps["coordinator"],
   };
   return { deps, bugReports, turns, acts };
 };
@@ -40,19 +40,19 @@ const inThread = (deps: CommandDeps, line: string, ownerMessage: boolean, who = 
   });
 const settle = () => new Promise((r) => setTimeout(r, 5));
 
-describe("bug-report: Jueki approves the owner's own ask", () => {
-  test("the owner asked in that thread: approved by Jueki, the fix turn starts in the notice's thread as the owner, Reject is the one button", async () => {
+describe("bug-report: the coordinator approves the owner's own ask", () => {
+  test("the owner asked in that thread: approved by the coordinator, the fix turn starts in the notice's thread as the owner, Reject is the one button", async () => {
     const { deps, bugReports, turns, acts } = setup();
     const out = await inThread(deps, `${REPORT} --owner-asked`, true);
     await settle();
-    expect(out).toContain("approved by Jueki");
+    expect(out).toContain("approved by the coordinator");
     expect(out).toContain("Do not fix it in this turn");
-    expect(bugReports.get(1)).toMatchObject({ state: "approved", decidedBy: "jueki" });
+    expect(bugReports.get(1)).toMatchObject({ state: "approved", decidedBy: "coordinator" });
     expect(slackCalls.buttons).toEqual(["jv:bug-report:reject:1"]);
-    expect(slackCalls.posts[0]!.text).toContain("approved by Jueki: the owner asked for the fix in that thread");
+    expect(slackCalls.posts[0]!.text).toContain("approved by Coordinator: the owner asked for the fix in that thread");
     expect(turns).toHaveLength(1);
     expect(turns[0]).toMatchObject({ channelId: OWNER, threadTs: "notice-1", slackUserId: OWNER });
-    expect(turns[0]!.text.startsWith("Bug #1 is approved by Jueki")).toBe(true);
+    expect(turns[0]!.text.startsWith("Bug #1 is approved by the coordinator")).toBe(true);
     expect(turns[0]!.text).toContain("dedupe on message ts");
     expect(acts[0]).toContain("bug #1 approved by me");
   });
@@ -91,13 +91,13 @@ describe("bug-report: Jueki approves the owner's own ask", () => {
   });
 });
 
-describe("bug-report: Jueki approves a low-risk own-source fix", () => {
+describe("bug-report: the coordinator approves a low-risk own-source fix", () => {
   test("stated reversible from the owner's own conversation: approved", async () => {
     const { deps, bugReports, turns } = setup();
     const out = await inThread(deps, `${REPORT} --reversible`, false);
     await settle();
-    expect(out).toContain("approved by Jueki");
-    expect(bugReports.get(1)?.decidedBy).toBe("jueki");
+    expect(out).toContain("approved by the coordinator");
+    expect(bugReports.get(1)?.decidedBy).toBe("coordinator");
     expect(slackCalls.posts[0]!.text).toContain("low-risk fix in my own source");
     expect(turns).toHaveLength(1);
   });
@@ -118,7 +118,7 @@ describe("bug-report: Jueki approves a low-risk own-source fix", () => {
   });
 });
 
-describe("the owner's Reject on what Jueki approved", () => {
+describe("the owner's Reject on what the coordinator approved", () => {
   const press = (over: Partial<Parameters<typeof decideBugReportPress>[1]> = {}) => ({
     slackUserId: OWNER,
     actionId: BUG_REJECT_ACTION,
@@ -135,7 +135,7 @@ describe("the owner's Reject on what Jueki approved", () => {
     const out = await decideBugReportPress(approval, press());
     expect(out).toMatchObject({ kind: "rejected", id: 1, stop: { channel: OWNER, threadTs: "notice-1" } });
     if (out.kind !== "rejected" || !out.stop) throw new Error("not stopped");
-    expect(out.stop.brief).toContain("approved by Jueki and the owner then rejected it");
+    expect(out.stop.brief).toContain("approved by the coordinator and the owner then rejected it");
     expect(bugReports.get(1)).toMatchObject({ state: "rejected", decidedBy: "" });
     expect(slackCalls.settled[0]!.text).toContain("rejected by");
     // a second press changes nothing

@@ -162,13 +162,13 @@ export const linkIsThread = (link: string, channelId: string, threadTs: string |
 export type BugFiling = { readonly fromOwner: boolean; readonly ownerTurn: boolean; readonly sameThread: boolean };
 
 export type BugRoute =
-  /** Jueki starts the fix; `reason` is what the notice says. */
+  /** The coordinator starts the fix; `reason` is what the notice says. */
   | { readonly route: "approve"; readonly reason: string }
   /** The owner's buttons, as before. */
   | { readonly route: "ask"; readonly why: string };
 
 /**
- * Who decides a new bug report. Jueki approves in two cases only:
+ * Who decides a new bug report. The coordinator approves in two cases only:
  * 1. the owner himself asked for the fix (or said to approve it) in the conversation it was filed from: the turn claims
  *    it (`--owner-asked`) and the code checks it against the ticket's owner bit and the thread;
  * 2. it is a low-risk fix to my own source, filed from the owner's own conversation: it states `--reversible`, none of the
@@ -210,25 +210,25 @@ export const approvedBrief = (id: number, i: BugReportInput): string =>
     `plan: ${i.plan}`,
   ].join("\n");
 
-/** The notice of a report Jueki approved: what it decided, why, and the one button left. */
-export const approvedByJuekiText = (id: number, i: BugReportInput, reason: string): string =>
+/** The notice of a report the coordinator approved: what it decided, why, and the one button left. */
+export const approvedByCoordinatorText = (name: string, id: number, i: BugReportInput, reason: string): string =>
   [
-    `🐞 bug #${id} - approved by Jueki: ${cleanLine(reason, 160)}, fixing it`,
+    `🐞 bug #${id} - approved by ${name}: ${cleanLine(reason, 160)}, fixing it`,
     `*Issue:* ${i.issue}`,
     `<${i.thread}|the thread>`,
     "Press Reject to stop it.",
   ].join("\n");
 
-/** What the fix turn Jueki's approval starts is told to do (the same ask as an owner's Approve). */
-export const approvedByJuekiBrief = (id: number, i: BugReportInput, reason: string): string =>
+/** What the fix turn the coordinator's approval starts is told to do (the same ask as an owner's Approve). */
+export const approvedByCoordinatorBrief = (id: number, i: BugReportInput, reason: string): string =>
   [
-    `Bug #${id} is approved by Jueki (${cleanLine(reason, 160)}), the owner's coordinator deciding for them, and the owner can still reject it: this is the owner's ask for the fix, so fix it now, in the usual way (a worktree and a PR), and tell the owner here when it is up.`,
+    `Bug #${id} is approved by the coordinator (${cleanLine(reason, 160)}), deciding for the owner, and the owner can still reject it: this is the owner's ask for the fix, so fix it now, in the usual way (a worktree and a PR), and tell the owner here when it is up.`,
     `thread: ${i.thread}`,
     `issue: ${i.issue}`,
     ...(i.summary ? [`cause: ${i.summary}`] : []),
     `plan: ${i.plan}`,
   ].join("\n");
 
-/** Told to the fix turn when the owner presses Reject on a report Jueki approved. */
+/** Told to the fix turn when the owner presses Reject on a report the coordinator approved. */
 export const stoppedBrief = (id: number): string =>
-  `Bug #${id} was approved by Jueki and the owner then rejected it (they pressed Reject): stop. Change nothing more, do not merge or restart anything, close any PR you opened for it unmerged, and say so.`;
+  `Bug #${id} was approved by the coordinator and the owner then rejected it (they pressed Reject): stop. Change nothing more, do not merge or restart anything, close any PR you opened for it unmerged, and say so.`;

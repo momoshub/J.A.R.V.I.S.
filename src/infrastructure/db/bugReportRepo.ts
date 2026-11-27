@@ -17,7 +17,7 @@ export type BugReport = {
   readonly noticeTs: string;
   readonly createdAt: number;
   readonly decidedAt: number;
-  /** `jueki` when Jueki approved it (the owner's Reject can still stop it), empty when the owner pressed the button. */
+  /** `coordinator` when the coordinator approved it (the owner's Reject can still stop it), empty when the owner pressed the button. */
   readonly decidedBy: string;
 };
 
@@ -67,10 +67,10 @@ export type BugReportRepo = {
   /** How many reports were filed at or after `since`. */
   countSince: (since: number) => number;
   setNotice: (id: number, channel: string, ts: string) => void;
-  /** Pending -> approved or rejected; false when it was not pending (so a second press changes nothing). `by` is `jueki` for Jueki's own approval. */
+  /** Pending -> approved or rejected; false when it was not pending (so a second press changes nothing). `by` is `coordinator` for the coordinator's own approval. */
   decide: (id: number, state: "approved" | "rejected", at: number, by?: string) => boolean;
-  /** Approved by Jueki -> rejected, by the owner's Reject; false for anything else (an owner's own approval is final). */
-  revokeJueki: (id: number, at: number) => boolean;
+  /** Approved by the coordinator -> rejected, by the owner's Reject; false for anything else (an owner's own approval is final). */
+  revokeCoordinator: (id: number, at: number) => boolean;
   /** Drop a report whose question never went out. */
   discard: (id: number) => void;
 };
@@ -91,7 +91,7 @@ export const createBugReportRepo = (db: DbClient): BugReportRepo => {
   const noticeStmt = db.query("UPDATE bug_reports SET notice_channel = ?, notice_ts = ? WHERE id = ?");
   const decideStmt = db.query("UPDATE bug_reports SET state = ?, decided_at = ?, decided_by = ? WHERE id = ? AND state = 'pending'");
   const revokeStmt = db.query(
-    "UPDATE bug_reports SET state = 'rejected', decided_at = ?, decided_by = '' WHERE id = ? AND state = 'approved' AND decided_by = 'jueki'",
+    "UPDATE bug_reports SET state = 'rejected', decided_at = ?, decided_by = '' WHERE id = ? AND state = 'approved' AND decided_by = 'coordinator'",
   );
   const discardStmt = db.query("DELETE FROM bug_reports WHERE id = ?");
 
@@ -122,7 +122,7 @@ export const createBugReportRepo = (db: DbClient): BugReportRepo => {
     countSince: (since) => countStmt.get(since)?.n ?? 0,
     setNotice: (id, channel, ts) => void noticeStmt.run(channel, ts, id),
     decide: (id, state, at, by = "") => decideStmt.run(state, at, by, id).changes > 0,
-    revokeJueki: (id, at) => revokeStmt.run(at, id).changes > 0,
+    revokeCoordinator: (id, at) => revokeStmt.run(at, id).changes > 0,
     discard: (id) => void discardStmt.run(id),
   };
 };
