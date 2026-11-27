@@ -73,6 +73,23 @@ describe("bin/risk-class.ts", () => {
     expect(run("--diff", "missing.diff").code).toBe(2);
   });
 
+  test("a diff it cannot read is exit 2, never docs", () => {
+    writeFileSync(join(dir, "empty.diff"), "");
+    const empty = run("--diff", "empty.diff");
+    expect(empty.code).toBe(2);
+    expect(empty.err).toContain("empty");
+    writeFileSync(join(dir, "plain.diff"), ["--- a/README.md", "+++ b/README.md", "@@ -1 +1,2 @@", " hello", "+x"].join("\n"));
+    const headerless = run("--diff", "plain.diff");
+    expect(headerless.code).toBe(2);
+    expect(headerless.err).toContain("diff --git");
+  });
+
+  test("a checkout with diff.noprefix still reads its own diff", () => {
+    sh("git", "config", "diff.noprefix", "true");
+    writeFileSync(join(dir, "src", "a.ts"), "export const a = 1;\nexport const t = process.env.GH_TOKEN;\n");
+    expect(run("--base", "base").out).toContain("risk class: capability");
+  });
+
   test("an unknown base is an error, not a silent docs", () => {
     const r = run("--base", "nope");
     expect(r.code).toBe(2);

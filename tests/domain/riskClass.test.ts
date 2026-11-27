@@ -108,6 +108,28 @@ describe("classifyDiff: by what the change can do", () => {
     expect(cls(file("src/x.ts", "--- if (!hasPermission(u)) return;"))).toBe("capability");
   });
 
+  test("a comment opener with code after it is code, and a `*` line that steers or names a capability is not a comment", () => {
+    for (const line of ['/* ok */ Bun.spawnSync({ cmd: ["sh", "-c", userText] });', "*/ export const ORCA_DENY: string[] = [];"]) {
+      expect(cls(file("src/x.ts", ...add(line)))).not.toBe("docs");
+    }
+    expect(cls(file("src/x.ts", "-/* guard */ if (!hasPermission(user, 'merge')) return;"))).toBe("capability");
+    expect(cls(file("src/x.ts", ...add(`* ${PROSE}`)))).toBe("prompt");
+    // real comment shapes stay docs
+    expect(cls(file("src/x.ts", ...add("/* a note */", "/**", " * explains the retry", " */", "/* open")))).toBe("docs");
+  });
+
+  test("a rename out of a workflow, hook or source file into a doc path keeps the old path's class", () => {
+    const rename = (oldPath: string, path: string, patch = ""): ChangedFile => ({ path, oldPath, patch });
+    expect(cls(rename(".github/workflows/ci.yml", "docs/ci.md"))).toBe("capability");
+    expect(cls(rename(".githooks/pre-push", "docs/pre-push.md"))).toBe("capability");
+    expect(cls(rename("src/domain/toolPolicy.ts", "docs/toolPolicy.md"))).toBe("runtime");
+    expect(cls(rename("src/domain/toolPolicy.ts", "docs/toolPolicy.md", "@@ -1,1 +0,0 @@\n-export const DENY = ['Bash(rm:*)'];"))).toBe("capability");
+    // a doc moved between doc paths is still docs
+    expect(cls(rename("docs/a.md", "docs/b.md"))).toBe("docs");
+    // a deleted workflow with no readable lines
+    expect(cls({ path: ".github/workflows/ci.yml", patch: "", deleted: true })).toBe("capability");
+  });
+
   test("a comment that disables a tool is code, not a comment", () => {
     expect(cls(file("src/x.ts", ...add("// @ts-ignore")))).toBe("runtime");
   });

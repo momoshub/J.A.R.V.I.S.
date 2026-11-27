@@ -104,17 +104,22 @@ const DOC_EXT_RE = /\.(?:md|mdx|txt|rst|png|jpe?g|gif|svg|webp|ico|pdf)$|(?:^|\/
 const SLASH_COMMENT_EXT_RE = /\.(?:ts|tsx|js|jsx|mjs|cjs|css|scss|java|go|rs|c|h|cpp)$/;
 const HASH_COMMENT_EXT_RE = /\.(?:sh|bash|zsh|ya?ml|toml|py|rb|env|example|gitignore|gitleaksignore)$|(?:^|\/)\.env[\w.]*$|(?:^|\/)\.githooks\//;
 
-const isComment = (path: string, line: string): boolean => {
+function isComment(path: string, line: string): boolean {
   const t = line.trim();
   if (t === "") return true;
   if (SLASH_COMMENT_EXT_RE.test(path)) {
     // a `// @ts-ignore` or `/* istanbul ignore */` steers a tool, it is not prose
     if (/@ts-(?:ignore|expect-error|nocheck)|eslint-disable|biome-ignore|istanbul ignore/.test(t)) return false;
-    return t.startsWith("//") || t.startsWith("/*") || t.startsWith("*") || t.startsWith("*/");
+    if (t.startsWith("//")) return true;
+    // code after a closing `*/` is code: `/* ok */ run(x)` and `*/ export const X = 1` are not comments
+    if (t.startsWith("/*") || t.startsWith("*/")) return t.lastIndexOf("*/") < 0 ? t.startsWith("/*") : t.slice(t.lastIndexOf("*/") + 2).trim() === "";
+    // a `*` line is a block-comment body only as far as it reads as prose: one that names a capability or steers an agent is scanned as what it is
+    if (t.startsWith("*")) return capabilityOf(t) === undefined && !isPromptText(t);
+    return false;
   }
   if (HASH_COMMENT_EXT_RE.test(path)) return t.startsWith("#") && !t.startsWith("#!");
   return false;
-};
+}
 
 const STEERING_WORD_RE = /\b(?:never|always|must|do not|don't|you|your|should|before you|only if|instead of|make sure|ask the|tell the)\b/i;
 const CODE_SHAPE_RE = /=>|\bfunction\b|^\s*(?:const|let|var|import|export|return|if|for|while|type|interface)\b|[;{}]\s*$|\)\s*[,;]?\s*$/;
@@ -168,14 +173,18 @@ const classifyFile = (file: ChangedFile): { risk: FileRisk; promptText: boolean 
     return DOC_EXT_RE.test(file.path) && !steering ? done([{ class: "docs", reason: "binary doc asset", promptText: false }]) : done([{ class: "runtime", reason: "binary file", promptText: false }]);
   }
   if (file.modeChanged) verdicts.push({ class: "runtime", reason: "file mode change", promptText: false });
-  if (file.deleted && !steering && !DOC_EXT_RE.test(file.path)) verdicts.push({ class: "runtime", reason: "file deleted", promptText: false });
+  if (file.deleted && !steering && !paths.every((p) => DOC_EXT_RE.test(p))) verdicts.push({ class: "runtime", reason: "file deleted", promptText: false });
 
-  if (LOCKFILE_RE.test(file.path) && lines.length > 0) verdicts.push({ class: "capability", reason: "dependencies: lockfile changed", promptText: false });
-  if (MANIFEST_RE.test(file.path) && lines.length > 0) verdicts.push({ class: "capability", reason: "permissions: slack app manifest changed", promptText: false });
-  if (WORKFLOW_RE.test(file.path) && lines.length > 0) verdicts.push({ class: "capability", reason: "ci: workflow changed", promptText: false });
-  if (GITHOOK_RE.test(file.path) && lines.length > 0) verdicts.push({ class: "capability", reason: "exec: git hook changed", promptText: false });
+  // a rename or delete changes a file whose old path counts too, even with no changed line
+  const moved = lines.length > 0 || file.deleted === true || paths.length > 1;
+  const any = (re: RegExp): boolean => moved && paths.some((p) => re.test(p));
+  if (any(LOCKFILE_RE)) verdicts.push({ class: "capability", reason: "dependencies: lockfile changed", promptText: false });
+  if (any(MANIFEST_RE)) verdicts.push({ class: "capability", reason: "permissions: slack app manifest changed", promptText: false });
+  if (any(WORKFLOW_RE)) verdicts.push({ class: "capability", reason: "ci: workflow changed", promptText: false });
+  if (any(GITHOOK_RE)) verdicts.push({ class: "capability", reason: "exec: git hook changed", promptText: false });
 
-  const prose = DOC_EXT_RE.test(file.path) && !steering;
+  // prose only when every path the file had is a doc path: a rename out of source into `.md` is still that source
+  const prose = paths.every((p) => DOC_EXT_RE.test(p)) && !steering;
   const test = TEST_PATH_RE.test(file.path);
   for (const { text } of lines) {
     if (text.trim() === "") continue;

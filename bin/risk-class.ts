@@ -55,7 +55,7 @@ const readDiff = (): string => {
   }
   // committed work since the merge base and everything not committed yet, in one diff of the working tree
   const mergeBase = git("merge-base", base, "HEAD").trim();
-  const tracked = git("diff", "--no-color", "--no-ext-diff", mergeBase);
+  const tracked = git("diff", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", mergeBase);
   // untracked files are additions: written as a diff here rather than touching the index
   const added = git("ls-files", "--others", "--exclude-standard")
     .split("\n")
@@ -71,5 +71,10 @@ const readDiff = (): string => {
   return tracked + added;
 };
 
-const report = classifyDiff(parseUnifiedDiff(readDiff()));
+const diffText = readDiff();
+const parsed = parseUnifiedDiff(diffText);
+// a diff that cannot be read must not look like "nothing changed": the guide treats exit 2 as `runtime`
+if (diffFile !== undefined && diffText.trim() === "") fail("the diff is empty: nothing to classify, or the command that made it failed");
+if (diffText.trim() !== "" && parsed.length === 0) fail("no `diff --git` file headers found: pass `git diff --src-prefix=a/ --dst-prefix=b/` or `gh pr diff` output");
+const report = classifyDiff(parsed);
 console.log(json ? JSON.stringify(report, null, 2) : formatRiskReport(report));
