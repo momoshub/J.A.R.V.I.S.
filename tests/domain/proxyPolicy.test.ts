@@ -253,3 +253,20 @@ describe("classifyGh: what the third review found", () => {
     expect(no("pr list -a me")).toBe("ALLOWED");
   });
 });
+
+describe("classifyGh: what the fourth review found", () => {
+  const no = (l: string): string => {
+    const c = classifyGh(l.split(" "), "o/r");
+    return c.ok ? "ALLOWED" : c.error;
+  };
+  test("pr create names its head and base, so gh never asks git which branch it is on", () => {
+    expect(no("pr create -t t -b b")).toContain("--head and --base");
+    expect(no("pr create -t t -b b --head h")).toContain("--head and --base");
+    expect(no("pr create -t t -b b --head h --base main")).toBe("ALLOWED");
+  });
+  test("-c is a boolean only on pr review: on close and reopen it is a comment text", () => {
+    expect(no("pr close 5 -c")).toContain("spell the option out");
+    expect(no("pr reopen 5 -c x")).toContain("spell the option out");
+    expect(no("pr review 5 -c -b ok")).toBe("ALLOWED");
+  });
+});

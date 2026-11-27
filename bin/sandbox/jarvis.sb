@@ -5,10 +5,11 @@
 ;; an allow written after a deny carves an exception out of it.
 ;;
 ;; The idea: the model's shell can do anything a person can, so the profile takes
-;; away every CREDENTIAL (the keychain, gh's login, the App key, the bot's .env and
-;; databases, the Orca runtime token, the SSH agent) and every way to start
+;; away every CREDENTIAL it knows of (the keychain, gh's login, the App key, the bot's .env and
+;; databases, the Orca runtime token, the SSH agent) and every way it knows to start
 ;; something OUTSIDE the sandbox (launchd, LaunchServices, Apple Events, cron/at,
-;; files the host runs on login). What a sandboxed caller still needs from those
+;; files the host runs on login). The home folder is deny-by-default for reads and writes, with an
+;; allowlist; outside the home, and outside the bot's checkout, it is still a denylist. What a sandboxed caller still needs from those
 ;; credentials goes through the bot's ticketed proxy (bin/sandbox-shims/*).
 ;; The file is covered by tests/infrastructure/sandboxProfile.test.ts.
 (version 1)
@@ -41,6 +42,52 @@
 ;; Orca's runtime socket: through it a process can open an unsandboxed terminal and type into it.
 (deny network-outbound
   (remote unix-socket (path-regex #"/Application Support/orca/")))
+
+;; --- the home is closed by default -------------------------------------------
+;; A denylist of secrets never ends (round after round of review found another credential
+;; store, another file the owner runs later). So the home is denied for reading AND writing,
+;; and only what a worker really uses is allowed back. The specific denies further down
+;; still win over these allows (last match wins).
+(deny file-read* (subpath "@HOME@"))
+(allow file-read*
+  (literal "@HOME@")
+  (regex #"^@HOME_RE@/\.[^/]*$")
+  (subpath "@HOME@/Workspaces")
+  (subpath "@HOME@/.jarvis/worker-home")
+  (subpath "@HOME@/.jarvis/briefs")
+  (subpath "@HOME@/.claude")
+  (subpath "@HOME@/.bun")
+  (subpath "@HOME@/.cache")
+  (subpath "@HOME@/.npm")
+  (subpath "@HOME@/.local")
+  (subpath "@HOME@/.cargo")
+  (subpath "@HOME@/.rustup")
+  (subpath "@HOME@/.nvm")
+  (subpath "@HOME@/.config/git")
+  (subpath "@HOME@/Library/Caches")
+  (subpath "@HOME@/Library/Preferences")
+  (subpath "@HOME@/Library/Logs")
+  (subpath "@HOME@/Library/Fonts"))
+;; ... but not what those folders hold that is a secret: Claude's own config carries MCP credentials, and
+;; shell rc and history files often hold exported tokens and typed passwords.
+(deny file-read*
+  (literal "@HOME@/.claude.json")
+  (regex #"^@HOME_RE@/\.claude\.json\.")
+  (subpath "@HOME@/.claude/dbhub")
+  (regex #"^@HOME_RE@/\.(zshrc|zshenv|zprofile|zlogin|bashrc|bash_profile|bash_login|profile)[^/]*$")
+  (regex #"^@HOME_RE@/\.[^/]*_history$")
+  (regex #"^@HOME_RE@/\.(viminfo|lesshst|psql_history|mysql_history|node_repl_history|python_history|wget-hsts|boto|s3cfg|pgpass|my\.cnf|git-credentials)$")
+  (subpath "@HOME@/.cache/gh")
+  (subpath "@HOME@/.config/github-copilot"))
+(deny file-write* (subpath "@HOME@"))
+(allow file-write*
+  (subpath "@HOME@/Workspaces")
+  (subpath "@HOME@/.claude")
+  (subpath "@HOME@/.bun/install/cache")
+  (subpath "@HOME@/.cache")
+  (subpath "@HOME@/.npm")
+  (subpath "@HOME@/Library/Caches")
+  (subpath "@HOME@/Library/Logs"))
 
 ;; --- secrets nobody in the sandbox may read ---------------------------------
 (deny file-read*
@@ -130,6 +177,12 @@
   (literal "@HOME@/.claude.json")
   (subpath "@HOME@/.claude/hooks")
   (subpath "@HOME@/.claude/plugins")
+  (subpath "@HOME@/.claude/skills")
+  (subpath "@HOME@/.claude/commands")
+  (subpath "@HOME@/.claude/agents")
+  (subpath "@HOME@/.claude/bin")
+  (subpath "@HOME@/.claude/dbhub")
+  (subpath "@HOME@/.cache/uv")
   ;; programs the wrapper and the bot run unsandboxed (bun mints the session, gh answers the proxy)
   (subpath "@HOME@/.bun/bin")
   ;; Homebrew as a whole: /opt/homebrew/bin is a symlink farm, the programs (bun, gh) live in Cellar
@@ -158,6 +211,10 @@
   (literal "@REPO@/.git/config")
   (literal "@REPO@/.git/config.worktree")
   (literal "@REPO@/.git/commondir")
+  ;; what the owner's next pull, checkout or deploy trusts: the checkout's own HEAD and main branch
+  (literal "@REPO@/.git/HEAD")
+  (literal "@REPO@/.git/refs/heads/main")
+  (literal "@REPO@/.git/refs/heads/master")
   (literal "@REPO@/.git/gitdir")
   (subpath "@REPO@/.git/info")
   (subpath "@REPO@/.git/hooks")

@@ -1,11 +1,13 @@
 /**
  * Runs the real `gh` or `orca` for the exec proxy (`application/execProxy.ts`).
  *
- * The command runs as the bot, with the bot's credentials, in a scratch folder
- * (never a checkout: the caller names the repo, not the folder). It can neither
+ * The command runs as the bot, with the bot's credentials, in a fresh empty folder
+ * of its own (never a checkout, never the sandbox's tmp: the caller names the repo, not the folder). It can neither
  * prompt nor open a browser or an editor, and its output is capped.
  */
-import { tmpdir } from "node:os";
+import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import type { CommandRun } from "../../application/execProxy.ts";
 
 export type ExecRunnerConfig = {
@@ -14,6 +16,8 @@ export type ExecRunnerConfig = {
   timeoutMs?: number;
   /** Bytes kept of each of stdout and stderr. */
   maxBytes?: number;
+  /** Where each run's empty scratch folder is made; must not be writable by the sandboxed callers (default ~/.jarvis/proxy-run). */
+  workDir?: string;
 };
 
 const NO_UI_ENV: Record<string, string> = {
@@ -43,10 +47,22 @@ export const createExecRunner =
     const max = config.maxBytes ?? 2_000_000;
     // A minimal environment, never the bot's own: gh's `--jq '$ENV'` prints every variable of the process, and the
     // bot's holds its tokens. Only what the tools need to find themselves and their login.
-    const env: Record<string, string | undefined> = { ...pick(process.env, RUNNER_ENV), ...NO_UI_ENV, ...opts.env };
+    // Each run gets its own empty folder under a place the sandbox cannot write (~/.jarvis is write-denied to it, and
+    // os.tmpdir() is not): gh runs git in its cwd, and git runs the core.fsmonitor of any .git it finds there or above.
+    const root = config.workDir ?? join(homedir(), ".jarvis", "proxy-run");
+    mkdirSync(root, { recursive: true, mode: 0o700 });
+    const cwd = mkdtempSync(join(root, "run-"));
+    const env: Record<string, string | undefined> = {
+      ...pick(process.env, RUNNER_ENV),
+      ...NO_UI_ENV,
+      GIT_CEILING_DIRECTORIES: root,
+      GIT_CONFIG_NOSYSTEM: "1",
+      GIT_CONFIG_GLOBAL: "/dev/null",
+      ...opts.env,
+    };
     const proc = Bun.spawn({
       cmd: [tool === "gh" ? (config.ghBin ?? "gh") : (config.orcaBin ?? "orca"), ...argv],
-      cwd: tmpdir(),
+      cwd,
       env,
       stdin: opts.stdin !== undefined ? Buffer.from(opts.stdin) : "ignore",
       stdout: "pipe",
@@ -58,5 +74,6 @@ export const createExecRunner =
       return { code, stdout: clip(stdout, max), stderr: clip(stderr, max) };
     } finally {
       clearTimeout(limit);
+      rmSync(cwd, { recursive: true, force: true });
     }
   };

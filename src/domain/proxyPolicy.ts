@@ -174,13 +174,15 @@ export const classifyGh = (argv: readonly string[], repoHint?: string): Classifi
   // write takes a short flag only from the few that mean the same everywhere; every other option is spelled out.
   if (write) {
     for (const a of rest) {
-      if (/^-[A-Za-z]$/.test(a) && !["-R", "-b", "-F", "-t", "-B", "-H", "-c"].includes(a)) return fail(`${a} is not accepted on a write: spell the option out (--assignee, --approve, ...)`);
+      if (/^-[A-Za-z]$/.test(a) && !["-R", "-b", "-F", "-t", "-B", "-H", ...(group === "pr" && verb === "review" ? ["-c"] : [])].includes(a)) return fail(`${a} is not accepted on a write: spell the option out (--assignee, --approve, ...)`);
     }
   }
   if (group === "pr" && verb === "review" && hasFlag(p, "--approve", "--request-changes")) {
     return fail("a proxied review is a comment only: approving or requesting changes would be recorded under the host's own account, not the app's");
   }
   if (p.positional.length > 2) return fail("too many arguments");
+  // Without --head, gh asks git about the current branch: name it, so no git runs to find out.
+  if (group === "pr" && verb === "create" && !(hasFlag(p, "--head") && hasFlag(p, "--base"))) return fail("pr create needs --head and --base through the proxy");
   const flagRepo = flagValue(p, "--repo");
   if (flagRepo !== undefined && !REPO.test(flagRepo)) return fail("-R wants owner/name");
   // A selector is a number, a name, or an https github.com url: anything else with a `/` or `:` in it (`http://`, `www.`,

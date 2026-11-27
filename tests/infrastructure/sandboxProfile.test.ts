@@ -74,6 +74,17 @@ beforeAll(() => {
   write(join(home, ".jarvis/wh/note"), "mine\n");
   write(join(home, ".orca/agent-hooks/claude-hook.sh"), "#!/bin/sh\n");
   write(join(home, ".p10k.zsh"), "# p10k\n");
+  write(join(home, ".claude/dbhub/prod.toml"), "dsn\n");
+  write(join(home, ".claude/skills/s/SKILL.md"), "skill\n");
+  write(join(home, ".config/gcloud/application_default_credentials.json"), "{}\n");
+  write(join(home, ".config/github-copilot/hosts.json"), "ghu_x\n");
+  write(join(home, "Library/Application Support/com.vercel.cli/auth.json"), "{}\n");
+  write(join(home, "Library/Application Support/Code/User/settings.json"), "{}\n");
+  write(join(home, ".bun/install/global/node_modules/x/index.js"), "// mcp\n");
+  write(join(home, ".cache/uv/archive-v0/a.py"), "#\n");
+  write(join(home, ".zsh_history"), "export TOKEN=abc\n");
+  write(join(home, ".jarvis/wh/.claude/settings.local.json"), "{}\n");
+  write(join(repo, ".git/refs/heads/main"), "abc\n");
   write(join(home, ".bun/bin/bun"), "bun\n");
   write(join(repo, "tsconfig.json"), "{}\n");
   write(join(repo, ".git/HEAD"), "ref: refs/heads/main\n");
@@ -197,7 +208,7 @@ describe("sandbox profile (macOS)", () => {
     });
     t("a worker's own worktree under the checkout, and the claude config's neighbours, stay writable", () => {
       expect(boxed(`echo more >> '${repo}/.claude/worktrees/w1/src/mine.ts' && cat '${repo}/.claude/worktrees/w1/src/mine.ts'`)).toEqual({ code: 0, out: "mine\nmore\n" });
-      expect(boxed(`echo x > "$HOME/.config/other/new" && cat "$HOME/.config/other/new"`)).toEqual({ code: 0, out: "x\n" });
+      expect(boxed(`mkdir -p "$HOME/.cache/other" && echo x > "$HOME/.cache/other/new" && cat "$HOME/.cache/other/new"`)).toEqual({ code: 0, out: "x\n" });
     });
     t("round 2: an ancestor of the checkout or home cannot be renamed (the deny follows the folder)", () => {
       const outer = join(base, "outer");
@@ -263,6 +274,32 @@ describe("sandbox profile (macOS)", () => {
     t("round 3: the briefs stay readable and the worker home stays writable", () => {
       expect(boxed(`cat "$HOME/.jarvis/briefs/brief.md"`)).toEqual({ code: 0, out: "brief\n" });
       expect(boxed(`echo more >> "$HOME/.jarvis/wh/note" && cat "$HOME/.jarvis/wh/note"`)).toEqual({ code: 0, out: "mine\nmore\n" });
+    });
+    t("round 4: the home is closed by default: credential stores nobody listed are unreadable", () => {
+      closed(`cat "$HOME/.claude/dbhub/prod.toml" >/dev/null`);
+      closed(`cat "$HOME/.claude.json" >/dev/null`);
+      closed(`cat "$HOME/.config/gcloud/application_default_credentials.json" >/dev/null`);
+      closed(`cat "$HOME/.config/github-copilot/hosts.json" >/dev/null`);
+      closed(`cat "$HOME/Library/Application Support/com.vercel.cli/auth.json" >/dev/null`);
+      closed(`cat "$HOME/.zsh_history" >/dev/null`);
+      closed(`cat "$HOME/.zshrc" >/dev/null`);
+    });
+    t("round 4: code the owner runs later, unlisted, is not writable: MCP servers under ~/.bun/install, uv's cache, Claude skills, VS Code", () => {
+      closed(`echo x >> "$HOME/.bun/install/global/node_modules/x/index.js"`);
+      closed(`echo x >> "$HOME/.cache/uv/archive-v0/a.py"`);
+      closed(`echo x >> "$HOME/.claude/skills/s/SKILL.md"`);
+      closed(`mkdir "$HOME/.claude/commands" && echo x > "$HOME/.claude/commands/c.md"`);
+      closed(`echo x >> "$HOME/Library/Application Support/Code/User/settings.json"`);
+      closed(`mkdir "$HOME/.vscode"`);
+    });
+    t("round 4: the worker home's .claude (the MCP exclusion) is read-only to a worker, the rest of it is its own", () => {
+      closed(`echo '{}' > "$HOME/.jarvis/wh/.claude/settings.local.json"`);
+      closed(`echo x > "$HOME/.jarvis/wh/.mcp.json"`);
+      expect(boxed(`cat "$HOME/.jarvis/wh/.claude/settings.local.json"`).code).toBe(0);
+    });
+    t("round 4: the checkout's own HEAD and main branch are not writable (the owner's next pull trusts them)", () => {
+      closed(`echo deadbeef > '${repo}/.git/refs/heads/main'`);
+      closed(`echo x > '${repo}/.git/HEAD'`);
     });
     t("TIOCSTI (typing into the terminal that started us) is refused", () => {
       const probe = join(work, "tiocsti.py");

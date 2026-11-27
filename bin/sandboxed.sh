@@ -104,7 +104,7 @@ for pair in DATABASE_PATH:data/bot.db TOKEN_DATABASE_PATH:data/tokens.db INBOX_D
 done
 worker_home=$(abs_path "$(env_value WORKER_HOME_DIR)" "$HOME_DIR/.jarvis/worker-home")
 safe_path "$worker_home" "WORKER_HOME_DIR"
-profile="$profile"$'\n'"$db_rules"$'\n'";; the worker home (a worker's own working folder) is writable again"$'\n'"(allow file-write* (subpath \"$worker_home\"))"
+profile="$profile"$'\n'"$db_rules"$'\n'";; the worker home (a worker's own working folder) is writable again"$'\n'"(allow file-read* file-write* (subpath \"$worker_home\"))"$'\n'";; ... except what configures the next session started there (the MCP exclusion, hooks, instructions)"$'\n'"(deny file-write* (subpath \"$worker_home/.claude\") (literal \"$worker_home/.mcp.json\") (literal \"$worker_home/CLAUDE.md\") (literal \"$worker_home/AGENTS.md\"))"
 # Renaming a parent moves everything below it out from under its deny: no ancestor of the checkout or the home
 # (up to /) may be renamed or deleted.
 anc_rules=";; --- no renaming the folders above the checkout and the home ---"

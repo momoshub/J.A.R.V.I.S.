@@ -13,6 +13,11 @@ beforeEach(() => {
 });
 afterEach(() => rmSync(dir, { recursive: true, force: true }));
 
+/** `ps` cannot run inside the seatbelt (it is setuid); the tests that need it say so and skip rather than fail. */
+const PS_RUNS = processStart(process.pid) !== null;
+if (!PS_RUNS) console.log("SKIPPED hostLock tests that need ps: ps cannot run here (sandboxed)");
+const psTest = test.skipIf(!PS_RUNS);
+
 const lockPath = () => join(dir, "bun-test.lock");
 
 // a pid that is certainly dead: a finished child
@@ -91,7 +96,7 @@ describe("processStart", () => {
     const r = Bun.spawnSync(["ps", "-o", "lstart=", "-p", String(process.pid)], { env: { ...process.env, ...env } });
     return r.stdout.toString().trim();
   };
-  test("is the same string whatever TZ and locale the caller runs in", () => {
+  psTest("is the same string whatever TZ and locale the caller runs in", () => {
     const here = processStart(process.pid);
     expect(here).toBeTruthy();
     // sanity: a raw `ps` does differ by TZ, which is what the pin guards against
@@ -210,7 +215,7 @@ describe("the preload, end to end", () => {
     return run(env, []);
   };
 
-  test("a targeted run skips the queue even while the lock is held", async () => {
+  psTest("a targeted run skips the queue even while the lock is held", async () => {
     const held = await acquire(opts({ dir: join(dir, "locks"), startOf: processStart }));
     expect(run({ JARVIS_TEST_LOCK_TIMEOUT_MS: "300" }, ["./empty.test.ts"]).exitCode).toBe(0);
     held.release();
