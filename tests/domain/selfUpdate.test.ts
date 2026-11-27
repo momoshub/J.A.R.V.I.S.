@@ -63,8 +63,8 @@ describe("selfUpdateRules is the whole procedure, from the codebase", () => {
     expect(rules).toContain("the repo is public");
   });
 
-  test("a verifier runs runtime-code PRs and the writer never calls its own PR verified", () => {
-    expect(rules).toContain("verifier (runtime code only");
+  test("a verifier runs runtime and capability PRs and the writer never calls its own PR verified", () => {
+    expect(rules).toContain("verifier (the `runtime` and `capability` classes of `bin/risk-class.ts` only");
     expect(rules).toContain(".claude/skills/verify/SKILL.md");
     expect(rules).toContain("`VERDICT: verified|failed`");
     expect(rules).toContain("You never call your own PR verified");
@@ -96,15 +96,21 @@ describe("selfUpdateRules is the whole procedure, from the codebase", () => {
     expect(STANDALONE_REVIEW_RULE).toContain("Up to 5 review rounds");
   });
 
-  test("review by risk: docs and prompt text need no reviewer, runtime code does", () => {
+  test("review by behaviour: the risk classifier routes, docs need no reviewer, everything else does", () => {
     for (const text of [rules, STANDALONE_REVIEW_RULE]) {
-      expect(text).toContain("docs, prompt text");
-      expect(text).toContain("dashboard UI");
-      expect(text).toMatch(/need none|gets no reviewer/);
-      expect(text).toContain("runtime code");
+      expect(text).toContain("`bun bin/risk-class.ts --base origin/main`");
+      expect(text).toContain("not the folder");
+      expect(text).toContain("`docs` (prose and comments only) gets no reviewer");
     }
-    expect(STANDALONE_REVIEW_RULE).toContain("adapter skills, prompt guides or dashboard UI gets no reviewer");
-    expect(STANDALONE_REVIEW_RULE).toContain("a mixed PR counts as runtime code");
+    // prompt text gets a reviewer and the probe gate but no verifier; runtime and capability get both
+    expect(STANDALONE_REVIEW_RULE).toContain("`prompt` (text that steers an agent) gets the probe gate and a standalone reviewer, no verifier");
+    expect(STANDALONE_REVIEW_RULE).toContain("get a standalone reviewer agent and a verifier before you merge");
+    for (const kind of ["tools", "commands", "roles", "tickets", "permissions", "network", "credentials", "process execution", "dependencies", "CI"]) expect(STANDALONE_REVIEW_RULE).toContain(kind);
+    expect(STANDALONE_REVIEW_RULE).toContain("the brief quotes the script's reasons");
+    expect(STANDALONE_REVIEW_RULE).toContain("A mixed PR counts as its highest class, a failed script as `runtime`");
+    // the folder rule is gone
+    expect(STANDALONE_REVIEW_RULE).not.toContain("gets no reviewer: `bun run typecheck` and `bun test` green, CI green through `bin/merge-when-green.sh <pr>` (below), merge. A PR that touches");
+    expect(STANDALONE_REVIEW_RULE).not.toContain("adapter skills, prompt guides or dashboard UI gets no reviewer");
     // the old blanket rule is gone, and so is the two-round cap
     expect(STANDALONE_REVIEW_RULE).not.toContain("every fix, no exceptions");
     expect(STANDALONE_REVIEW_RULE).not.toContain("never a round 3");
@@ -207,7 +213,7 @@ describe("selfUpdateRules, the restart and the checks", () => {
     expect(STANDALONE_REVIEW_RULE).toContain("`ORCA_TERMINAL_HANDLE` is unset, `run-create` refuses it as `terminal_handle_stale`");
     // CI is part of the gate, through the helper that refuses on red
     expect(STANDALONE_REVIEW_RULE).toContain("Merge only with `bin/merge-when-green.sh <pr>`");
-    expect(STANDALONE_REVIEW_RULE).toContain("Never merge runtime code before a clean review, and never merge anything before green CI");
+    expect(STANDALONE_REVIEW_RULE).toContain("Never merge a `prompt`, `runtime` or `capability` change before a clean review, and never merge anything before green CI");
     // the helper outlives the default tool timeout, and a slow CI is a retry, not a bypass
     expect(STANDALONE_REVIEW_RULE).toContain("Bash timeout of 600000");
     expect(STANDALONE_REVIEW_RULE).toContain("exit 3 means CI has not finished so run it again");

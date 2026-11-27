@@ -310,10 +310,12 @@ no classes.
   never run a command, and only the brain's run bridge can mint one.
 - **Self-update.** A fix lands through a PR that CI (`.github/workflows/ci.yml`)
   passes (typecheck, tests, the real-Slack e2e in its own workflow `e2e.yml` on a push to main only, its token held by the main-only `e2e` environment, and a `gitleaks` secret scan whose known false positives are allowlisted by value in `.gitleaks.toml`), merged only by `bin/merge-when-green.sh` (exit 4 at once on a PR that
-  conflicts with its base, which GitHub never runs CI on). When it touches runtime code
-  (logic, commands, adapters, `bin/` scripts, or a mixed PR) a reviewer Orca worker
-  reads it first, up to 5 rounds (each round is a real GitHub review, request changes or approve; fixes are pushes answered by a `[fix round N]` comment); docs,
-  prompt text, skills and dashboard UI need no reviewer. `bin/jarvis-restart.sh` runs typecheck and tests, rebuilds the
+  conflicts with its base, which GitHub never runs CI on). The class of the change is read off the
+  diff, not the folder (`bin/risk-class.ts`): `docs` need no reviewer; `prompt` text (steering strings, guides,
+  skills) gets the probe gate and a reviewer Orca worker; `runtime` code and `capability` changes (tools, commands, roles,
+  tickets, permissions, network, credentials, process execution, dependencies, CI; a mixed PR counts as its highest class) get a reviewer and a
+  verifier. The reviewer reads it first, up to 5 rounds (each round is a real GitHub review, request changes or approve; fixes are pushes answered by a `[fix round N]` comment); `bin/reviewer-metrics.ts`
+  measures it afterwards from the merged PRs (rounds, blockers, false positives, defects that got past a clean verdict). `bin/jarvis-restart.sh` runs typecheck and tests, rebuilds the
   dashboard bundle, and only restarts when all three pass. With `SELF_PR_AUTHOR`/`SELF_PR_REVIEWER` set, the
   PR is opened as the author and reviewed, approved and merged as the reviewer
   (the reviewer's own approving review is the clean verdict; `merge-when-green.sh` approves right before the merge only when that account has not already approved this head). `restartWhenIdle` then drains: timers that start turns hold, and new
