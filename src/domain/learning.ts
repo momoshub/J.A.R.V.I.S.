@@ -203,6 +203,25 @@ export const pendingReply = (id: number, prefix: string): string =>
 export const pendingApiMessage = (id: number): string =>
   `Pending owner approval (#${id}). This is NOT saved yet and changes nothing in any reply until the owner approves it. Do not tell anyone you saved it: say it is waiting for the owner's approval.`;
 
+/** The notice of a learning the agent decided in the owner's own turn: says so, never names the owner as the one who pressed. */
+export const agentSettledText = (kind: "approved" | "rejected", id: number, content: string): string =>
+  `${kind === "approved" ? ":white_check_mark:" : ":x:"} learning #${id} ${kind} by me, in a turn your own message started\n${approvalCore(content)}`;
+
+/**
+ * The audit line the owner's DM gets when the agent approved a learning in the owner's own turn: what, from which
+ * thread, and how to take it back (the Reject button of the learning's notice while it is a row, `unlearn` for the flat
+ * list, `adapter forget` once it was filed into the adapter).
+ */
+export const agentApprovalAudit = (a: { id: number; content: string; scope: LearningScope; link?: string; inAdapter: boolean; prefix: string }): string =>
+  [
+    `:warning: I approved learning #${a.id} myself, in a turn your own message started${a.link ? ` (<${a.link}|that thread>)` : ""}.`,
+    approvalCore(a.content),
+    `Applies: ${scopeLabel(a.scope)}`,
+    a.inAdapter
+      ? `To take it back: \`${a.prefix} adapter forget <the fact>\`.`
+      : `To take it back: press Reject on the learning's notice, or \`${a.prefix} unlearn ${a.id}\`.`,
+  ].join("\n");
+
 /** Why a decision, typed or pressed, did not go through. */
 export type DecisionRefusal = "not-owner" | "from-turn" | "unknown" | "decided" | "forged";
 
@@ -210,7 +229,7 @@ export const refusalText = (r: DecisionRefusal, id?: number): string =>
   r === "not-owner"
     ? "Only the owner can approve, reject or list pending learnings."
     : r === "from-turn"
-      ? "Approving or rejecting a learning is the owner's own typed line or button, never something I run for myself."
+      ? "I decide a learning only in a turn the owner's own message started. This turn was not started by one (a watch, a worker, a tell, a loop, someone else's thread), so approving or rejecting is the owner's own typed line or button."
       : r === "decided"
         ? `Learning #${id} was already answered.`
         : r === "forged"
