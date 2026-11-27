@@ -49,7 +49,7 @@ describe("selfUpdateRules is the whole procedure, from the codebase", () => {
   test("below owner the writer is never an Orca worker", () => {
     expect(agentRules).toContain("never `orca`");
     expect(agentRules).not.toContain("worker-ticket");
-    expect(agentRules).not.toContain("worker-start --run <runId> --spec-file <brief> --task-title <short> --worktree path:$BOT_WORKER_HOME --agent claude --model \"$BOT_WORKER_MODEL\"");
+    expect(agentRules).not.toContain("worker-start --run <runId> --spec-file <brief> --task-title <short> --worktree path:$BOT_WORKER_HOME-writer --agent claude --model \"$BOT_WORKER_MODEL\"");
   });
 
   test("docs and tests move with the code, and prompt text goes through the probe gate", () => {
@@ -104,8 +104,8 @@ describe("selfUpdateRules is the whole procedure, from the codebase", () => {
     expect(STANDALONE_REVIEW_RULE).toContain("--agent claude --model opus --json");
     expect(STANDALONE_REVIEW_RULE).not.toContain('--model "$BOT_WORKER_MODEL"');
     // the reviewer worker is trimmed before it starts, like every other worker
-    expect(STANDALONE_REVIEW_RULE).toContain('"$BOT_WORKER_MCP_TRIM"` with no argument');
-    expect(STANDALONE_REVIEW_RULE).toContain("--worktree path:$BOT_WORKER_HOME --agent claude");
+    expect(STANDALONE_REVIEW_RULE).toContain('"$BOT_WORKER_MCP_TRIM" --role <role>`');
+    expect(STANDALONE_REVIEW_RULE).toContain("--worktree path:$BOT_WORKER_HOME-reviewer --agent claude");
     expect(STANDALONE_REVIEW_RULE).not.toContain("a folder or repo Orca knows");
     expect(STANDALONE_REVIEW_RULE.indexOf("BOT_WORKER_MCP_TRIM")).toBeLessThan(STANDALONE_REVIEW_RULE.indexOf("worker-start --run"));
     expect(STANDALONE_REVIEW_RULE).toContain("Up to 5 review rounds");
