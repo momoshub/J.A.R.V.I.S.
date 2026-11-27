@@ -202,6 +202,9 @@ export const prFindings = (prs: readonly OwnPr[], now: number): { red: OwnPr[]; 
   chase: prs.filter((p) => !p.draft && p.ci !== "red" && p.waitingOn.length > 0 && now - p.updatedAt >= REVIEW_CHASE_MS),
 });
 
+/** `app/jarvis-at-momos` (how `gh pr list` names an App) and `jarvis-at-momos[bot]` (how the API does) are one login. */
+export const loginKey = (login: string): string => login.trim().toLowerCase().replace(/^app\//, "").replace(/\[bot\]$/, "");
+
 const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null;
 
 /**
@@ -217,10 +220,10 @@ export const parseOwnPrs = (stdout: string, authors: readonly string[]): OwnPr[]
     return undefined;
   }
   if (!Array.isArray(r)) return undefined;
-  const mine = new Set(authors.map((a) => a.toLowerCase()));
+  const mine = new Set(authors.map(loginKey));
   return r.filter(isRecord).flatMap((p) => {
     const url = typeof p.url === "string" ? p.url : "";
-    const login = isRecord(p.author) && typeof p.author.login === "string" ? p.author.login.toLowerCase() : "";
+    const login = isRecord(p.author) && typeof p.author.login === "string" ? loginKey(p.author.login) : "";
     if (typeof p.number !== "number" || !url || (mine.size > 0 && !mine.has(login))) return [];
     const rollup = Array.isArray(p.statusCheckRollup) ? (p.statusCheckRollup.filter(isRecord) as RollupEntry[]) : [];
     const verdict = ciStatusOf(rollup).verdict;

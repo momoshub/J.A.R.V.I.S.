@@ -21,6 +21,7 @@ import {
   parseBlockerArgs,
   parseOwnPrs,
   prFindings,
+  loginKey,
   rearmPlan,
   MAX_GRANT_CHILDREN,
   CHAIN_MAX_MS,
@@ -208,6 +209,18 @@ describe("own PRs", () => {
     expect(prs?.[0]?.title).not.toMatch(/[<>`]/);
     expect(parseOwnPrs(json, [])).toHaveLength(2);
     expect(parseOwnPrs("nope", [])).toBeUndefined();
+  });
+
+  test("an App's PR is found however the login is written: gh prints app/<slug>, the API <slug>[bot]", () => {
+    const json = JSON.stringify([
+      { number: 1, title: "a", url: "https://github.com/o/r/pull/1", author: { login: "app/jarvis-at-momos" }, statusCheckRollup: [] },
+      { number: 2, title: "b", url: "https://github.com/o/r/pull/2", author: { login: "kai-at-momos" }, statusCheckRollup: [] },
+      { number: 3, title: "c", url: "https://github.com/o/r/pull/3", author: { login: "stranger" }, statusCheckRollup: [] },
+    ]);
+    expect(parseOwnPrs(json, ["jarvis-at-momos[bot]", "kai-at-momos"])?.map((p) => p.number)).toEqual([1, 2]);
+    expect(parseOwnPrs(json, ["app/jarvis-at-momos"])?.map((p) => p.number)).toEqual([1]);
+    expect(loginKey("App/Jarvis-At-Momos")).toBe("jarvis-at-momos");
+    expect(loginKey("Jarvis-At-Momos[bot]")).toBe("jarvis-at-momos");
   });
 });
 
