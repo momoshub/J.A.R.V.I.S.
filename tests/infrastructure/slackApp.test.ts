@@ -18,7 +18,7 @@ import type { Streamer } from "../../src/infrastructure/slack/stream.ts";
 import { openDatabase } from "../../src/infrastructure/db/client.ts";
 import { createThreadBriefRepo } from "../../src/infrastructure/db/threadBriefRepo.ts";
 import { createBugReportRepo } from "../../src/infrastructure/db/bugReportRepo.ts";
-import { createJuekiRepo } from "../../src/infrastructure/db/juekiRepo.ts";
+import { createCoordinatorRepo } from "../../src/infrastructure/db/coordinatorRepo.ts";
 import type { SlackAdminPort } from "../../src/application/slackAdmin.ts";
 import { createUserRepo } from "../../src/infrastructure/db/userRepo.ts";
 import { createMuteRepo, type MuteRepo } from "../../src/infrastructure/db/muteRepo.ts";
@@ -60,6 +60,12 @@ describe("shouldHandleDm", () => {
   });
   test("handles a DM that carries files (file_share is still a message)", () => {
     expect(shouldHandleDm({ ...base, subtype: "file_share" })).toBe(true);
+  });
+  test("a voice message (a clip with no text) is handled, a text-less image is not", () => {
+    const voice = { ...base, text: "", subtype: "file_share", files: [{ subtype: "slack_audio", mimetype: "audio/mp4", url_private: "https://files.slack.com/files-pri/T1-F1/a.m4a" }] };
+    expect(shouldHandleDm(voice)).toBe(true);
+    expect(shouldHandleDm({ ...voice, text: undefined })).toBe(true);
+    expect(shouldHandleDm({ ...voice, files: [{ mimetype: "image/png" }] })).toBe(false);
   });
   test("rejects non-DM channels and empty messages", () => {
     expect(shouldHandleDm({ ...base, channel_type: "channel" })).toBe(false);
@@ -2086,14 +2092,14 @@ describe("bug report press listener", () => {
   });
 });
 
-describe("jueki blocker press listener", () => {
+describe("coordinator blocker press listener", () => {
   const NOTICE = { channel: "D0OWNER", ts: "400.4" };
   const rig = () => {
     const turns: Incoming[] = [];
     const ephemeral: Record<string, unknown>[] = [];
     const settled: string[] = [];
     let approvedHook = 0;
-    const repo = createJuekiRepo(openDatabase(":memory:"));
+    const repo = createCoordinatorRepo(openDatabase(":memory:"));
     const b = repo.openBlocker({ key: "k", kind: "permission", prod: false, text: "needs a grant" }, 1);
     repo.setNotice(b.id, NOTICE.channel, NOTICE.ts);
     const slack = { settleInteractive: async (_c: string, _t: string, text: string) => void settled.push(text) } as unknown as SlackAdminPort;
@@ -2102,15 +2108,16 @@ describe("jueki blocker press listener", () => {
       slack,
       clock: () => 5,
       ownerSlackId: OWNER,
+      name: "Aide",
       onApproved: () => void approvedHook++,
     });
     const client = { chat: { postMessage: async () => ({}), postEphemeral: async (a: Record<string, unknown>) => void ephemeral.push(a) } };
     const press = (over: { user?: string; channel?: string; ts?: string; actionId?: string } = {}) =>
-      listeners.onJuekiPress({
+      listeners.onCoordinatorPress({
         ack: async () => {},
         client,
         body: { user: { id: over.user ?? OWNER }, channel: { id: over.channel ?? NOTICE.channel }, message: { ts: over.ts ?? NOTICE.ts } },
-        action: { action_id: over.actionId ?? "jv:jueki:approve", type: "button", value: String(b.id) },
+        action: { action_id: over.actionId ?? "jv:coordinator:approve", type: "button", value: String(b.id) },
       });
     return { press, turns, ephemeral, settled, repo, id: b.id, listeners, client, hook: () => approvedHook };
   };
@@ -2131,11 +2138,19 @@ describe("jueki blocker press listener", () => {
     await r.press({ ts: "999.9" });
     expect(r.repo.blocker(r.id)?.state).toBe("pending");
     expect(r.ephemeral).toHaveLength(2);
-    await r.press({ actionId: "jv:jueki:reject" });
+    await r.press({ actionId: "jv:coordinator:reject" });
     expect(r.repo.blocker(r.id)?.state).toBe("rejected");
     await r.press();
     expect(r.repo.blocker(r.id)?.state).toBe("rejected");
     expect(r.hook()).toBe(0);
+    expect(r.turns).toHaveLength(0);
+  });
+
+  test("a press on a blocker message posted before the rename is still decided in code", async () => {
+    const r = rig();
+    await r.press({ actionId: "jv:jueki:approve" });
+    expect(r.repo.blocker(r.id)?.state).toBe("approved");
+    expect(r.hook()).toBe(1);
     expect(r.turns).toHaveLength(0);
   });
 
@@ -2150,33 +2165,45 @@ describe("jueki blocker press listener", () => {
       return b.id;
     };
     const press = (id: number, ts: string, actionId: string) =>
-      r.listeners.onJuekiPress({
+      r.listeners.onCoordinatorPress({
         ack: async () => {},
         client,
         body: { user: { id: OWNER }, channel: { id: NOTICE.channel }, message: { ts } },
         action: { action_id: actionId, type: "button", value: String(id) },
       });
-    await press(open("u-approve", "501.5"), "501.5", "jv:jueki:approve");
+    await press(open("u-approve", "501.5"), "501.5", "jv:coordinator:approve");
     expect(r.turns).toHaveLength(1);
     expect(r.turns[0]).toMatchObject({ channelId: "C0TEST00001", threadTs: "1795000000.123456", userId: OWNER });
     expect(r.turns[0]!.text).toContain("approved by the owner");
     expect(r.turns[0]!.text).toContain("<@U0PAL000001>");
     expect(posts).toHaveLength(0);
     expect(r.hook()).toBe(0);
-    await press(open("u-reject", "502.5"), "502.5", "jv:jueki:reject");
+    await press(open("u-reject", "502.5"), "502.5", "jv:coordinator:reject");
     expect(r.turns).toHaveLength(1);
     expect(posts).toHaveLength(1);
     expect(posts[0]).toMatchObject({ channel: "C0TEST00001", thread_ts: "1795000000.123456" });
     expect(String(posts[0]!.text)).toContain("said no");
   });
 
-  test("the generic kit listener never turns a Jueki press into a model turn", async () => {
+  test("the generic kit listener never turns a legacy-id press into a model turn either", async () => {
     const r = rig();
     await r.listeners.onKitAction({
       ack: async () => {},
       client: r.client,
       body: { user: { id: OWNER }, channel: { id: NOTICE.channel }, message: { ts: NOTICE.ts } },
       action: { action_id: "jv:jueki:approve", type: "button", value: String(r.id) },
+    });
+    expect(r.turns).toHaveLength(0);
+    expect(r.repo.blocker(r.id)?.state).toBe("pending");
+  });
+
+  test("the generic kit listener never turns a coordinator press into a model turn", async () => {
+    const r = rig();
+    await r.listeners.onKitAction({
+      ack: async () => {},
+      client: r.client,
+      body: { user: { id: OWNER }, channel: { id: NOTICE.channel }, message: { ts: NOTICE.ts } },
+      action: { action_id: "jv:coordinator:approve", type: "button", value: String(r.id) },
     });
     expect(r.turns).toHaveLength(0);
     expect(r.repo.blocker(r.id)?.state).toBe("pending");

@@ -1,8 +1,8 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import { decideJuekiPress, juekiPressNotice, type JuekiApprovalDeps } from "../../src/application/juekiApproval.ts";
-import { JUEKI_APPROVE_ACTION, JUEKI_REJECT_ACTION } from "../../src/domain/jueki.ts";
-import { createJuekiRepo } from "../../src/infrastructure/db/juekiRepo.ts";
+import { decideCoordinatorPress, coordinatorPressNotice, type CoordinatorApprovalDeps } from "../../src/application/coordinatorApproval.ts";
+import { COORDINATOR_APPROVE_ACTION, COORDINATOR_REJECT_ACTION } from "../../src/domain/coordinator.ts";
+import { createCoordinatorRepo } from "../../src/infrastructure/db/coordinatorRepo.ts";
 import { migrate } from "../../src/infrastructure/db/schema.ts";
 
 const OWNER = "U0OWNER0001";
@@ -10,37 +10,49 @@ const OWNER = "U0OWNER0001";
 const setup = () => {
   const db = new Database(":memory:");
   migrate(db);
-  const repo = createJuekiRepo(db);
+  const repo = createCoordinatorRepo(db);
   const b = repo.openBlocker({ key: "k", kind: "prod-write", prod: true, text: "purge the table" }, 1);
   repo.setNotice(b.id, "D1", "5.5");
   const settled: { text: string; by?: string }[] = [];
   let approved = 0;
-  const deps: JuekiApprovalDeps = {
+  const deps: CoordinatorApprovalDeps = {
     repo,
     slack: { settleInteractive: async (_c, _t, text, by) => void settled.push({ text, by }) },
     clock: () => 77,
     ownerSlackId: OWNER,
+    name: "Aide",
     onApproved: () => void approved++,
   };
-  const press = (over: Partial<Parameters<typeof decideJuekiPress>[1]> = {}) =>
-    decideJuekiPress(deps, { slackUserId: OWNER, actionId: JUEKI_APPROVE_ACTION, value: String(b.id), channel: "D1", messageTs: "5.5", ...over });
+  const press = (over: Partial<Parameters<typeof decideCoordinatorPress>[1]> = {}) =>
+    decideCoordinatorPress(deps, { slackUserId: OWNER, actionId: COORDINATOR_APPROVE_ACTION, value: String(b.id), channel: "D1", messageTs: "5.5", ...over });
   return { repo, id: b.id, settled, press, deps, approved: () => approved };
 };
 
-describe("decideJuekiPress", () => {
-  test("the owner's approve on the latest notice is stored, settled as Jueki, and tells the tick", async () => {
+describe("decideCoordinatorPress", () => {
+  test("the owner's approve on the latest notice is stored, settled under the configured name, and tells the tick", async () => {
     const s = setup();
     expect(await s.press()).toEqual({ kind: "approved", id: s.id });
     expect(s.repo.blocker(s.id)).toMatchObject({ state: "approved", decidedAt: 77 });
     expect(s.settled).toHaveLength(1);
-    expect(s.settled[0]).toMatchObject({ by: "Jueki" });
+    expect(s.settled[0]).toMatchObject({ by: "Aide" });
+    expect(s.settled[0]!.text).toContain("*Aide* - blocker");
     expect(s.settled[0]!.text).toContain("Approved by <@U0OWNER0001>");
     expect(s.approved()).toBe(1);
   });
 
+  test("a press on a button posted before the rename still decides the blocker", async () => {
+    const approve = setup();
+    expect(await approve.press({ actionId: "jv:jueki:approve" })).toEqual({ kind: "approved", id: approve.id });
+    expect(approve.repo.blocker(approve.id)?.state).toBe("approved");
+    expect(approve.approved()).toBe(1);
+    const reject = setup();
+    expect(await reject.press({ actionId: "jv:jueki:reject" })).toEqual({ kind: "rejected", id: reject.id });
+    expect(reject.approved()).toBe(0);
+  });
+
   test("reject is stored and does not wake the tick", async () => {
     const s = setup();
-    expect(await s.press({ actionId: JUEKI_REJECT_ACTION })).toEqual({ kind: "rejected", id: s.id });
+    expect(await s.press({ actionId: COORDINATOR_REJECT_ACTION })).toEqual({ kind: "rejected", id: s.id });
     expect(s.repo.blocker(s.id)?.state).toBe("rejected");
     expect(s.approved()).toBe(0);
   });
@@ -59,27 +71,27 @@ describe("decideJuekiPress", () => {
   test("the first decision wins; a second press is told so", async () => {
     const s = setup();
     await s.press();
-    const second = await s.press({ actionId: JUEKI_REJECT_ACTION });
+    const second = await s.press({ actionId: COORDINATOR_REJECT_ACTION });
     expect(second).toEqual({ kind: "decided", id: s.id, state: "approved" });
-    expect(juekiPressNotice(second)).toContain("already approved");
+    expect(coordinatorPressNotice(second)).toContain("already approved");
     expect(s.approved()).toBe(1);
   });
 
   test("notices: refusals are explained, a decision needs none", () => {
-    expect(juekiPressNotice({ kind: "refused", why: "not-owner", id: 1 })).toContain("Only the owner");
-    expect(juekiPressNotice({ kind: "refused", why: "wrong-message", id: 1 })).toContain("latest message");
-    expect(juekiPressNotice({ kind: "approved", id: 1 })).toBeUndefined();
+    expect(coordinatorPressNotice({ kind: "refused", why: "not-owner", id: 1 })).toContain("Only the owner");
+    expect(coordinatorPressNotice({ kind: "refused", why: "wrong-message", id: 1 })).toContain("latest message");
+    expect(coordinatorPressNotice({ kind: "approved", id: 1 })).toBeUndefined();
   });
 });
 
-describe("decideJuekiPress: a blocker about another person", () => {
+describe("decideCoordinatorPress: a blocker about another person", () => {
   const subject = { forUser: "U0PAL000001", channelId: "C0TEST00001", threadTs: "1795000000.123456", permalink: "https://team.slack.com/archives/C0TEST00001/p1795000000123456", plan: "open the PR for them" };
   const setupUnblock = () => {
     const s = setup();
     const b = s.repo.openBlocker({ key: "unblock-1", kind: "unblock", prod: false, text: "needs write access", subject }, 1);
     s.repo.setNotice(b.id, "D1", "7.7");
-    const press = (over: Partial<Parameters<typeof decideJuekiPress>[1]> = {}) =>
-      decideJuekiPress(s.deps, { slackUserId: OWNER, actionId: JUEKI_APPROVE_ACTION, value: String(b.id), channel: "D1", messageTs: "7.7", ...over });
+    const press = (over: Partial<Parameters<typeof decideCoordinatorPress>[1]> = {}) =>
+      decideCoordinatorPress(s.deps, { slackUserId: OWNER, actionId: COORDINATOR_APPROVE_ACTION, value: String(b.id), channel: "D1", messageTs: "7.7", ...over });
     return { ...s, ubId: b.id, press };
   };
 
@@ -99,7 +111,7 @@ describe("decideJuekiPress: a blocker about another person", () => {
 
   test("the owner's reject names their thread and a plain line telling them no, no turn", async () => {
     const s = setupUnblock();
-    const out = await s.press({ actionId: JUEKI_REJECT_ACTION });
+    const out = await s.press({ actionId: COORDINATOR_REJECT_ACTION });
     expect(out).toMatchObject({ kind: "rejected", unblock: { channelId: "C0TEST00001", threadTs: "1795000000.123456" } });
     if (out.kind !== "rejected" || !out.unblock) throw new Error("no unblock");
     expect(out.unblock.notice).toContain("<@U0PAL000001>");

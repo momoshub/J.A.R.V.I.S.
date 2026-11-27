@@ -1,16 +1,16 @@
 /**
- * The bot's own open PRs with their CI and who they wait on, for Jueki
- * (domain/jueki.ts `parseOwnPrs`). Read-only: one `gh pr list` in the repo
+ * The bot's own open PRs with their CI and who they wait on, for the coordinator
+ * (domain/coordinator.ts `parseOwnPrs`). Read-only: one `gh pr list` in the repo
  * folder. Never throws: a failed read comes back as `problem`, never as "no PRs".
  */
-import { parseOwnPrs, type OwnPr } from "../../domain/jueki.ts";
+import { parseOwnPrs, type OwnPr } from "../../domain/coordinator.ts";
 import type { CommandRunner } from "../llm/backgroundAgents.ts";
 
 const PR_LIMIT = 40;
 
-export type JuekiPrProbe = { scan: () => Promise<{ prs: readonly OwnPr[]; problem?: string }> };
+export type CoordinatorPrProbe = { scan: () => Promise<{ prs: readonly OwnPr[]; problem?: string }> };
 
-export const createJuekiPrProbe = (config: { gh: CommandRunner; authors: readonly string[] }): JuekiPrProbe => ({
+export const createCoordinatorPrProbe = (config: { gh: CommandRunner; authors: readonly string[] }): CoordinatorPrProbe => ({
   scan: async () => {
     const out = await config.gh([
       "gh", "pr", "list", "--state", "open", "--limit", String(PR_LIMIT),

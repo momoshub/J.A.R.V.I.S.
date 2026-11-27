@@ -14,15 +14,13 @@ import {
   isUrgent,
   journeyAction,
   journeySubject,
-  blockerText,
-  settledBlockerText,
   otherJourneyNote,
   parseUnblock,
   parseUserId,
   unblockApprovedBrief,
   unblockKey,
   unblockRejectedText,
-  juekiTurnText,
+  coordinatorTurnText,
   lapsedWorkerDispatch,
   localClock,
   localDay,
@@ -40,7 +38,16 @@ import {
   ticketAction,
   type BlockerFacts,
   type OwnPr,
-} from "../../src/domain/jueki.ts";
+  COORDINATOR_APPROVE_ACTION,
+  COORDINATOR_REJECT_ACTION,
+  coordinatorName,
+  coordinatorPressKind,
+  DEFAULT_COORDINATOR_NAME,
+  isCoordinatorAction,
+  blockerText,
+  selfFixDmText,
+  settledBlockerText,
+} from "../../src/domain/coordinator.ts";
 import { WORKER_LIFETIME_MAX_MS } from "../../src/domain/workerTicket.ts";
 
 /** 2026-11-27 00:00 in Asia/Ho_Chi_Minh (UTC+7) = 2026-11-26 17:00 UTC. */
@@ -283,7 +290,7 @@ describe("routeBlocker", () => {
     expect(routeBlocker(facts({ prod: true }), { ...prior, prod: true }, NOW, { quiet: true })).toEqual({ route: "hold", why: "not-due" });
   });
 
-  test("a blocker Jueki fixed itself is gone: the same key, raised again, starts from nothing", () => {
+  test("a blocker the coordinator fixed itself is gone: the same key, raised again, starts from nothing", () => {
     expect(routeBlocker(facts(), { state: "fixed", prod: false, lastRaisedAt: NOW - HOUR_MS }, NOW, open)).toEqual({ route: "raise", repeat: false });
     expect(routeBlocker(facts({ prod: true }), { state: "fixed", prod: true, lastRaisedAt: NOW - 1 }, NOW, open)).toEqual({ route: "raise", repeat: true });
   });
@@ -302,7 +309,7 @@ describe("routeBlocker", () => {
     expect(routeBlocker(prod, { state: "pending", prod: true, lastRaisedAt: NOW - 10 * MINUTE_MS }, NOW, { quiet: false, repingMs: 5 * MINUTE_MS })).toEqual({ route: "raise", repeat: true });
   });
 
-  test("prod, urgent and low-risk: Jueki fixes it itself, quiet hours or not", () => {
+  test("prod, urgent and low-risk: the coordinator fixes it itself, quiet hours or not", () => {
     const f = facts({ prod: true, customerImpact: true, reversible: true });
     expect(routeBlocker(f, undefined, NOW, open)).toEqual({ route: "self-fix" });
     expect(routeBlocker(f, undefined, NOW, { quiet: true })).toEqual({ route: "self-fix" });
@@ -353,29 +360,64 @@ describe("parseBlockerArgs", () => {
 
 describe("digest and turn text", () => {
   test("one message per day: header, time-stamped lines on the owner's clock, a waiting count", () => {
-    const text = renderDigest("2026-11-27", [{ at: at(9, 5), text: "closed journey #4" }], 420, 2);
-    expect(text).toContain("*Jueki* - housekeeping digest, 2026-11-27");
+    const text = renderDigest("Aide", "2026-11-27", [{ at: at(9, 5), text: "closed journey #4" }], 420, 2);
+    expect(text).toContain("*Aide* - housekeeping digest, 2026-11-27");
     expect(text).toContain("- 09:05 closed journey #4");
     expect(text).toContain("2 blockers waiting on you");
   });
   test("a long day folds its oldest lines into a count", () => {
     const lines = Array.from({ length: 45 }, (_, i) => ({ at: at(8) + i * MINUTE_MS, text: `line ${i}` }));
-    const text = renderDigest("2026-11-27", lines, 420, 0);
+    const text = renderDigest("Aide", "2026-11-27", lines, 420, 0);
     expect(text).toContain("5 earlier lines not shown");
     expect(text).toContain("line 44");
     expect(text).not.toContain("line 0\n");
   });
-  test("the turn text names Jueki, the rules and only the sections that have items", () => {
-    const text = juekiTurnText("2026-11-27", false, { ...emptyPicture, staleJourneys: [{ ref: "journey #3", line: "quiet 4d" }] }, "//bot");
-    expect(text).toContain("You are Jueki");
-    expect(text).toContain("//bot jueki blocker");
-    expect(text).toContain("//bot jueki fixed");
+  test("the turn text names the configured name, the rules and only the sections that have items", () => {
+    const text = coordinatorTurnText("Aide", "2026-11-27", false, { ...emptyPicture, staleJourneys: [{ ref: "journey #3", line: "quiet 4d" }] }, "//bot");
+    expect(text).toContain("You are Aide");
+    expect(text).toContain("//bot coordinator blocker");
+    expect(text).toContain("//bot coordinator fixed");
     expect(text).toContain("Stale or finished-looking journeys:\n- journey #3: quiet 4d");
     expect(text).not.toContain("Own PRs with red CI");
     expect(text).toContain("never write to prod");
   });
   test("in quiet hours the turn is told not to message anyone", () => {
-    expect(juekiTurnText("d", true, emptyPicture, "//bot")).toContain("quiet hours");
+    expect(coordinatorTurnText("Aide", "d", true, emptyPicture, "//bot")).toContain("quiet hours");
+  });
+});
+
+describe("the display name comes from config", () => {
+  test("blank or missing falls back to the neutral default", () => {
+    expect(DEFAULT_COORDINATOR_NAME).toBe("Coordinator");
+    expect(coordinatorName(undefined)).toBe("Coordinator");
+    expect(coordinatorName("  ")).toBe("Coordinator");
+    expect(coordinatorName(" Aide ")).toBe("Aide");
+  });
+  test("every text the coordinator writes carries the name it was given", () => {
+    const b = { id: 7, kind: "permission" as const, prod: false, text: "needs a grant" };
+    expect(blockerText("Aide", b, 0)).toStartWith("*Aide* - blocker #7");
+    expect(settledBlockerText("Aide", b, "approved", "U1")).toStartWith("*Aide* - blocker #7");
+    expect(selfFixDmText("Aide", "k", "did it")).toStartWith("*Aide* - fixed a prod item");
+    expect(renderDigest("Coordinator", "2026-11-27", [], 420, 0)).toStartWith("*Coordinator* - housekeeping digest");
+  });
+});
+
+describe("button ids", () => {
+  test("the current ids are recognised", () => {
+    expect(COORDINATOR_APPROVE_ACTION).toBe("jv:coordinator:approve");
+    expect(coordinatorPressKind(COORDINATOR_APPROVE_ACTION)).toBe("approve");
+    expect(coordinatorPressKind(COORDINATOR_REJECT_ACTION)).toBe("reject");
+    expect(isCoordinatorAction(COORDINATOR_REJECT_ACTION)).toBe(true);
+  });
+  test("ids posted before the rename still work, so a press on an old blocker message is not dead", () => {
+    expect(isCoordinatorAction("jv:jueki:approve")).toBe(true);
+    expect(coordinatorPressKind("jv:jueki:approve")).toBe("approve");
+    expect(coordinatorPressKind("jv:jueki:reject")).toBe("reject");
+  });
+  test("anything else is not a coordinator press", () => {
+    expect(isCoordinatorAction("jv:loop:approve")).toBe(false);
+    expect(coordinatorPressKind("jv:coordinator:other")).toBeUndefined();
+    expect(coordinatorPressKind("jv:jueki:other")).toBeUndefined();
   });
 });
 
@@ -410,23 +452,23 @@ describe("a blocker about another person", () => {
     expect(parseUserId("U0PAL000001")).toBe("U0PAL000001");
     expect(parseUserId("<@U0PAL000001>")).toBe("U0PAL000001");
     expect(parseUserId("<@U0PAL000001|bob>")).toBe("U0PAL000001");
-    expect(parseUserId("jueki")).toBeUndefined();
+    expect(parseUserId("coordinator")).toBeUndefined();
     expect(parseUserId("<!channel>")).toBeUndefined();
   });
 
   test("the owner's DM text says who is stuck, the plan, and what each button does", () => {
-    const text = blockerText({ id: 4, kind: "unblock", prod: false, text: "needs write access to the repo", forUser: "U0PAL000001", permalink: LINK, plan: "open the PR for them" }, 0);
+    const text = blockerText("Aide", { id: 4, kind: "unblock", prod: false, text: "needs write access to the repo", forUser: "U0PAL000001", permalink: LINK, plan: "open the PR for them" }, 0);
     expect(text).toContain("<@U0PAL000001> is stuck: needs write access to the repo. Plan: open the PR for them.");
     expect(text).toContain("Approve = unblock them, I continue in their thread; Reject = I tell them no");
     expect(text).not.toContain("go ahead as you");
     // The owner's own wall keeps its words.
-    expect(blockerText({ id: 5, kind: "decision", prod: false, text: "which one?" }, 0)).toContain("Approve = go ahead as you");
+    expect(blockerText("Aide", { id: 5, kind: "decision", prod: false, text: "which one?" }, 0)).toContain("Approve = go ahead as you");
   });
 
   test("the settled text says who decided", () => {
     const b = { id: 4, kind: "unblock" as const, prod: false, text: "needs access", forUser: "U0PAL000001" };
-    expect(settledBlockerText(b, "approved", "U0OWNER0001")).toContain("Approved by <@U0OWNER0001>: unblocking them");
-    expect(settledBlockerText(b, "rejected", "U0OWNER0001")).toContain("Rejected by <@U0OWNER0001>: I tell them no");
+    expect(settledBlockerText("Aide", b, "approved", "U0OWNER0001")).toContain("Approved by <@U0OWNER0001>: unblocking them");
+    expect(settledBlockerText("Aide", b, "rejected", "U0OWNER0001")).toContain("Rejected by <@U0OWNER0001>: I tell them no");
   });
 
   test("the approve brief names the owner's approval, the person, the need and the plan; the reject line is plain", () => {
@@ -488,7 +530,7 @@ describe("a journey somebody else asked for", () => {
   test("only a journey opened by a person other than the owner has a subject", () => {
     expect(journeySubject({ createdBy: "U0PAL000001", permalink: LINK }, "U0OWNER0001")).toEqual({ user: "U0PAL000001", link: LINK });
     expect(journeySubject({ createdBy: "U0OWNER0001", permalink: LINK }, "U0OWNER0001")).toBeUndefined();
-    expect(journeySubject({ createdBy: "jueki", permalink: LINK }, "U0OWNER0001")).toBeUndefined();
+    expect(journeySubject({ createdBy: "coordinator", permalink: LINK }, "U0OWNER0001")).toBeUndefined();
     expect(journeySubject({ createdBy: "", permalink: "" }, "U0OWNER0001")).toBeUndefined();
   });
 
@@ -500,8 +542,8 @@ describe("a journey somebody else asked for", () => {
     expect(otherJourneyNote({ user: "U0PAL000001", link: "" }, "//bot")).not.toContain("--thread");
   });
 
-  test("the turn text tells Jueki not to start or drop another person's journey as the owner", () => {
-    const text = juekiTurnText("2026-11-27", false, emptyPicture, "//bot");
+  test("the turn text tells the coordinator not to start or drop another person's journey as the owner", () => {
+    const text = coordinatorTurnText("Aide", "2026-11-27", false, emptyPicture, "//bot");
     expect(text).toContain("NOT the owner's own");
     expect(text).toContain("--for <user> --thread <link>");
   });

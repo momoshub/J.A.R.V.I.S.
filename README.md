@@ -95,7 +95,8 @@ Required / notable env (see `.env.example`):
 | `RESTART_TURN_BUDGET_MS` | while a restart waits, new messages still run, each turn on this budget (default `120000`); past it the thread is told to hold on and the turn is cut, then picked up again on the same session after the restart |
 | `DRAIN_NOTICE_CHANNEL` | channel for the one restart notice listing waiting threads (unset: silent); also where the inner child logs voice drift unless `inner_child_drift_channel` is set, and where a press on Slack's stop button is reported (the stopped thread is not told) |
 | `OFFLINE_ALARM_CHANNEL` | channel told when the host loses its connection, via a Slack scheduled message kept armed; a channel id, not a name (unset: no alarm) |
-| `JUEKI_INTERVAL_MS`, `JUEKI_STALE_JOURNEY_MS`, `JUEKI_PROD_REPING_MS`, `JUEKI_QUIET_START_HOUR`, `JUEKI_QUIET_END_HOUR`, `JUEKI_TZ_OFFSET_MIN` | Jueki, the housekeeping coordinator that lives only in the owner's DM: tick every 30 min (0 = off), journeys stale after 3 days, an undecided prod blocker asked again every 30 min, quiet hours 22 -> 5 in UTC+7 (prod blockers excepted); see "Jueki" in CLAUDE.md |
+| `COORDINATOR_NAME` | what the housekeeping coordinator signs its messages with and answers to (default `Coordinator`) |
+| `COORDINATOR_INTERVAL_MS`, `COORDINATOR_STALE_JOURNEY_MS`, `COORDINATOR_PROD_REPING_MS`, `COORDINATOR_QUIET_START_HOUR`, `COORDINATOR_QUIET_END_HOUR`, `COORDINATOR_TZ_OFFSET_MIN` | The housekeeping coordinator that lives only in the owner's DM: tick every 30 min (0 = off), journeys stale after 3 days, an undecided prod blocker asked again every 30 min, quiet hours 22 -> 5 in UTC+7 (prod blockers excepted); see "The coordinator sweeps" in CLAUDE.md |
 | `SLASH_MIRROR_CHANNEL` | channel for the owner's copy of other people's slash commands, one thread per run; a channel id (unset: the owner's DM) |
 | `GITHUB_APP_ID` | GitHub App id (unset: `app.json` beside the private key) - see [Calling it from GitHub](#calling-it-from-github) |
 | `GITHUB_APP_PRIVATE_KEY_PATH` | app private key (default `~/.config/jarvis/github-app/private-key.pem`) |
@@ -112,6 +113,7 @@ Required / notable env (see `.env.example`):
 | `DB_MCP_SERVERS` | names of the local database MCP servers on this host (as `claude mcp list` shows them, e.g. `pg-prod,clickhouse-ro`), comma list. **Security setting:** each is denied by name to every role that may not use databases (pal, executer, side questions), and a denial has to name the server, so a server missing here is reachable by EVERY role. Default empty denies nothing - list every database server you configure (at boot the activity log warns about local servers in `~/.claude.json` that are not listed) |
 | `EXECUTER_DB_MCP_SERVERS` | the subset of `DB_MCP_SERVERS` the executer role may query; list only servers whose credential is read-only on the server side. Default empty: executers get none |
 | `WORKER_MCP_DENY` | user-scope MCP servers (names as `claude mcp list` shows them) kept out of the Orca workers the bot starts, comma list. Default empty: every worker loads every server, as before. See "Keeping MCP servers out of workers" |
+| `WHISPER_BIN`, `WHISPER_MODEL_PATH`, `FFMPEG_BIN`, `WHISPER_TIMEOUT_MS` | voice messages are transcribed locally (ffmpeg, then whisper.cpp's `whisper-cli`, language auto-detected). Defaults: `/opt/homebrew/bin/whisper-cli`, `~/.local/share/whisper-models/ggml-large-v3-turbo-q5_0.bin`, `/opt/homebrew/bin/ffmpeg`, 120000 ms per step. A missing binary or model never drops the clip: the turn starts with a note that it could not be transcribed |
 | `WORKER_HOME_DIR` | the one folder every Orca worker starts in (`--worktree path:<it>`); the MCP exclusion is written there and never into a folder you work in. Default `~/.jarvis/worker-home`, created at boot and registered with Orca (as a plain folder) the first time a worker is about to start. See "Keeping MCP servers out of workers" |
 | `DASHBOARD_PORT` | dashboard port (local, loopback-only, no auth) |
 | `DASHBOARD_ALLOWED_ORIGINS` | extra browser origins allowed to POST (proxy/tunnel access) |
@@ -151,6 +153,7 @@ The **Console** tab additionally needs read scopes to list and open conversation
 - It tags people with their Slack `<@id>` when they are in the conversation
 - For workspace questions it calls the Slack Web API through the bot (a helper that presents a per-turn ticket; the bot token itself is never in a turn's environment), never a third-party connector
 - **It opens what you share.** Links in a message (or earlier in the thread) are fetched before it answers, and attachments - screenshots, logs, documents - are downloaded and read. It will not ask you to paste something it could have opened, and if something genuinely cannot be read it says so rather than answering around it
+- **It hears voice messages.** A Slack voice clip (audio, no text) starts a turn like a typed message: the clip is transcribed on the host (whisper.cpp, nothing leaves the machine), the transcript is marked as such, and it answers in text plus a spoken clip of the reply. If the audio cannot be transcribed it says so instead of staying silent
 
 ### Commands
 

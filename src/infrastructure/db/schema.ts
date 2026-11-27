@@ -125,7 +125,7 @@ export const migrate = (db: Database): void => {
   migrateStatusMessages(db);
   migrateMessageViaBot(db);
   migrateReviewRounds(db);
-  migrateJueki(db);
+  migrateCoordinator(db);
 };
 
 /**
@@ -1589,52 +1589,150 @@ const migrateReviewRounds = (db: Database): void => {
 };
 
 /**
- * Jueki's own state (domain/jueki.ts): the day's digest lines and dedupe marks
- * (`jueki_actions`), the one message the digest is edited on (`jueki_digest`)
- * and the walls it raised to the owner (`jueki_blockers`, one row per key, so
- * the same non-prod one is never put twice). New tables, so a rerun is a no-op;
- * v55 adds the blocker's subject columns (a person other than the owner who is stuck).
+ * The coordinator's own state (domain/coordinator.ts): the day's digest lines and
+ * dedupe marks (`coordinator_actions`), the one message the digest is edited on
+ * (`coordinator_digest`) and the walls it raised to the owner
+ * (`coordinator_blockers`, one row per key, so the same non-prod one is never
+ * put twice).
+ *
+ * Migration v55. v54 created these as `<personal name>_actions` / `_digest` /
+ * `_blockers` before the feature was made generic, so on an upgrade the tables are
+ * RENAMED, rows and ids kept, and the old index names are replaced. Every step
+ * checks what exists, so a rerun is a no-op: no legacy table (a new database, or
+ * already renamed) only creates what is missing; both generations present (a rename
+ * that was cut short, or a database that was run by a build from before the rename)
+ * moves the legacy rows into the new tables without losing any, then drops the legacy
+ * tables: a pre-rename build recreates its tables empty, so its AUTOINCREMENT ids start
+ * again from 1 and clash with ids the new tables already hold. Digest lines get fresh
+ * ids (nothing points at an action id); a blocker keeps its id when it is free and
+ * takes a fresh one when not (a posted button is matched on its message channel and ts
+ * as well as its id, so a moved id is refused, never applied to another blocker); a key
+ * the new table already has stays as it is, except that a prod flag is never lost; the
+ * digest message of a day the new table already has stays.
  */
-const migrateJueki = (db: Database): void => {
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS jueki_actions (
-      id    INTEGER PRIMARY KEY AUTOINCREMENT,
-      day   TEXT NOT NULL,
-      at    INTEGER NOT NULL,
-      kind  TEXT NOT NULL,
-      ref   TEXT NOT NULL DEFAULT '',
-      line  TEXT NOT NULL DEFAULT ''
+const LEGACY_COORDINATOR_TABLES = [
+  ["jueki_actions", "coordinator_actions"],
+  ["jueki_digest", "coordinator_digest"],
+  ["jueki_blockers", "coordinator_blockers"],
+] as const;
+
+type LegacyBlockerRow = {
+  id: number;
+  key: string;
+  kind: string;
+  prod: number;
+  text: string;
+  state: string;
+  notice_channel: string;
+  notice_ts: string;
+  raised_count: number;
+  last_raised_at: number;
+  handled_at: number;
+  created_at: number;
+  decided_at: number;
+};
+
+/** Both generations exist: move the legacy rows over (see the comment above for the rules). */
+const mergeLegacyCoordinatorRows = (db: Database, legacy: string): void => {
+  if (legacy === "jueki_actions") {
+    db.exec("INSERT INTO coordinator_actions (day, at, kind, ref, line) SELECT day, at, kind, ref, line FROM jueki_actions ORDER BY id;");
+  } else if (legacy === "jueki_digest") {
+    db.exec("INSERT OR IGNORE INTO coordinator_digest (day, channel, ts) SELECT day, channel, ts FROM jueki_digest;");
+  } else {
+    const byKey = db.query<{ id: number; prod: number }, [string]>("SELECT id, prod FROM coordinator_blockers WHERE key = ?");
+    const byId = db.query<{ id: number }, [number]>("SELECT id FROM coordinator_blockers WHERE id = ?");
+    const raiseProd = db.query("UPDATE coordinator_blockers SET prod = 1 WHERE id = ?");
+    const insert = db.query(
+      `INSERT INTO coordinator_blockers
+         (id, key, kind, prod, text, state, notice_channel, notice_ts, raised_count, last_raised_at, handled_at, created_at, decided_at)
+       VALUES ($id, $key, $kind, $prod, $text, $state, $notice_channel, $notice_ts, $raised_count, $last_raised_at, $handled_at, $created_at, $decided_at)`,
     );
-    CREATE INDEX IF NOT EXISTS idx_jueki_actions_day ON jueki_actions (day, id);
-    CREATE INDEX IF NOT EXISTS idx_jueki_actions_ref ON jueki_actions (kind, ref, at);
-    CREATE TABLE IF NOT EXISTS jueki_digest (
-      day     TEXT PRIMARY KEY,
-      channel TEXT NOT NULL,
-      ts      TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS jueki_blockers (
-      id             INTEGER PRIMARY KEY AUTOINCREMENT,
-      key            TEXT NOT NULL UNIQUE,
-      kind           TEXT NOT NULL,
-      prod           INTEGER NOT NULL DEFAULT 0,
-      text           TEXT NOT NULL,
-      state          TEXT NOT NULL DEFAULT 'pending',
-      notice_channel TEXT NOT NULL DEFAULT '',
-      notice_ts      TEXT NOT NULL DEFAULT '',
-      raised_count   INTEGER NOT NULL DEFAULT 0,
-      last_raised_at INTEGER NOT NULL DEFAULT 0,
-      handled_at     INTEGER NOT NULL DEFAULT 0,
-      created_at     INTEGER NOT NULL,
-      decided_at     INTEGER NOT NULL DEFAULT 0
-    );
-  `);
-  // v55: a blocker may be about a person other than the owner (who is stuck, and where their thread is).
-  const cols = db.query<{ name: string }, []>("PRAGMA table_info(jueki_blockers)").all().map((c) => c.name);
-  for (const col of ["for_user", "channel_id", "thread_ts", "permalink", "plan"]) {
-    if (!cols.includes(col)) db.exec(`ALTER TABLE jueki_blockers ADD COLUMN ${col} TEXT NOT NULL DEFAULT ''`);
+    for (const r of db.query<LegacyBlockerRow, []>("SELECT * FROM jueki_blockers ORDER BY id").all()) {
+      const same = byKey.get(r.key);
+      if (same) {
+        if (r.prod > same.prod) raiseProd.run(same.id);
+        continue;
+      }
+      insert.run({
+        $id: byId.get(r.id) ? null : r.id,
+        $key: r.key,
+        $kind: r.kind,
+        $prod: r.prod,
+        $text: r.text,
+        $state: r.state,
+        $notice_channel: r.notice_channel,
+        $notice_ts: r.notice_ts,
+        $raised_count: r.raised_count,
+        $last_raised_at: r.last_raised_at,
+        $handled_at: r.handled_at,
+        $created_at: r.created_at,
+        $decided_at: r.decided_at,
+      });
+    }
   }
-  const { user_version } = db.query<{ user_version: number }, []>("PRAGMA user_version").get() ?? {
-    user_version: 0,
-  };
-  if (user_version < 55) db.exec("PRAGMA user_version = 55;");
+};
+
+const migrateCoordinator = (db: Database): void => {
+  const tableExists = (name: string): boolean =>
+    db.query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name = ?").get(name)?.n === 1;
+
+  db.exec("BEGIN");
+  try {
+    for (const [legacy, current] of LEGACY_COORDINATOR_TABLES) {
+      if (!tableExists(legacy)) continue;
+      if (!tableExists(current)) {
+        db.exec(`ALTER TABLE ${legacy} RENAME TO ${current};`);
+        continue;
+      }
+      mergeLegacyCoordinatorRows(db, legacy);
+      db.exec(`DROP TABLE ${legacy};`);
+    }
+    db.exec(`
+      DROP INDEX IF EXISTS idx_jueki_actions_day;
+      DROP INDEX IF EXISTS idx_jueki_actions_ref;
+      CREATE TABLE IF NOT EXISTS coordinator_actions (
+        id    INTEGER PRIMARY KEY AUTOINCREMENT,
+        day   TEXT NOT NULL,
+        at    INTEGER NOT NULL,
+        kind  TEXT NOT NULL,
+        ref   TEXT NOT NULL DEFAULT '',
+        line  TEXT NOT NULL DEFAULT ''
+      );
+      CREATE INDEX IF NOT EXISTS idx_coordinator_actions_day ON coordinator_actions (day, id);
+      CREATE INDEX IF NOT EXISTS idx_coordinator_actions_ref ON coordinator_actions (kind, ref, at);
+      CREATE TABLE IF NOT EXISTS coordinator_digest (
+        day     TEXT PRIMARY KEY,
+        channel TEXT NOT NULL,
+        ts      TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS coordinator_blockers (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        key            TEXT NOT NULL UNIQUE,
+        kind           TEXT NOT NULL,
+        prod           INTEGER NOT NULL DEFAULT 0,
+        text           TEXT NOT NULL,
+        state          TEXT NOT NULL DEFAULT 'pending',
+        notice_channel TEXT NOT NULL DEFAULT '',
+        notice_ts      TEXT NOT NULL DEFAULT '',
+        raised_count   INTEGER NOT NULL DEFAULT 0,
+        last_raised_at INTEGER NOT NULL DEFAULT 0,
+        handled_at     INTEGER NOT NULL DEFAULT 0,
+        created_at     INTEGER NOT NULL,
+        decided_at     INTEGER NOT NULL DEFAULT 0
+      );
+    `);
+    // v56: a blocker may be about a person other than the owner (who is stuck, and where their thread is).
+    const cols = db.query<{ name: string }, []>("PRAGMA table_info(coordinator_blockers)").all().map((c) => c.name);
+    for (const col of ["for_user", "channel_id", "thread_ts", "permalink", "plan"]) {
+      if (!cols.includes(col)) db.exec(`ALTER TABLE coordinator_blockers ADD COLUMN ${col} TEXT NOT NULL DEFAULT ''`);
+    }
+    const { user_version } = db.query<{ user_version: number }, []>("PRAGMA user_version").get() ?? {
+      user_version: 0,
+    };
+    if (user_version < 56) db.exec("PRAGMA user_version = 56;");
+    db.exec("COMMIT");
+  } catch (e) {
+    db.exec("ROLLBACK");
+    throw e;
+  }
 };

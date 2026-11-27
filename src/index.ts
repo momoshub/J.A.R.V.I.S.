@@ -113,6 +113,7 @@ import { createAnthropicLlm } from "./infrastructure/llm/anthropic.ts";
 import { createClaudeCliLlm, type ClaudeCliConfig } from "./infrastructure/llm/claudeCli.ts";
 import { WebClient } from "@slack/web-api";
 import { createSlackApp } from "./infrastructure/slack/app.ts";
+import { createWhisperTranscriber } from "./infrastructure/system/whisper.ts";
 import { createInboxReceiver, tidyInterrupted } from "./infrastructure/slack/inboxReceiver.ts";
 import { drainNotice, waitsForRestart } from "./domain/drainNotice.ts";
 import { interruptedNotice } from "./domain/inbox.ts";
@@ -166,9 +167,9 @@ import { createBackgroundAgents, defaultRunner } from "./infrastructure/llm/back
 import { recordedOwners, recordPrThread } from "./domain/stuckWork.ts";
 import { createStuckWorkProbe } from "./infrastructure/system/stuckWorkProbe.ts";
 import { createStuckSweeper } from "./application/stuckSweeper.ts";
-import { createJueki, rearmWatch } from "./application/jueki.ts";
-import { createJuekiRepo } from "./infrastructure/db/juekiRepo.ts";
-import { createJuekiPrProbe } from "./infrastructure/system/juekiPrProbe.ts";
+import { createCoordinator, rearmWatch } from "./application/coordinator.ts";
+import { createCoordinatorRepo } from "./infrastructure/db/coordinatorRepo.ts";
+import { createCoordinatorPrProbe } from "./infrastructure/system/coordinatorPrProbe.ts";
 import { createIdleReaper } from "./application/idleReaper.ts";
 import { createStalePromiseSweep } from "./application/stalePromiseSweep.ts";
 import { classifyMessage, classifySystem, parsePromiseVerdict } from "./domain/stalePromise.ts";
@@ -716,21 +717,22 @@ const main = async () => {
     ownerSlackId: config.ownerSlackId,
     log: (l) => activity.line(`skill draft approval: ${l}`),
   };
-  // Jueki: the housekeeping coordinator that lives only in the owner's DM. A recurring tick
-  // (JUEKI_INTERVAL_MS, 0 = off) rebuilds its picture from the records, settles what code can,
+  // The coordinator: the housekeeping coordinator that lives only in the owner's DM. A recurring tick
+  // (COORDINATOR_INTERVAL_MS, 0 = off) rebuilds its picture from the records, settles what code can,
   // hands the rest to one turn in the owner's DM and keeps a single digest message edited all day.
-  // See domain/jueki.ts. Its turn goes through the same `runTurn` loops use, as the owner.
-  const juekiRepo = createJuekiRepo(db);
-  const juekiPrProbe = createJuekiPrProbe({
+  // See domain/coordinator.ts. Its turn goes through the same `runTurn` loops use, as the owner.
+  const coordinatorRepo = createCoordinatorRepo(db);
+  const coordinatorPrProbe = createCoordinatorPrProbe({
     gh: defaultRunner(repoPath),
     authors: [config.selfPrAccounts?.author, config.githubApp.slug ? `${config.githubApp.slug}[bot]` : undefined].filter(
       (a): a is string => !!a,
     ),
   });
-  const jueki = createJueki({
+  const coordinator = createCoordinator({
+    name: config.coordinator.name,
     clock,
     ownerSlackId: config.ownerSlackId,
-    repo: juekiRepo,
+    repo: coordinatorRepo,
     journeys,
     slack: slackAdmin,
     tickets: {
@@ -747,17 +749,17 @@ const main = async () => {
       rearm: (w, now) => rearmWatch(watches, w, now),
     },
     scan: stuckWorkProbe.scan,
-    ownPrs: juekiPrProbe.scan,
+    ownPrs: coordinatorPrProbe.scan,
     unanswered: (id, since, before) => messages.endedOnUser(id, since, before, 50),
     runTurn: (req) => deps.runTurn!(req),
-    offsetMinutes: () => config.jueki.tzOffsetMin,
-    quiet: { startHour: config.jueki.quietStartHour, endHour: config.jueki.quietEndHour },
+    offsetMinutes: () => config.coordinator.tzOffsetMin,
+    quiet: { startHour: config.coordinator.quietStartHour, endHour: config.coordinator.quietEndHour },
     enabled: () => !draining,
-    staleJourneyMs: config.jueki.staleJourneyMs,
-    repingMs: config.jueki.prodRepingMs,
+    staleJourneyMs: config.coordinator.staleJourneyMs,
+    repingMs: config.coordinator.prodRepingMs,
     prefix: config.commandPrefix,
-    scheduled: config.jueki.intervalMs > 0,
-    log: (msg) => console.error(`[jueki] ${msg}`),
+    scheduled: config.coordinator.intervalMs > 0,
+    log: (msg) => console.error(`[coordinator] ${msg}`),
   });
   const deps: RespondDeps = {
     users,
@@ -784,8 +786,8 @@ const main = async () => {
     bugReports,
     selfIssues,
     bugReportApproval: { bugReports, slack: slackAdmin, clock, ownerSlackId: config.ownerSlackId },
-    jueki,
-    juekiApproval: { repo: juekiRepo, slack: slackAdmin, clock, ownerSlackId: config.ownerSlackId, onApproved: () => void jueki.tick() },
+    coordinator,
+    coordinatorApproval: { repo: coordinatorRepo, slack: slackAdmin, clock, ownerSlackId: config.ownerSlackId, name: config.coordinator.name, onApproved: () => void coordinator.tick() },
     skillDrafts,
     skillDraftApproval,
     reviewRunApproval: {
@@ -1175,6 +1177,13 @@ const main = async () => {
         : undefined,
       botToken: config.slackBotToken,
       appToken: config.slackAppToken,
+      transcribe: createWhisperTranscriber({
+        whisperBin: config.whisperBin,
+        modelPath: config.whisperModelPath,
+        ffmpegBin: config.ffmpegBin,
+        timeoutMs: config.whisperTimeoutMs,
+        botToken: config.slackBotToken,
+      }),
       streamUpdates: config.slackStreamUpdates,
       botName: profile().name,
       thinkingLabel: () => profile().thinkingLabel,
@@ -1725,13 +1734,13 @@ const main = async () => {
   (firstStale as { unref?: () => void } | undefined)?.unref?.();
   (staleTimer as { unref?: () => void } | undefined)?.unref?.();
 
-  // Jueki's tick: every JUEKI_INTERVAL_MS, never a process of its own. It starts a turn at most
+  // The coordinator's tick: every COORDINATOR_INTERVAL_MS, never a process of its own. It starts a turn at most
   // once per tick and holds while a restart drains. The first tick is two minutes after boot.
-  const juekiEveryMs = config.jueki.intervalMs;
-  const firstJueki = juekiEveryMs > 0 ? setTimeout(() => void jueki.tick(), 120_000) : undefined;
-  const juekiTimer = juekiEveryMs > 0 ? setInterval(() => void jueki.tick(), juekiEveryMs) : undefined;
-  (firstJueki as { unref?: () => void } | undefined)?.unref?.();
-  (juekiTimer as { unref?: () => void } | undefined)?.unref?.();
+  const coordinatorEveryMs = config.coordinator.intervalMs;
+  const firstCoordinator = coordinatorEveryMs > 0 ? setTimeout(() => void coordinator.tick(), 120_000) : undefined;
+  const coordinatorTimer = coordinatorEveryMs > 0 ? setInterval(() => void coordinator.tick(), coordinatorEveryMs) : undefined;
+  (firstCoordinator as { unref?: () => void } | undefined)?.unref?.();
+  (coordinatorTimer as { unref?: () => void } | undefined)?.unref?.();
 
   // Dead man's switch for the host's flaky connection: keeps an "I'm offline"
   // notice armed on Slack's side, so an outage gets reported even though the
@@ -1766,8 +1775,8 @@ const main = async () => {
     clearInterval(reapTimer);
     clearTimeout(firstStale);
     clearInterval(staleTimer);
-    clearTimeout(firstJueki);
-    clearInterval(juekiTimer);
+    clearTimeout(firstCoordinator);
+    clearInterval(coordinatorTimer);
     clearInterval(alarmTimer);
     // A deliberate stop is not an outage. This covers `launchctl kickstart -k`
     // and a Mac shutting down or logging out too (all SIGTERM): a few unarmed

@@ -1,16 +1,16 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { migrate } from "../../../src/infrastructure/db/schema.ts";
-import { createJuekiRepo } from "../../../src/infrastructure/db/juekiRepo.ts";
+import { createCoordinatorRepo } from "../../../src/infrastructure/db/coordinatorRepo.ts";
 
 const repo = () => {
   const db = new Database(":memory:");
   migrate(db);
   migrate(db); // idempotent
-  return createJuekiRepo(db);
+  return createCoordinatorRepo(db);
 };
 
-describe("juekiRepo", () => {
+describe("coordinatorRepo", () => {
   test("digest lines are kept per day, oldest first", () => {
     const r = repo();
     r.addLine("2026-11-27", 1, "a");
@@ -55,7 +55,7 @@ describe("juekiRepo", () => {
     expect(r.openBlocker({ key: "deploy-x", kind: "decision", prod: false, text: "third" }, 3).prod).toBe(true);
   });
 
-  test("close: a pending blocker Jueki fixed itself; a decided one is not touched; the same key opens again from nothing", () => {
+  test("close: a pending blocker the coordinator fixed itself; a decided one is not touched; the same key opens again from nothing", () => {
     const r = repo();
     const a = r.openBlocker({ key: "k", kind: "prod-write", prod: true, text: "old" }, 1);
     r.setNotice(a.id, "D1", "1.1");
@@ -89,7 +89,7 @@ describe("juekiRepo", () => {
   });
 });
 
-describe("the lookups Jueki reads other tables with", () => {
+describe("the lookups the coordinator reads other tables with", () => {
   test("lapsedSince: expired and failed watches since a time, not fired or waiting ones", async () => {
     const { createWatchRepo } = await import("../../../src/infrastructure/db/watchRepo.ts");
     const db = new Database(":memory:");
@@ -121,7 +121,7 @@ describe("the lookups Jueki reads other tables with", () => {
   });
 });
 
-describe("juekiRepo: a blocker about another person", () => {
+describe("coordinatorRepo: a blocker about another person", () => {
   const subject = { forUser: "U0PAL000001", channelId: "C0TEST00001", threadTs: "1.5", permalink: "https://team.slack.com/archives/C0TEST00001/p1000000", plan: "open the PR" };
 
   test("the subject is stored with the row and read back; an owner's own blocker has none", () => {
@@ -150,17 +150,17 @@ describe("juekiRepo: a blocker about another person", () => {
     expect(r.unblocksSince(1000)).toBe(0);
   });
 
-  test("a table from before v55 gains the columns, and its rows read as the owner's own", () => {
+  test("a table from before v56 gains the columns, and its rows read as the owner's own", () => {
     const db = new Database(":memory:");
-    db.exec(`CREATE TABLE jueki_blockers (
+    db.exec(`CREATE TABLE coordinator_blockers (
       id INTEGER PRIMARY KEY AUTOINCREMENT, key TEXT NOT NULL UNIQUE, kind TEXT NOT NULL, prod INTEGER NOT NULL DEFAULT 0,
       text TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'pending', notice_channel TEXT NOT NULL DEFAULT '', notice_ts TEXT NOT NULL DEFAULT '',
       raised_count INTEGER NOT NULL DEFAULT 0, last_raised_at INTEGER NOT NULL DEFAULT 0, handled_at INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL, decided_at INTEGER NOT NULL DEFAULT 0)`);
-    db.exec("INSERT INTO jueki_blockers (key, kind, text, created_at) VALUES ('old', 'decision', 'old wall', 1)");
+    db.exec("INSERT INTO coordinator_blockers (key, kind, text, created_at) VALUES ('old', 'decision', 'old wall', 1)");
     migrate(db);
     migrate(db);
-    expect(createJuekiRepo(db).blockerByKey("old")).toMatchObject({ text: "old wall", forUser: "", channelId: "", plan: "" });
+    expect(createCoordinatorRepo(db).blockerByKey("old")).toMatchObject({ text: "old wall", forUser: "", channelId: "", plan: "" });
   });
 });
 

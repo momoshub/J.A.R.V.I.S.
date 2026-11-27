@@ -1,15 +1,17 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import { createJueki, dayThreadTs, rearmWatch, type JuekiDeps, type JuekiTurnRequest } from "../../src/application/jueki.ts";
-import { DEFAULT_PROD_REPING_MS, HOUR_MS, DAY_MS, MINUTE_MS, MAX_UNBLOCKS_PER_DAY, type BlockerFacts, type BlockerSubject, type OwnPr } from "../../src/domain/jueki.ts";
+import { createCoordinator, dayThreadTs, rearmWatch, type CoordinatorDeps, type CoordinatorTurnRequest } from "../../src/application/coordinator.ts";
+import { DEFAULT_PROD_REPING_MS, HOUR_MS, DAY_MS, MINUTE_MS, MAX_UNBLOCKS_PER_DAY, type BlockerFacts, type BlockerSubject, type OwnPr } from "../../src/domain/coordinator.ts";
 import { NO_STUCK_WORK } from "../../src/domain/stuckWork.ts";
 import { createJourneyRepo } from "../../src/infrastructure/db/journeyRepo.ts";
-import { createJuekiRepo } from "../../src/infrastructure/db/juekiRepo.ts";
+import { createCoordinatorRepo } from "../../src/infrastructure/db/coordinatorRepo.ts";
 import { createWatchRepo } from "../../src/infrastructure/db/watchRepo.ts";
 import { migrate } from "../../src/infrastructure/db/schema.ts";
 import type { Watch } from "../../src/infrastructure/db/watchRepo.ts";
 
 const OWNER = "U0OWNER0001";
+/** Deliberately not the default: what is signed and spoken comes from config, never from a constant. */
+const NAME = "Aide";
 /** 2026-11-27 10:00 in UTC+7. */
 const NOON = Date.UTC(2026, 10, 27, 3, 0, 0);
 /** 2026-11-27 23:00 in UTC+7: quiet. */
@@ -25,17 +27,17 @@ const watch = (over: Partial<Watch> = {}): Watch => ({
   deadlineAt: 0, nextAt: 0, state: "expired", attempts: 0, errors: 0, lastError: "", createdAt: 0, createdBy: "", writeTargets: [], parentWatchId: 0, ...over,
 });
 
-const setup = (start = NOON, over: Partial<JuekiDeps> = {}) => {
+const setup = (start = NOON, over: Partial<CoordinatorDeps> = {}) => {
   const db = new Database(":memory:");
   migrate(db);
-  const repo = createJuekiRepo(db);
+  const repo = createCoordinatorRepo(db);
   const journeys = createJourneyRepo(db);
   const clock = { t: start };
   const posts: { text: string; by?: string }[] = [];
   const updates: { channel: string; ts: string; text: string; by?: string | null }[] = [];
   const asked: { text: string; ids: string[]; by?: string }[] = [];
   const settled: { channel: string; ts: string; text: string }[] = [];
-  const turns: JuekiTurnRequest[] = [];
+  const turns: CoordinatorTurnRequest[] = [];
   const renewed: string[] = [];
   const rearmed: number[] = [];
   let tickets: { id: string; dispatchId: string; boundAt: number; expiresAt: number }[] = [];
@@ -46,7 +48,8 @@ const setup = (start = NOON, over: Partial<JuekiDeps> = {}) => {
   let unanswered: { channelId: string; threadTs: string; lastAt: number; slackUserId: string }[] = [];
   let n = 0;
   const flags = { dmOpen: true, turnThrows: false, turnCut: false };
-  const jueki = createJueki({
+  const coordinator = createCoordinator({
+    name: NAME,
     clock: () => clock.t,
     ownerSlackId: OWNER,
     repo,
@@ -87,7 +90,7 @@ const setup = (start = NOON, over: Partial<JuekiDeps> = {}) => {
     ...over,
   });
   return {
-    jueki, repo, journeys, clock, flags, posts, updates, asked, settled, turns, renewed, rearmed,
+    coordinator, repo, journeys, clock, flags, posts, updates, asked, settled, turns, renewed, rearmed,
     set: {
       tickets: (t: typeof tickets) => (tickets = t),
       waiting: (w: Watch[]) => (waiting = w),
@@ -106,14 +109,14 @@ const journey = (s: ReturnType<typeof setup>, title: string, progress: number, u
 };
 
 describe("the tick settles what code can, and says so in one digest message", () => {
-  test("a journey sitting at 100% is closed and the digest is posted once, signed Jueki", async () => {
+  test("a journey sitting at 100% is closed and the digest is posted once, signed with the configured name", async () => {
     const s = setup();
     const j = journey(s, "ship it", 100, NOON - 5 * DAY_MS);
-    await s.jueki.tick();
+    await s.coordinator.tick();
     expect(s.journeys.get(j.id)).toMatchObject({ status: "done", progress: 100 });
-    expect(s.journeys.events(j.id).some((e) => e.actor === "jueki")).toBe(true);
+    expect(s.journeys.events(j.id).some((e) => e.actor === "coordinator")).toBe(true);
     expect(s.posts).toHaveLength(1);
-    expect(s.posts[0]).toMatchObject({ by: "Jueki" });
+    expect(s.posts[0]).toMatchObject({ by: NAME });
     expect(s.posts[0]!.text).toContain(`closed journey #${j.id}`);
     expect(s.turns).toHaveLength(0);
   });
@@ -121,20 +124,20 @@ describe("the tick settles what code can, and says so in one digest message", ()
   test("a later action edits the same message instead of posting a trail", async () => {
     const s = setup();
     journey(s, "a", 100, NOON);
-    await s.jueki.tick();
+    await s.coordinator.tick();
     journey(s, "b", 100, NOON);
     s.clock.t += 30 * MINUTE_MS;
-    await s.jueki.tick();
+    await s.coordinator.tick();
     expect(s.posts).toHaveLength(1);
     expect(s.updates).toHaveLength(1);
-    expect(s.updates[0]).toMatchObject({ channel: "D1", ts: "p1", by: "Jueki" });
+    expect(s.updates[0]).toMatchObject({ channel: "D1", ts: "p1", by: NAME });
     expect(s.updates[0]!.text).toContain('closed journey #2 "b"');
     expect(s.updates[0]!.text).toContain('closed journey #1 "a"');
   });
 
   test("a tick with nothing to do posts nothing", async () => {
     const s = setup();
-    await s.jueki.tick();
+    await s.coordinator.tick();
     expect(s.posts).toHaveLength(0);
     expect(s.asked).toHaveLength(0);
     expect(s.turns).toHaveLength(0);
@@ -143,10 +146,10 @@ describe("the tick settles what code can, and says so in one digest message", ()
   test("a worker ticket near its end is renewed while its worker is watched, and not otherwise", async () => {
     const s = setup();
     s.set.tickets([{ id: "aaaaaaaa", dispatchId: "ctx_w1", boundAt: NOON - HOUR_MS, expiresAt: NOON + 20 * MINUTE_MS }]);
-    await s.jueki.tick();
+    await s.coordinator.tick();
     expect(s.renewed).toEqual([]);
     s.set.waiting([watch({ state: "waiting" })]);
-    await s.jueki.tick();
+    await s.coordinator.tick();
     expect(s.renewed).toEqual(["aaaaaaaa"]);
     expect(s.posts[0]!.text).toContain("renewed worker ticket aaaaaaaa for ctx_w1");
   });
@@ -155,13 +158,13 @@ describe("the tick settles what code can, and says so in one digest message", ()
     const s = setup();
     s.set.waiting([watch({ state: "waiting" })]);
     s.set.tickets([{ id: "bbbbbbbb", dispatchId: "ctx_w1", boundAt: NOON - 25 * HOUR_MS, expiresAt: NOON + HOUR_MS }]);
-    await s.jueki.tick();
+    await s.coordinator.tick();
     await settle();
     expect(s.turns).toHaveLength(1);
     expect(s.turns[0]!.text).toContain("ticket bbbbbbbb");
     expect(s.renewed).toEqual([]);
     s.clock.t += 30 * MINUTE_MS;
-    await s.jueki.tick();
+    await s.coordinator.tick();
     await settle();
     expect(s.turns).toHaveLength(1);
   });
@@ -169,23 +172,23 @@ describe("the tick settles what code can, and says so in one digest message", ()
   test("a lapsed worker watch is armed again once, unless the worker is dead or already watched", async () => {
     const s = setup();
     s.set.lapsed([watch({ id: 4 })]);
-    await s.jueki.tick();
+    await s.coordinator.tick();
     expect(s.rearmed).toEqual([4]);
     expect(s.posts[0]!.text).toContain("re-armed the lapsed watch on worker ctx_w1 (#4, now #99)");
     s.clock.t += HOUR_MS;
-    await s.jueki.tick();
+    await s.coordinator.tick();
     expect(s.rearmed).toEqual([4]);
 
     const dead = setup();
     dead.set.lapsed([watch({ id: 5 })]);
     dead.set.scan({ ...NO_STUCK_WORK, tasks: [{ taskId: "task_1", runId: "run_1", title: "x", dispatchId: "ctx_w1", why: "terminal gone" }] });
-    await dead.jueki.tick();
+    await dead.coordinator.tick();
     expect(dead.rearmed).toEqual([]);
 
     const watched = setup();
     watched.set.lapsed([watch({ id: 6 })]);
     watched.set.waiting([watch({ id: 7, state: "waiting" })]);
-    await watched.jueki.tick();
+    await watched.coordinator.tick();
     expect(watched.rearmed).toEqual([]);
   });
 });
@@ -194,13 +197,13 @@ describe("the judgment turn", () => {
   test("stale journeys go to one fresh daily session in the owner's DM, held, as the owner", async () => {
     const s = setup();
     const j = journey(s, "old thing", 30, NOON - 5 * DAY_MS);
-    await s.jueki.tick();
+    await s.coordinator.tick();
     await settle();
     expect(s.turns).toHaveLength(1);
     const req = s.turns[0]!;
     expect(req).toMatchObject({ channelId: "D1", slackUserId: OWNER, unprompted: true, hold: true, threadTs: dayThreadTs("2026-11-27") });
     expect(req.text).toContain(`journey #${j.id}`);
-    expect(req.text).toContain("You are Jueki");
+    expect(req.text).toContain(`You are ${NAME}`);
     // Another day is another session.
     expect(dayThreadTs("2026-11-28")).not.toBe(dayThreadTs("2026-11-27"));
   });
@@ -208,14 +211,14 @@ describe("the judgment turn", () => {
   test("the same stale journey is not fed again inside a day", async () => {
     const s = setup();
     journey(s, "old thing", 30, NOON - 5 * DAY_MS);
-    await s.jueki.tick();
+    await s.coordinator.tick();
     await settle();
     s.clock.t += 30 * MINUTE_MS;
-    await s.jueki.tick();
+    await s.coordinator.tick();
     await settle();
     expect(s.turns).toHaveLength(1);
     s.clock.t += DAY_MS;
-    await s.jueki.tick();
+    await s.coordinator.tick();
     await settle();
     expect(s.turns).toHaveLength(2);
   });
@@ -228,7 +231,7 @@ describe("the judgment turn", () => {
     ]);
     s.set.scan({ ...NO_STUCK_WORK, tasks: [{ taskId: "task_9", runId: "run_9", title: "dead job", dispatchId: "ctx_d9", why: "terminal gone" }] });
     s.set.unanswered([{ channelId: "C9", threadTs: "9.9", lastAt: NOON - 5 * HOUR_MS, slackUserId: OWNER }]);
-    await s.jueki.tick();
+    await s.coordinator.tick();
     await settle();
     const text = s.turns[0]!.text;
     expect(text).toContain("PR #11");
@@ -242,17 +245,17 @@ describe("the judgment turn", () => {
     const s = setup(NIGHT);
     journey(s, "stale", 30, NIGHT - 5 * DAY_MS);
     journey(s, "done", 100, NIGHT);
-    await s.jueki.tick();
+    await s.coordinator.tick();
     await settle();
     expect(s.turns).toHaveLength(0);
     expect(s.posts).toHaveLength(0);
     expect(s.repo.lines("2026-11-27").map((l) => l.text).join("\n")).toContain("closed journey");
     // Morning (10:00 on the 28th): the night's line is posted with its own day's digest, and the stale journey goes to the turn.
     s.clock.t = Date.UTC(2026, 10, 28, 3, 0, 0);
-    await s.jueki.tick();
+    await s.coordinator.tick();
     await settle();
     expect(s.posts).toHaveLength(1);
-    expect(s.posts[0]!.text).toContain("housekeeping digest, 2026-11-27");
+    expect(s.posts[0]!.text).toContain(`*${NAME}* - housekeeping digest, 2026-11-27`);
     expect(s.posts[0]!.text).toContain("closed journey");
     expect(s.turns).toHaveLength(1);
     expect(s.turns[0]!.threadTs).toBe(dayThreadTs("2026-11-28"));
@@ -260,7 +263,7 @@ describe("the judgment turn", () => {
 
   test("the day turns at 05:00, not at midnight: 02:00 still belongs to the evening before", async () => {
     const s = setup(Date.UTC(2026, 10, 27, 19, 0, 0)); // 02:00 on the 28th, quiet
-    await s.jueki.act("night line");
+    await s.coordinator.act("night line");
     expect(s.repo.lines("2026-11-27").map((l) => l.text)).toEqual(["night line"]);
     expect(s.repo.lines("2026-11-28")).toEqual([]);
   });
@@ -268,10 +271,10 @@ describe("the judgment turn", () => {
   test("a digest that already exists keeps being edited through quiet hours (no ping)", async () => {
     const s = setup();
     journey(s, "a", 100, NOON);
-    await s.jueki.tick();
+    await s.coordinator.tick();
     s.clock.t = NIGHT;
     journey(s, "b", 100, NIGHT);
-    await s.jueki.tick();
+    await s.coordinator.tick();
     expect(s.posts).toHaveLength(1);
     expect(s.updates).toHaveLength(1);
   });
@@ -279,7 +282,7 @@ describe("the judgment turn", () => {
   test("while a restart drains the tick holds", async () => {
     const s = setup(NOON, { enabled: () => false });
     journey(s, "a", 100, NOON);
-    await s.jueki.tick();
+    await s.coordinator.tick();
     expect(s.posts).toHaveLength(0);
   });
 
@@ -287,12 +290,12 @@ describe("the judgment turn", () => {
     const s = setup();
     const b = s.repo.openBlocker({ key: "k", kind: "permission", prod: false, text: "needs the staging bucket" }, NOON);
     s.repo.decide(b.id, "approved", NOON);
-    await s.jueki.tick();
+    await s.coordinator.tick();
     await settle();
     expect(s.turns).toHaveLength(1);
     expect(s.turns[0]!.text).toContain("needs the staging bucket");
     s.clock.t += 30 * MINUTE_MS;
-    await s.jueki.tick();
+    await s.coordinator.tick();
     await settle();
     expect(s.turns).toHaveLength(1);
   });
@@ -303,13 +306,13 @@ describe("a held or failed turn loses nothing", () => {
     const s = setup();
     journey(s, "old thing", 30, NOON - 5 * DAY_MS);
     s.flags.dmOpen = false;
-    await s.jueki.tick();
+    await s.coordinator.tick();
     await settle();
     expect(s.turns).toHaveLength(0);
     expect(s.repo.lastMark("nudge", "journey:1")).toBeUndefined();
     s.flags.dmOpen = true;
     s.clock.t += 30 * MINUTE_MS;
-    await s.jueki.tick();
+    await s.coordinator.tick();
     await settle();
     expect(s.turns).toHaveLength(1);
     expect(s.turns[0]!.text).toContain("journey #1");
@@ -320,13 +323,13 @@ describe("a held or failed turn loses nothing", () => {
     const b = s.repo.openBlocker({ key: "k", kind: "permission", prod: false, text: "needs the staging bucket" }, NOON);
     s.repo.decide(b.id, "approved", NOON);
     s.flags.turnThrows = true;
-    await s.jueki.tick();
+    await s.coordinator.tick();
     await settle();
     expect(s.turns).toHaveLength(1);
     expect(s.repo.approvedUnhandled().map((x) => x.id)).toEqual([b.id]);
     s.flags.turnThrows = false;
     s.clock.t += 30 * MINUTE_MS;
-    await s.jueki.tick();
+    await s.coordinator.tick();
     await settle();
     expect(s.turns).toHaveLength(2);
     expect(s.turns[1]!.text).toContain("needs the staging bucket");
@@ -339,14 +342,14 @@ describe("a held or failed turn loses nothing", () => {
     const b = s.repo.openBlocker({ key: "k", kind: "permission", prod: false, text: "needs the bucket" }, NOON);
     s.repo.decide(b.id, "approved", NOON);
     s.flags.turnCut = true;
-    await s.jueki.tick();
+    await s.coordinator.tick();
     await settle();
     expect(s.turns).toHaveLength(1);
     expect(s.repo.lastMark("nudge", "journey:1")).toBeUndefined();
     expect(s.repo.approvedUnhandled().map((x) => x.id)).toEqual([b.id]);
     s.flags.turnCut = false;
     s.clock.t += 30 * MINUTE_MS;
-    await s.jueki.tick();
+    await s.coordinator.tick();
     await settle();
     expect(s.turns).toHaveLength(2);
     expect(s.turns[1]!.text).toContain("journey #1");
@@ -360,7 +363,7 @@ describe("a held or failed turn loses nothing", () => {
     s.set.waiting([watch({ state: "waiting" })]);
     const boundAt = NOON - 23.5 * HOUR_MS;
     s.set.tickets([{ id: "cccccccc", dispatchId: "ctx_w1", boundAt, expiresAt: boundAt + 24 * HOUR_MS }]);
-    await s.jueki.tick();
+    await s.coordinator.tick();
     await settle();
     expect(s.renewed).toEqual([]);
     expect(s.turns[0]!.text).toContain("ticket cccccccc");
@@ -370,41 +373,41 @@ describe("a held or failed turn loses nothing", () => {
 describe("blockers: the original rule (non-prod)", () => {
   test("raised once with Approve / Reject and never again, however often the turn asks", async () => {
     const s = setup();
-    const first = await s.jueki.blocker({ key: "needs-iam", kind: "permission", text: "needs a role the owner lacks", facts: facts() });
+    const first = await s.coordinator.blocker({ key: "needs-iam", kind: "permission", text: "needs a role the owner lacks", facts: facts() });
     expect(first).toContain("raised to the owner once");
     expect(s.asked).toHaveLength(1);
-    expect(s.asked[0]).toMatchObject({ ids: ["jv:jueki:approve", "jv:jueki:reject"], by: "Jueki" });
+    expect(s.asked[0]).toMatchObject({ ids: ["jv:coordinator:approve", "jv:coordinator:reject"], by: NAME });
     s.clock.t += 5 * DAY_MS;
-    const again = await s.jueki.blocker({ key: "needs-iam", kind: "permission", text: "needs a role the owner lacks", facts: facts() });
+    const again = await s.coordinator.blocker({ key: "needs-iam", kind: "permission", text: "needs a role the owner lacks", facts: facts() });
     expect(again).toContain("already put to the owner");
-    await s.jueki.tick();
+    await s.coordinator.tick();
     expect(s.asked).toHaveLength(1);
   });
 
   test("in quiet hours it is held, then raised by the first tick after", async () => {
     const s = setup(NIGHT);
-    const out = await s.jueki.blocker({ key: "k", kind: "decision", text: "which one?", facts: facts() });
+    const out = await s.coordinator.blocker({ key: "k", kind: "decision", text: "which one?", facts: facts() });
     expect(out).toContain("quiet hours");
     expect(s.asked).toHaveLength(0);
-    await s.jueki.tick();
+    await s.coordinator.tick();
     expect(s.asked).toHaveLength(0);
     s.clock.t = Date.UTC(2026, 10, 28, 3, 0, 0);
-    await s.jueki.tick();
+    await s.coordinator.tick();
     expect(s.asked).toHaveLength(1);
   });
 
   test("a decided blocker is not raised again", async () => {
     const s = setup();
-    await s.jueki.blocker({ key: "k", kind: "decision", text: "which?", facts: facts() });
+    await s.coordinator.blocker({ key: "k", kind: "decision", text: "which?", facts: facts() });
     s.repo.decide(1, "rejected", NOON);
-    const out = await s.jueki.blocker({ key: "k", kind: "decision", text: "which?", facts: facts() });
+    const out = await s.coordinator.blocker({ key: "k", kind: "decision", text: "which?", facts: facts() });
     expect(out).toContain("already decided");
     expect(s.asked).toHaveLength(1);
   });
 
   test("a blocker with no key or sentence raises nothing", async () => {
     const s = setup();
-    expect(await s.jueki.blocker({ key: "", kind: "other", text: "x", facts: facts() })).toContain("Nothing was raised");
+    expect(await s.coordinator.blocker({ key: "", kind: "other", text: "x", facts: facts() })).toContain("Nothing was raised");
     expect(s.asked).toHaveLength(0);
   });
 });
@@ -412,7 +415,7 @@ describe("blockers: the original rule (non-prod)", () => {
 describe("blockers: the prod rule", () => {
   test("a prod blocker is raised at once, quiet hours or not", async () => {
     const s = setup(NIGHT);
-    const out = await s.jueki.blocker({ key: "pg-full", kind: "prod-write", text: "disk is filling, needs a data purge", facts: facts({ prod: true, incident: true, dataWrite: true, reversible: true }) });
+    const out = await s.coordinator.blocker({ key: "pg-full", kind: "prod-write", text: "disk is filling, needs a data purge", facts: facts({ prod: true, incident: true, dataWrite: true, reversible: true }) });
     expect(out).toContain("asked again until they act");
     expect(s.asked).toHaveLength(1);
     expect(s.asked[0]!.text).toContain("prod blocker");
@@ -420,81 +423,81 @@ describe("blockers: the prod rule", () => {
 
   test("an undecided prod blocker is asked again every re-ask span, each time a fresh message, the old one settled", async () => {
     const s = setup();
-    await s.jueki.blocker({ key: "pg-full", kind: "prod-write", text: "purge needed", facts: facts({ prod: true, dataWrite: true }) });
+    await s.coordinator.blocker({ key: "pg-full", kind: "prod-write", text: "purge needed", facts: facts({ prod: true, dataWrite: true }) });
     s.clock.t += 10 * MINUTE_MS;
-    await s.jueki.tick();
+    await s.coordinator.tick();
     expect(s.asked).toHaveLength(1);
     s.clock.t += DEFAULT_PROD_REPING_MS;
-    await s.jueki.tick();
+    await s.coordinator.tick();
     expect(s.asked).toHaveLength(2);
     expect(s.asked[1]!.text).toContain("asked 2 times");
     expect(s.settled).toHaveLength(1);
     expect(s.settled[0]!.text).toContain("asked again below");
     // Through the night too.
     s.clock.t = NIGHT;
-    await s.jueki.tick();
+    await s.coordinator.tick();
     expect(s.asked).toHaveLength(3);
   });
 
   test("the turn calling again while it is not due is told to leave it", async () => {
     const s = setup();
     const f = facts({ prod: true, dataWrite: true });
-    await s.jueki.blocker({ key: "k", kind: "prod-write", text: "x", facts: f });
-    const again = await s.jueki.blocker({ key: "k", kind: "prod-write", text: "x", facts: f });
+    await s.coordinator.blocker({ key: "k", kind: "prod-write", text: "x", facts: f });
+    const again = await s.coordinator.blocker({ key: "k", kind: "prod-write", text: "x", facts: f });
     expect(again).toContain("asked again on its own");
     expect(s.asked).toHaveLength(1);
   });
 
   test("once the owner decides, the re-asking stops", async () => {
     const s = setup();
-    await s.jueki.blocker({ key: "k", kind: "prod-write", text: "x", facts: facts({ prod: true, dataWrite: true }) });
+    await s.coordinator.blocker({ key: "k", kind: "prod-write", text: "x", facts: facts({ prod: true, dataWrite: true }) });
     s.repo.decide(1, "approved", NOON);
     s.clock.t += 2 * DEFAULT_PROD_REPING_MS;
-    await s.jueki.tick();
+    await s.coordinator.tick();
     await settle();
     expect(s.asked).toHaveLength(1);
   });
 
   test("prod, urgent and low-risk: told to self-fix, nothing raised; fixed reports it in the digest and one direct DM line", async () => {
     const s = setup(NIGHT);
-    const out = await s.jueki.blocker({ key: "cache-bust", kind: "prod-write", text: "stale cache serving wrong menu", facts: facts({ prod: true, customerImpact: true, reversible: true }) });
+    const out = await s.coordinator.blocker({ key: "cache-bust", kind: "prod-write", text: "stale cache serving wrong menu", facts: facts({ prod: true, customerImpact: true, reversible: true }) });
     expect(out).toContain("self-fix");
-    expect(out).toContain("jueki fixed cache-bust");
+    expect(out).toContain("coordinator fixed cache-bust");
     expect(s.asked).toHaveLength(0);
     expect(s.repo.blockerByKey("cache-bust")).toBeUndefined();
 
-    expect(await s.jueki.fixed("cache-bust", "flushed the menu cache, reversible")).toBe(true);
+    expect(await s.coordinator.fixed("cache-bust", "flushed the menu cache, reversible")).toBe(true);
     expect(s.repo.lines("2026-11-27").map((l) => l.text).join("\n")).toContain("prod fix by me");
     // The direct line goes out at night: a prod item was touched.
     const dm = s.posts.find((p) => p.text.includes("fixed a prod item myself"));
     expect(dm).toBeDefined();
-    expect(dm).toMatchObject({ by: "Jueki" });
+    expect(dm).toMatchObject({ by: NAME });
     expect(dm!.text).toContain("flushed the menu cache");
   });
 
   test("fixed is refused without a self-fix the rules granted for that key, and after the grant runs out", async () => {
     const s = setup();
-    expect(await s.jueki.fixed("never-asked", "did a thing")).toBe(false);
+    expect(await s.coordinator.fixed("never-asked", "did a thing")).toBe(false);
     expect(s.posts).toHaveLength(0);
-    await s.jueki.blocker({ key: "cache-bust", kind: "prod-write", text: "stale", facts: facts({ prod: true, customerImpact: true, reversible: true }) });
-    expect(await s.jueki.fixed("other-key", "x")).toBe(false);
+    await s.coordinator.blocker({ key: "cache-bust", kind: "prod-write", text: "stale", facts: facts({ prod: true, customerImpact: true, reversible: true }) });
+    expect(await s.coordinator.fixed("other-key", "x")).toBe(false);
     s.clock.t += 7 * HOUR_MS;
-    expect(await s.jueki.fixed("cache-bust", "late")).toBe(false);
+    expect(await s.coordinator.fixed("cache-bust", "late")).toBe(false);
     expect(s.posts).toHaveLength(0);
   });
 
   test("a self-fix closes an earlier prod ask for the same key: the old message is settled and the owner is not asked all night", async () => {
     const s = setup();
-    await s.jueki.blocker({ key: "menu-cache", kind: "prod-write", text: "cache serves a stale menu", facts: facts({ prod: true, reversible: true }) });
+    await s.coordinator.blocker({ key: "menu-cache", kind: "prod-write", text: "cache serves a stale menu", facts: facts({ prod: true, reversible: true }) });
     expect(s.asked).toHaveLength(1);
-    // Later it turns urgent: low-risk and urgent, so Jueki fixes it itself.
-    const out = await s.jueki.blocker({ key: "menu-cache", kind: "prod-write", text: "cache serves a stale menu", facts: facts({ prod: true, reversible: true, customerImpact: true }) });
+    // Later it turns urgent: low-risk and urgent, so the coordinator fixes it itself.
+    const out = await s.coordinator.blocker({ key: "menu-cache", kind: "prod-write", text: "cache serves a stale menu", facts: facts({ prod: true, reversible: true, customerImpact: true }) });
     expect(out).toContain("self-fix");
     expect(s.repo.blockerByKey("menu-cache")?.state).toBe("fixed");
     expect(s.settled.map((x) => x.text).join("\n")).toContain("now fixed by me");
-    expect(await s.jueki.fixed("menu-cache", "flushed the cache")).toBe(true);
+    expect(await s.coordinator.fixed("menu-cache", "flushed the cache")).toBe(true);
     s.clock.t = NIGHT;
-    await s.jueki.tick();
+    await s.coordinator.tick();
     expect(s.asked).toHaveLength(1);
     expect(s.repo.pending()).toEqual([]);
   });
@@ -502,9 +505,9 @@ describe("blockers: the prod rule", () => {
   test("the same key arising again after a self-fix is a new blocker", async () => {
     const s = setup();
     const risky = facts({ prod: true, incident: true, reversible: true });
-    await s.jueki.blocker({ key: "k", kind: "prod-write", text: "first time", facts: risky });
-    await s.jueki.fixed("k", "done");
-    const second = await s.jueki.blocker({ key: "k", kind: "prod-write", text: "second time", facts: { ...risky, dataWrite: true } });
+    await s.coordinator.blocker({ key: "k", kind: "prod-write", text: "first time", facts: risky });
+    await s.coordinator.fixed("k", "done");
+    const second = await s.coordinator.blocker({ key: "k", kind: "prod-write", text: "second time", facts: { ...risky, dataWrite: true } });
     expect(second).toContain("raised to the owner");
     expect(s.asked).toHaveLength(1);
     expect(s.repo.blockerByKey("k")).toMatchObject({ state: "pending", text: "second time" });
@@ -512,21 +515,21 @@ describe("blockers: the prod rule", () => {
 
   test("a key raised first as non-prod and then as prod is asked under the prod rule: marked prod, asked again", async () => {
     const s = setup();
-    await s.jueki.blocker({ key: "deploy-x", kind: "decision", text: "ship it?", facts: facts() });
+    await s.coordinator.blocker({ key: "deploy-x", kind: "decision", text: "ship it?", facts: facts() });
     s.clock.t += 10 * MINUTE_MS;
-    const out = await s.jueki.blocker({ key: "deploy-x", kind: "prod-write", text: "ship it?", facts: facts({ prod: true, dataWrite: true }) });
+    const out = await s.coordinator.blocker({ key: "deploy-x", kind: "prod-write", text: "ship it?", facts: facts({ prod: true, dataWrite: true }) });
     expect(out).toContain("raised to the owner");
     expect(s.repo.blockerByKey("deploy-x")?.prod).toBe(true);
     expect(s.asked[1]!.text).toContain("prod blocker");
     s.clock.t += DEFAULT_PROD_REPING_MS;
-    await s.jueki.tick();
+    await s.coordinator.tick();
     expect(s.asked).toHaveLength(3);
   });
 
   test("urgent but with a data write, or low-risk but not urgent, is never self-fixed", async () => {
     const s = setup();
-    const risky = await s.jueki.blocker({ key: "a", kind: "prod-write", text: "x", facts: facts({ prod: true, incident: true, reversible: true, dataWrite: true }) });
-    const calm = await s.jueki.blocker({ key: "b", kind: "prod-write", text: "y", facts: facts({ prod: true, reversible: true }) });
+    const risky = await s.coordinator.blocker({ key: "a", kind: "prod-write", text: "x", facts: facts({ prod: true, incident: true, reversible: true, dataWrite: true }) });
+    const calm = await s.coordinator.blocker({ key: "b", kind: "prod-write", text: "y", facts: facts({ prod: true, reversible: true }) });
     expect(risky).not.toContain("self-fix");
     expect(calm).not.toContain("self-fix");
     expect(s.asked).toHaveLength(2);
@@ -536,7 +539,7 @@ describe("blockers: the prod rule", () => {
 describe("act", () => {
   test("a line lands in the digest as plain text", async () => {
     const s = setup();
-    await s.jueki.act("chased <@U123> on *PR #9*");
+    await s.coordinator.act("chased <@U123> on *PR #9*");
     expect(s.posts[0]!.text).toContain("chased U123 on PR #9");
     expect(s.posts[0]!.text).not.toContain("<@");
   });
@@ -609,7 +612,7 @@ describe("a person other than the owner is stuck", () => {
     plan: "open the PR for them",
   });
   const unblock = (s: ReturnType<typeof setup>, key: string, text: string, sub = subject()) =>
-    s.jueki.blocker({ key, kind: "unblock", text, facts: facts({ ownerDecision: true }), subject: sub });
+    s.coordinator.blocker({ key, kind: "unblock", text, facts: facts({ ownerDecision: true }), subject: sub });
 
   test("it is put to the owner as 'unblock them', with Approve / Reject, once, and the session is told to say so", async () => {
     const s = setup();
@@ -619,8 +622,8 @@ describe("a person other than the owner is stuck", () => {
     expect(s.asked).toHaveLength(1);
     expect(s.asked[0]!.text).toContain(`<@${PAL}> is stuck: needs the staging grant. Plan: open the PR for them.`);
     expect(s.asked[0]!.text).toContain("Approve = unblock them, I continue in their thread; Reject = I tell them no");
-    expect(s.asked[0]!.ids).toEqual(["jv:jueki:approve", "jv:jueki:reject"]);
-    expect(s.asked[0]!.by).toBe("Jueki");
+    expect(s.asked[0]!.ids).toEqual(["jv:coordinator:approve", "jv:coordinator:reject"]);
+    expect(s.asked[0]!.by).toBe(NAME);
     expect(s.repo.blockerByKey("u1")).toMatchObject({ kind: "unblock", forUser: PAL, channelId: "C0TEST00001" });
   });
 
@@ -639,8 +642,8 @@ describe("a person other than the owner is stuck", () => {
     expect(out).toContain("quiet hours");
     expect(s.asked).toHaveLength(0);
     s.clock.t = NIGHT + 8 * HOUR_MS;
-    await s.jueki.tick();
-    await s.jueki.tick();
+    await s.coordinator.tick();
+    await s.coordinator.tick();
     expect(s.asked).toHaveLength(1);
     expect(s.asked[0]!.text).toContain(`<@${PAL}> is stuck`);
   });
@@ -655,21 +658,21 @@ describe("a person other than the owner is stuck", () => {
     expect(s.asked).toHaveLength(1);
   });
 
-  test("an approved unblock is never handed to Jueki's turn as 'go ahead as the owner'", async () => {
+  test("an approved unblock is never handed to the coordinator's turn as 'go ahead as the owner'", async () => {
     const s = setup();
     await unblock(s, "u1", "needs the staging grant");
     const b = s.repo.blockerByKey("u1")!;
     s.repo.decide(b.id, "approved", s.clock.t);
-    await s.jueki.tick();
+    await s.coordinator.tick();
     await settle();
     expect(s.turns.join(" ")).not.toContain("blocker #");
   });
 
   test("an owner's own approved blocker still is", async () => {
     const s = setup();
-    await s.jueki.blocker({ key: "own", kind: "decision", text: "which one?", facts: facts() });
+    await s.coordinator.blocker({ key: "own", kind: "decision", text: "which one?", facts: facts() });
     s.repo.decide(s.repo.blockerByKey("own")!.id, "approved", s.clock.t);
-    await s.jueki.tick();
+    await s.coordinator.tick();
     await settle();
     expect(s.turns[0]!.text).toContain("go ahead as them");
   });
@@ -689,7 +692,7 @@ describe("a person other than the owner is stuck", () => {
     const link = "https://team.slack.com/archives/C0TEST00001/p1795000000000001";
     const theirs = s.journeys.add({ title: "their build", status: "planned", area: "", channelId: "C0TEST00001", threadTs: "1795000000.000001", permalink: link, prs: [], progress: 0, now: "", next: "", createdBy: PAL }, NOON - 5 * DAY_MS);
     const mine = journey(s, "my build", 30, NOON - 5 * DAY_MS);
-    await s.jueki.tick();
+    await s.coordinator.tick();
     await settle();
     const text = s.turns[0]!.text;
     const lineOf = (id: number) => text.split("\n").find((l) => l.startsWith(`- journey #${id}:`)) ?? "";

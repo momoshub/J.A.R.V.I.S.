@@ -1,6 +1,6 @@
-/** `unblock`: a person the bot works for is stuck on something only the owner can give. See domain/jueki.ts. */
+/** `unblock`: a person the bot works for is stuck on something only the owner can give. See domain/coordinator.ts. */
 
-import { parseUnblock, unblockKey } from "../../domain/jueki.ts";
+import { parseUnblock, unblockKey } from "../../domain/coordinator.ts";
 import { type CommandDef } from "./shared.ts";
 
 export const UNBLOCK_COMMANDS: readonly CommandDef[] = [
@@ -12,10 +12,10 @@ export const UNBLOCK_COMMANDS: readonly CommandDef[] = [
     usage: '--thread <slack link> --for <user> --need "<what is blocking them>" [--plan "<what I will do once approved>"]',
     summary: "ask the owner to unblock a person who is stuck, and carry on in their thread once approved",
     run: async ({ deps, actor, channelId, threadTs, messageTs, rest, prefix }) => {
-      const jueki = deps.jueki;
-      if (!jueki) return "I cannot reach the owner about this right now.";
+      const coordinator = deps.coordinator;
+      if (!coordinator) return "I cannot reach the owner about this right now.";
       const word = rest.trim().split(/\s+/)[0]?.toLowerCase() ?? "";
-      // Approve / Reject are the owner's button presses, decided in code (application/juekiApproval.ts): a command run in a turn cannot tell a press from an owner turn.
+      // Approve / Reject are the owner's button presses, decided in code (application/coordinatorApproval.ts): a command run in a turn cannot tell a press from an owner turn.
       if (word === "approve" || word === "reject") {
         return "An unblock is approved or rejected only by the owner pressing the button on the DM I sent. Nothing changed.";
       }
@@ -30,7 +30,7 @@ export const UNBLOCK_COMMANDS: readonly CommandDef[] = [
         return "`--for` must be the person you are talking to. Nothing was sent.";
       }
       if (read.input.subject.forUser === deps.ownerSlackId) return "The owner needs no unblocking from the owner. Nothing was sent.";
-      return jueki.blocker({
+      return coordinator.blocker({
         key: unblockKey(read.input),
         kind: "unblock",
         text: read.input.need,
