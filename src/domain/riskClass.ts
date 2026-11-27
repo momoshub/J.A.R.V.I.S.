@@ -104,6 +104,23 @@ const DOC_EXT_RE = /\.(?:md|mdx|txt|rst|png|jpe?g|gif|svg|webp|ico|pdf)$|(?:^|\/
 const SLASH_COMMENT_EXT_RE = /\.(?:ts|tsx|js|jsx|mjs|cjs|css|scss|java|go|rs|c|h|cpp)$/;
 const HASH_COMMENT_EXT_RE = /\.(?:sh|bash|zsh|ya?ml|toml|py|rb|env|example|gitignore|gitleaksignore)$|(?:^|\/)\.env[\w.]*$|(?:^|\/)\.githooks\//;
 
+/** Consume `*/`-closed block comments and a `//` tail from the left; anything else left over is code (`/* a */ run(x) /* b */`). */
+function commentsOnly(line: string, inBlock: boolean): boolean {
+  let rest = line.trim();
+  if (inBlock) {
+    const close = rest.indexOf("*/");
+    if (close < 0) return true;
+    rest = rest.slice(close + 2).trim();
+  }
+  for (;;) {
+    if (rest === "" || rest.startsWith("//")) return true;
+    if (!rest.startsWith("/*")) return false;
+    const close = rest.indexOf("*/", 2);
+    if (close < 0) return true;
+    rest = rest.slice(close + 2).trim();
+  }
+}
+
 function isComment(path: string, line: string, inBlock: boolean): boolean {
   const t = line.trim();
   if (t === "") return true;
@@ -111,11 +128,8 @@ function isComment(path: string, line: string, inBlock: boolean): boolean {
     // a `// @ts-ignore` or `/* istanbul ignore */` steers a tool, it is not prose
     if (/@ts-(?:ignore|expect-error|nocheck)|eslint-disable|biome-ignore|istanbul ignore/.test(t)) return false;
     if (t.startsWith("//")) return true;
-    // inside a block comment, or opening one: a comment unless code follows the closing `*/`
-    if (inBlock || t.startsWith("/*")) {
-      const close = t.lastIndexOf("*/");
-      return close < 0 ? true : t.slice(close + 2).trim() === "";
-    }
+    // inside a block comment, or opening one: a comment only if nothing but comments is on the line
+    if (inBlock || t.startsWith("/*")) return commentsOnly(t, inBlock);
     // a `*` or `*/` line that is not provably inside a block comment (no opener in view) is scanned as code
     return false;
   }

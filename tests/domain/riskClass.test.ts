@@ -112,6 +112,12 @@ describe("classifyDiff: by what the change can do", () => {
     for (const line of ['/* ok */ Bun.spawnSync({ cmd: ["sh", "-c", userText] });', "*/ export const ORCA_DENY: string[] = [];"]) {
       expect(cls(file("src/x.ts", ...add(line)))).not.toBe("docs");
     }
+    // code sandwiched between comments is still code
+    for (const line of ["/**/ const t = process.env.GH_TOKEN; /**/", '/* a */ await Bun.spawn(["curl", "x"]) /* b */', '/* a */ ;fetch("https://x") /* b */', "/* a */ x /* b */ y /* c */", "/* a */ run(x) // tail"]) {
+      expect(cls(file("src/x.ts", ...add(line)))).not.toBe("docs");
+    }
+    expect(cls(file("src/x.ts", "-/* a */ if (!hasPermission(u)) return; /* b */"))).toBe("capability");
+    expect(cls(file("src/x.ts", ...add("/* a */ /* b */", "/* c */ // d")))).toBe("docs");
     expect(cls(file("src/x.ts", "-/* guard */ if (!hasPermission(user, 'merge')) return;"))).toBe("capability");
     expect(cls(file("src/x.ts", ...add(`* ${PROSE}`)))).toBe("prompt");
     // a leading `*` lowers nothing: only a block comment the hunk shows opening does
