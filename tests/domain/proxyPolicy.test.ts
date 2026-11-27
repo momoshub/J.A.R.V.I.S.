@@ -37,7 +37,7 @@ describe("classifyGh: reads", () => {
 
   test("gh api is a GET under repos/<owner>/<name>/ and nothing that sends something", () => {
     const c = ok(classifyGh(["api", "repos/o/r/pulls/1/reviews", "--paginate", "-q", ".[].id"]));
-    expect(c).toMatchObject({ need: { kind: "read" }, repo: "o/r", argv: ["api", "repos/o/r/pulls/1/reviews", "--paginate", "-q", ".[].id"] });
+    expect(c).toMatchObject({ need: { kind: "read" }, repo: "o/r", argv: ["api", "repos/o/r/pulls/1/reviews", "--paginate", "--jq", ".[].id"] });
     expect(ok(classifyGh(["api", "/repos/o/r/issues?state=all"])).repo).toBe("o/r");
     for (const bad of [
       ["api", "graphql"],
@@ -205,5 +205,36 @@ describe("classifyGh: what the first review found", () => {
     expect(no(classifyOrca(["orchestration", "worker-start", "--agent=codex", "--agent", "claude"]))).toContain("twice");
     expect(no(classifyOrca(["orchestration", "check", "-x"]))).toContain("--like-this");
     expect(classifyOrca(["orchestration", "check", "--wait"]).ok).toBe(true);
+  });
+});
+
+describe("classifyGh: what the second review found", () => {
+  const line = (l: string, hint = "o/r") => classifyGh(l.split(" "), hint);
+  const no = (c: ReturnType<typeof classifyGh>): string => (c.ok ? "ALLOWED" : c.error);
+
+  test("a short flag and its long name are one flag: giving both is refused (last wins in gh, first in a naive parser)", () => {
+    expect(no(line("pr comment 1 -F - --body-file /etc/hosts"))).toContain("twice");
+    expect(no(line("pr comment 1 --body-file=/etc/hosts -F -"))).toContain("twice");
+    expect(no(line("pr view 1 -R o/r --repo cli/cli"))).toContain("twice");
+    expect(no(line("api repos/o/r/pulls -X GET --method POST"))).toContain("twice");
+  });
+
+  test("a body file given by its short name is still only stdin", () => {
+    expect(no(line("pr comment 1 -F /etc/hosts"))).toContain("stdin");
+  });
+
+  test("only an https github.com url (or a number) selects a PR: http, www, upper-case hosts and owner/repo#n are refused", () => {
+    for (const bad of ["http://github.com/evil/x/pull/1", "https://www.github.com/evil/x/pull/1", "https://GITHUB.com/evil/x/pull/1", "evil/x#1", "evil:branch", "feat/x"]) {
+      expect(no(line(`pr view ${bad}`))).toContain("by its number");
+    }
+    expect(line("pr view 12").ok).toBe(true);
+    expect(line("pr view https://github.com/o/r/pull/12").ok).toBe(true);
+    expect(line("repo view o/r").ok).toBe(true);
+  });
+
+  test("a search may not reach into another repo, org or user", () => {
+    expect(no(line("pr list --search repo:evil/x"))).toContain("--search");
+    expect(no(line("pr list -S org:evil"))).toContain("--search");
+    expect(line("pr list --search fix").ok).toBe(true);
   });
 });

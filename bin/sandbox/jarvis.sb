@@ -40,10 +40,11 @@
   (remote unix-socket (path-literal "@SSH_AUTH_SOCK@")))
 ;; Orca's runtime socket: through it a process can open an unsandboxed terminal and type into it.
 (deny network-outbound
-  (remote unix-socket (path-regex #"/Application Support/orca/[^/]*\.sock$")))
+  (remote unix-socket (path-regex #"/Application Support/orca/")))
 
 ;; --- secrets nobody in the sandbox may read ---------------------------------
 (deny file-read*
+  (regex #"^@REPO_RE@/\.env")
   (subpath "@HOME@/.config/gh")
   (subpath "@HOME@/.config/jarvis")
   (subpath "@HOME@/.config/op")
@@ -57,12 +58,10 @@
   (literal "@HOME@/.claude/.credentials.json")
   (subpath "@HOME@/Library/Keychains")
   (subpath "/Library/Keychains")
-  ;; Orca: the runtime token (it is the CLI's only credential), the account store, the device keys.
-  (literal "@HOME@/Library/Application Support/orca/orca-runtime.json")
-  (literal "@HOME@/Library/Application Support/orca/orca-e2ee-keypair.json")
-  (literal "@HOME@/Library/Application Support/orca/agent-session-authority.key")
-  (subpath "@HOME@/Library/Application Support/orca/profiles")
-  (subpath "@HOME@/Library/Application Support/orca/ai-vault")
+  ;; Orca, all of it: the runtime token and the terminal daemon's token and socket (a PTY owner), the account
+  ;; store and device keys, the shell wrappers new terminals source, hooks, its database and scrollback.
+  ;; Nothing inside needs it: `orca` goes through the proxy.
+  (subpath "@HOME@/Library/Application Support/orca")
   ;; The bot: its .env and its databases (tokens, sessions, command log).
   (literal "@REPO@/.env")
   (regex #"^@REPO_RE@/data/[^/]*\.db"))
@@ -90,11 +89,8 @@
   (literal "@HOME@/.claude/.credentials.json")
   (subpath "@HOME@/Library/Keychains")
   (subpath "/Library/Keychains")
-  (subpath "@HOME@/Library/Application Support/orca/profiles")
-  (subpath "@HOME@/Library/Application Support/orca/ai-vault")
-  (literal "@HOME@/Library/Application Support/orca/orca-runtime.json")
-  (literal "@HOME@/Library/Application Support/orca/orca-e2ee-keypair.json")
-  (literal "@HOME@/Library/Application Support/orca/agent-session-authority.key")
+  (subpath "@HOME@/Library/Application Support/orca")
+  (regex #"^@REPO_RE@/\.env")
   (literal "@REPO@/.env")
   (regex #"^@REPO_RE@/data/[^/]*\.db"))
 (deny file-write-unlink
@@ -109,6 +105,12 @@
   (literal "@REPO@/.git"))
 
 ;; --- things the host runs later, outside the sandbox: no writing them ---------
+;; The bot's checkout is what the bot runs again at its next start: nothing in it is writable, except a
+;; worker's own worktrees (.claude/worktrees) and git's object store, which `git worktree add` and `git commit` need.
+(deny file-write* (subpath "@REPO@"))
+(allow file-write* (subpath "@REPO@/.claude/worktrees"))
+(allow file-write* (subpath "@REPO@/.git"))
+
 (deny file-write*
   ;; shell startup files (every new terminal, including the owner's)
   (regex #"^@HOME_RE@/\.(zshrc|zshenv|zprofile|zlogin|zlogout|bashrc|bash_profile|bash_login|profile)[^/]*$")
@@ -131,8 +133,7 @@
   (subpath "/opt/homebrew/bin")
   (subpath "/usr/local/bin")
   ;; Orca's saved settings, where the per-agent launch command (this wrapper) is stored: covered above
-  ;; the bot's own checkout: what the bot runs again at its next start, and git's shared config and hooks.
-  ;; (A worker's worktree sits under .claude/worktrees and stays writable.)
+  ;; the bot's own checkout (see the blanket rule above)
   (subpath "@REPO@/bin")
   (subpath "@REPO@/src")
   (subpath "@REPO@/web")
@@ -142,7 +143,12 @@
   (literal "@REPO@/bunfig.toml")
   (literal "@REPO@/.mcp.json")
   (subpath "@REPO@/.githooks")
+  ;; git reads its configuration (core.fsmonitor, hooksPath: code) from these on the next UNsandboxed git call
   (literal "@REPO@/.git/config")
+  (literal "@REPO@/.git/config.worktree")
+  (literal "@REPO@/.git/commondir")
+  (literal "@REPO@/.git/gitdir")
+  (subpath "@REPO@/.git/info")
   (subpath "@REPO@/.git/hooks")
   (literal "@REPO@/.claude/settings.json")
   (literal "@REPO@/.claude/settings.local.json"))

@@ -89,8 +89,9 @@ export const createExecProxy = (deps: ExecProxyDeps): { handle: (req: ExecReques
       const check = verifySession(secret, bearer, Math.floor(deps.clock() / 1000));
       if (!check.ok) return { status: 403, error: sessionWhy(check) };
       if (need.kind === "write") return { status: 403, error: `a bare session cannot write to GitHub (${need.action}): it needs a ticket that carries \`${need.action}\`` };
-      // Starting, stopping and resolving is the owner's side of Orca: a session may only message and read.
-      if (need.kind === "orca" && need.level === "start") return { status: 403, error: "starting or managing workers needs a turn ticket with tools:orca; a sandbox session may only message and read" };
+      // A session is one worker's own mailbox: send, check, reply, ask. Listing runs, tasks and every agent's mail, or
+      // starting and stopping workers, is the owner's side of Orca (briefs carry ticket paths, so reading others' mail leaks them).
+      if (need.kind === "orca" && need.level !== "message") return { status: 403, error: "a sandbox session may only send, check, reply and ask as its own terminal; anything wider (reading other agents' mail, starting or stopping workers) needs a turn ticket with tools:orca" };
       if (need.kind === "orca" && !check.handle) return { status: 403, error: "this process has no Orca terminal of its own (ORCA_TERMINAL_HANDLE was not set when it started through bin/sandboxed.sh)" };
       return check.handle ? { kind: "session", handle: check.handle } : { kind: "session" };
     }
@@ -161,6 +162,11 @@ export const createExecProxy = (deps: ExecProxyDeps): { handle: (req: ExecReques
         const handle = who.kind === "session" ? who.handle : req.handle;
         if (handle && /^term_[\w-]+$/.test(handle)) env.ORCA_TERMINAL_HANDLE = handle;
         // Reading or speaking as another terminal is not for a caller to choose.
+        if (who.kind === "session" && classified.argv.some((a) => /^--(run|all|dispatch|task)(=|$)/.test(a))) {
+          const error = "a sandbox session reads its own mailbox only: --run, --all, --dispatch and --task name someone else's";
+          audit(who, classified, false, error);
+          return refuse(403, error);
+        }
         const named = namedTerminals(classified.argv);
         if (named.some((t) => t !== handle && !(who.kind === "turn" && t.startsWith("run:")))) {
           const error = "--from/--terminal may only name the caller's own Orca terminal (a turn may also name a run: mailbox)";

@@ -123,6 +123,18 @@ describe("exec proxy: orca", () => {
     expect(ran).toHaveLength(1);
   });
 
+  test("a session cannot list or read other agents' mail, runs or tasks", async () => {
+    const { call, ran } = setup();
+    for (const argv of [["inbox"], ["worker-read", "--dispatch", "ctx_1"], ["task-list", "--full"], ["dispatch-show", "--task", "t"], ["run-show"]]) {
+      expect(refused(await call({ tool: "orca", argv: ["orchestration", ...argv], bearer: withHandle }))).toContain("tools:orca");
+    }
+    for (const flag of [["--run", "run_1"], ["--all"], ["--dispatch=ctx_1"], ["--task", "t"]]) {
+      expect(refused(await call({ tool: "orca", argv: ["orchestration", "check", ...flag], bearer: withHandle }))).toContain("own mailbox");
+    }
+    expect(refused(await call({ tool: "orca", argv: ["status"], bearer: withHandle }))).toContain("tools:orca");
+    expect(ran).toEqual([]);
+  });
+
   test("the handle in the request is ignored for a session: it cannot read another terminal's mail", async () => {
     const { call, ran } = setup();
     await call({ tool: "orca", argv: ["orchestration", "check"], bearer: withHandle, handle: "term_victim" });
@@ -142,7 +154,7 @@ describe("exec proxy: orca", () => {
     expect((await call({ tool: "orca", argv: ["orchestration", "worker-start", "--agent", "claude"], bearer: "turn-owner", handle: "term_bot" })).ok).toBe(true);
     expect(ran[0]?.env).toEqual({ ORCA_TERMINAL_HANDLE: "term_bot" });
     expect((await call({ tool: "orca", argv: ["orchestration", "inbox", "--terminal", "run:run_1"], bearer: "turn-owner", handle: "term_bot" })).ok).toBe(true);
-    expect(refused(await call({ tool: "orca", argv: ["orchestration", "inbox", "--terminal", "run:run_1"], bearer: withHandle }))).toContain("own Orca terminal");
+    expect(refused(await call({ tool: "orca", argv: ["orchestration", "inbox", "--terminal", "run:run_1"], bearer: withHandle }))).toContain("tools:orca");
   });
 
   test("a handle that is not a handle is not passed on", async () => {

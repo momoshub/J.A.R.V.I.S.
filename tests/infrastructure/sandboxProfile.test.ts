@@ -60,6 +60,13 @@ beforeAll(() => {
   write(join(home, ".claude.json"), "{}\n");
   write(join(home, ".claude/plugins/p/hook.sh"), "#!/bin/sh\n");
   write(join(home, ".config/other/keep"), "");
+  write(join(repo, ".env.local"), "X=1\n");
+  write(join(repo, "tsconfig.json"), "{}\n");
+  write(join(repo, ".git/HEAD"), "ref: refs/heads/main\n");
+  write(join(repo, ".git/objects/keep"), "");
+  write(join(home, "Library/Application Support/orca/daemon/daemon.token"), "TOKEN\n");
+  write(join(home, "Library/Application Support/orca/shell-wrappers/zsh/.zshenv"), "# wrapper\n");
+  write(join(home, "Library/Application Support/orca/orchestration.db"), "DB\n");
 });
 afterAll(() => {
   if (base) rmSync(base, { recursive: true, force: true });
@@ -177,6 +184,52 @@ describe("sandbox profile (macOS)", () => {
     t("a worker's own worktree under the checkout, and the claude config's neighbours, stay writable", () => {
       expect(boxed(`echo more >> '${repo}/.claude/worktrees/w1/src/mine.ts' && cat '${repo}/.claude/worktrees/w1/src/mine.ts'`)).toEqual({ code: 0, out: "mine\nmore\n" });
       expect(boxed(`echo x > "$HOME/.config/other/new" && cat "$HOME/.config/other/new"`)).toEqual({ code: 0, out: "x\n" });
+    });
+    t("round 2: an ancestor of the checkout or home cannot be renamed (the deny follows the folder)", () => {
+      const outer = join(base, "outer");
+      const r2 = join(outer, "repo");
+      mkdirSync(join(r2, "data"), { recursive: true });
+      writeFileSync(join(r2, ".env"), "SECRET\n");
+      const run = (inside: boolean): R => {
+        const script = `mv '${outer}' '${outer}2' && cat '${outer}2/repo/.env'`;
+        if (!inside) return bare(script);
+        const p = Bun.spawnSync({ cmd: [WRAPPER, "--", "/bin/bash", "-c", script], cwd: work, env: { PATH: "/usr/bin:/bin", HOME: home, JARVIS_SANDBOX_HOME: home, JARVIS_REPO: r2, SEATBELT_NO_SESSION: "1" } });
+        return { code: p.exitCode ?? -1, out: `${p.stdout}${p.stderr}` };
+      };
+      expect(run(false).code).toBe(0);
+      Bun.spawnSync({ cmd: ["mv", `${outer}2`, outer] });
+      expect(run(true).code).not.toBe(0);
+      expect(existsSync(join(r2, ".env"))).toBe(true);
+    });
+    t("round 2: git config redirections (.git/commondir, .git/info) and .env.local / tsconfig.json are not writable", () => {
+      closed(`echo /tmp/evil > '${repo}/.git/commondir'; test -e '${repo}/.git/commondir' && rm '${repo}/.git/commondir'; echo x >> '${repo}/.git/config'`);
+      closed(`mkdir -p '${repo}/.git/info' && echo x > '${repo}/.git/info/exclude'`);
+      closed(`echo x >> '${repo}/.env.local'`);
+      closed(`echo x >> '${repo}/tsconfig.json'`);
+      closed(`echo x > '${repo}/newfile'`);
+      closed(`cat '${repo}/.env.local' >/dev/null`);
+    });
+    t("round 2: git still works for a worker (objects and refs under .git, its own worktree)", () => {
+      expect(boxed(`echo x > '${repo}/.git/objects/new' && echo y > '${repo}/.claude/worktrees/w1/f' && echo ok`)).toEqual({ code: 0, out: "ok\n" });
+    });
+    t("round 2: Orca's files are unreadable and unwritable wholesale (daemon token, shell wrappers, orchestration.db)", () => {
+      closed(`cat "$HOME/Library/Application Support/orca/daemon/daemon.token" >/dev/null`);
+      closed(`cat "$HOME/Library/Application Support/orca/orchestration.db" >/dev/null`);
+      closed(`echo x >> "$HOME/Library/Application Support/orca/shell-wrappers/zsh/.zshenv"`);
+      closed(`ls "$HOME/Library/Application Support/orca" >/dev/null`);
+    });
+    t("round 2: Orca's terminal daemon socket (in a subfolder) cannot be connected to", () => {
+      const sock = join(home, "Library/Application Support/orca/daemon/d.sock");
+      const server = Bun.spawn({ cmd: ["/usr/bin/python3", "-c", `import os,socket,sys,time\nos.chdir(os.path.dirname(sys.argv[1]));s=socket.socket(socket.AF_UNIX);s.bind("d.sock");s.listen(5)\nprint('up',flush=True)\nt=time.time()\nwhile time.time()-t<40:\n s.settimeout(1)\n try: c,_=s.accept(); c.close()\n except Exception: pass\n`, sock], stdout: "pipe" });
+      try {
+        const deadline = Date.now() + 5000;
+        while (!existsSync(sock) && Date.now() < deadline) Bun.sleepSync(50);
+        const probe = `python3 -c "import os,socket,sys;os.chdir(os.path.dirname(sys.argv[1]));s=socket.socket(socket.AF_UNIX);s.settimeout(3);s.connect('d.sock');print('CONNECTED')" '${sock}'`;
+        expect(bare(probe).out).toContain("CONNECTED");
+        expect(boxed(probe).out).not.toContain("CONNECTED");
+      } finally {
+        server.kill();
+      }
     });
     t("TIOCSTI (typing into the terminal that started us) is refused", () => {
       const probe = join(work, "tiocsti.py");

@@ -56,14 +56,25 @@ const GH_BOOLEAN_FLAGS = new Set([
   "--verbose", "--patch", "--name-only", "--log", "--log-failed", "--no-maintainer-edit", "--required", "--help", "-h",
 ]);
 
-type Parsed = { positional: string[]; flags: Map<string, string | true> };
+type Parsed = { positional: string[]; flags: Map<string, string | true>; /** Flags (by canonical name) given more than once. */ repeated: string[] };
+
+/** gh's short flags and their long names: pflag treats a pair as one flag where the LAST value wins, so both must read as one. */
+const GH_ALIASES: Readonly<Record<string, string>> = {
+  "-R": "--repo", "-F": "--body-file", "-b": "--body", "-t": "--title", "-B": "--base", "-H": "--head", "-q": "--jq", "-L": "--limit",
+  "-s": "--state", "-a": "--assignee", "-A": "--author", "-l": "--label", "-S": "--search", "-u": "--user", "-e": "--event", "-j": "--job", "-X": "--method",
+};
 
 /** Orca's flags that stand alone; every other `--flag` takes the next word as its value. */
 const ORCA_BOOLEAN_FLAGS = new Set(["--json", "--full", "--keep-open", "--unread", "--all", "--ack", "--peek", "--wait", "--help"]);
 
-const parseWords = (words: readonly string[], genericValues = false): Parsed => {
+const parseWords = (words: readonly string[], genericValues = false, aliases: Readonly<Record<string, string>> = {}): Parsed => {
   const positional: string[] = [];
   const flags = new Map<string, string | true>();
+  const repeated: string[] = [];
+  const setFlag = (name: string, v: string | true): void => {
+    if (flags.has(name)) repeated.push(name);
+    flags.set(name, v);
+  };
   for (let i = 0; i < words.length; i++) {
     const w = words[i] as string;
     const f = flagOf(w);
@@ -71,12 +82,13 @@ const parseWords = (words: readonly string[], genericValues = false): Parsed => 
       positional.push(w);
       continue;
     }
-    const [name, inline] = f;
-    if (inline !== undefined) flags.set(name, inline);
-    else if ((genericValues ? !ORCA_BOOLEAN_FLAGS.has(name) && name.startsWith("--") : VALUE_FLAGS.has(name)) && i + 1 < words.length && (!genericValues || !(words[i + 1] as string).startsWith("-") || words[i + 1] === "-")) flags.set(name, words[++i] as string);
-    else flags.set(name, true);
+    const [rawName, inline] = f;
+    const name = aliases[rawName] ?? rawName;
+    if (inline !== undefined) setFlag(name, inline);
+    else if ((genericValues ? !ORCA_BOOLEAN_FLAGS.has(name) && name.startsWith("--") : VALUE_FLAGS.has(rawName)) && i + 1 < words.length && (!genericValues || !(words[i + 1] as string).startsWith("-") || words[i + 1] === "-")) setFlag(name, words[++i] as string);
+    else setFlag(name, true);
   }
-  return { positional, flags };
+  return { positional, flags, repeated };
 };
 
 const flagValue = (p: Parsed, ...names: string[]): string | undefined => {
@@ -107,10 +119,13 @@ const GH_WRITE: Readonly<Record<string, Readonly<Record<string, GhWriteAction>>>
 const GH_REFUSED_FLAGS = ["--web", "--editor", "--hostname", "--input", "--template", "-T", "--with-token"];
 
 /** `gh api`: a GET under `repos/<owner>/<name>/`, nothing that sends a field, a header or another method. */
+const API_ALIASES: Readonly<Record<string, string>> = { "-X": "--method", "-q": "--jq", "-i": "--include" };
+
 const classifyApi = (p: Parsed): Classified => {
-  const method = flagValue(p, "-X", "--method");
+  if (p.repeated.length > 0) return fail(`${p.repeated[0]} is given twice: the proxy and gh could read different values`);
+  const method = flagValue(p, "--method");
   if (method !== undefined && method.toUpperCase() !== "GET") return fail("gh api is read-only through the proxy: only GET");
-  if (hasFlag(p, "-f", "--raw-field", "-F", "--field", "-H", "--header", "--preview", "-p")) return fail("gh api through the proxy takes no fields, headers or previews");
+  if (hasFlag(p, "-f", "--raw-field", "-F", "--field", "-H", "--header", "--preview", "-p", "--input", "--hostname")) return fail("gh api through the proxy takes no fields, headers or previews");
   const path = (p.positional[1] ?? "").replace(/^\//, "");
   const m = path.split("?")[0]?.match(/^repos\/([\w.-]+)\/([\w.-]+)(\/.*)?$/);
   if (!m || p.positional.length !== 2 || path.split("?")[0]?.split("/").some((s) => s === ".." || s === ".")) {
@@ -119,9 +134,9 @@ const classifyApi = (p: Parsed): Classified => {
   const repo = `${m[1]}/${m[2]}`;
   const argv = ["api", path];
   for (const [name, v] of p.flags) {
-    if (["--paginate", "--slurp", "-i", "--include", "--silent"].includes(name)) argv.push(name);
-    else if (["-q", "--jq", "--cache"].includes(name) && typeof v === "string") argv.push(name, v);
-    else if (name !== "-X" && name !== "--method") return fail(`gh api: ${name} is not available through the proxy`);
+    if (["--paginate", "--slurp", "--include", "--silent"].includes(name)) argv.push(name);
+    else if (["--jq", "--cache"].includes(name) && typeof v === "string") argv.push(name, v);
+    else if (name !== "--method") return fail(`gh api: ${name} is not available through the proxy`);
   }
   return { ok: true, tool: "gh", need: { kind: "read" }, argv, repo, label: `api GET ${repo}` };
 };
@@ -134,21 +149,22 @@ export const classifyGh = (argv: readonly string[], repoHint?: string): Classifi
     if (a === "--") return fail("`--` is not available through the proxy");
     if (/^-[A-Za-z]./.test(a)) return fail(`write ${a.slice(0, 2)} and its value as two words: attached short-flag values are not accepted through the proxy`);
   }
-  const p = parseWords(rest);
+  if (group === "api") return classifyApi(parseWords(argv, false, API_ALIASES));
+  const p = parseWords(rest, false, GH_ALIASES);
+  if (p.repeated.length > 0) return fail(`${p.repeated[0]} is given twice (a short flag and its long name are one flag): the proxy and gh could read different values`);
   for (const f of GH_REFUSED_FLAGS) if (hasFlag(p, f)) return fail(`${f} is not available through the proxy`);
   if (hasFlag(p, "--recover")) return fail("--recover is not available through the proxy");
-  const bodyFile = flagValue(p, "-F", "--body-file");
+  const bodyFile = flagValue(p, "--body-file");
   if (bodyFile !== undefined && bodyFile !== "-") return fail("a body file is read on the caller's side: the shim sends it as stdin (`--body-file -`)");
+  const search = flagValue(p, "--search");
+  if (search !== undefined && /\b(repo|org|user):/i.test(search)) return fail("--search may not name another repo, org or user");
 
-  if (group === "api") return classifyApi(parseWords(argv));
   const verb = p.positional[0];
   if (!verb) return fail(`gh ${group} needs a subcommand`);
   if (group === "pr" && verb === "merge") return fail("merging is not something a proxied gh does: run bin/merge-when-green.sh, which asks the bot's merge gate");
 
-  if (group !== "api") {
-    for (const f of p.flags.keys()) {
-      if (!(VALUE_FLAGS.has(f) || GH_BOOLEAN_FLAGS.has(f) || GH_REFUSED_FLAGS.includes(f))) return fail(`${f} is not available through the proxy`);
-    }
+  for (const f of p.flags.keys()) {
+    if (!(VALUE_FLAGS.has(f) || GH_BOOLEAN_FLAGS.has(f) || GH_REFUSED_FLAGS.includes(f))) return fail(`${f} is not available through the proxy`);
   }
   const reads = GH_READ[group];
   const write = GH_WRITE[group]?.[verb];
@@ -158,8 +174,14 @@ export const classifyGh = (argv: readonly string[], repoHint?: string): Classifi
     return fail("a proxied review is a comment only: approving or requesting changes would be recorded under the host's own account, not the app's");
   }
   if (p.positional.length > 2) return fail("too many arguments");
-  const flagRepo = flagValue(p, "-R", "--repo");
+  const flagRepo = flagValue(p, "--repo");
   if (flagRepo !== undefined && !REPO.test(flagRepo)) return fail("-R wants owner/name");
+  // A selector is a number, a name, or an https github.com url: anything else with a `/` or `:` in it (`http://`, `www.`,
+  // `other/repo#1`, `owner:branch`) is a way for gh to read a different repository than the one the ticket was checked for.
+  for (const w of p.positional.slice(1)) {
+    const ok = /^https:\/\/github\.com\//.test(w) ? repoFromUrl(w) !== undefined : !/[\/:@]/.test(w) || (group === "repo" && REPO.test(w));
+    if (!ok) return fail(`${w}: name a pull request or issue by its number, or by its https://github.com/<owner>/<repo>/... url`);
+  }
   // `gh repo view o/r` and a PR url name the repo themselves; otherwise the clone the caller is in does.
   const urlRepo = p.positional.map(repoFromUrl).find(Boolean) ?? (group === "repo" && REPO.test(p.positional[1] ?? "") ? p.positional[1] : undefined);
   // The ticket is checked against ONE repo: a url and -R that name two different ones would check one and act on the other.

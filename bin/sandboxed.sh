@@ -80,6 +80,17 @@ profile=$(sed \
   -e "s|@HOME@|$HOME_DIR|g" \
   -e "s|@REPO@|$REPO|g" \
   "$PROFILE_TEMPLATE") || die "could not render the profile" 78
+# Renaming a parent moves everything below it out from under its deny: no ancestor of the checkout or the home
+# (up to /) may be renamed or deleted.
+anc_rules=";; --- no renaming the folders above the checkout and the home ---"
+for base in "$REPO" "$HOME_DIR"; do
+  d=$base
+  while [ "$d" != "/" ] && [ -n "$d" ]; do
+    anc_rules="$anc_rules"$'\n'"(deny file-write-unlink (literal \"$d\"))"
+    d=$(dirname "$d")
+  done
+done
+profile="$profile"$'\n'"$anc_rules"
 case "$profile" in *@[A-Z_]*@*) die "the profile still has an unreplaced @NAME@" 78 ;; esac
 if [ "$PRINT" = 1 ]; then printf '%s\n' "$profile"; exit 0; fi
 
