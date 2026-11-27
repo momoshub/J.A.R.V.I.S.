@@ -24,7 +24,7 @@ describe("selfUpdateRules is the whole procedure, from the codebase", () => {
   test("the writer is an Orca worker with its own ticket, the session only orchestrates", () => {
     expect(rules).toContain("who writes it: an Orca worker, never the session itself");
     expect(rules).toContain("cheap jobs (a test fixture, a few edits) are done inline");
-    expect(rules).toContain("`worker-ticket <owner/repo> pending` before `worker-start`");
+    expect(rules).toContain("`worker-ticket <owner/repo> pending merge-gate` before `worker-start`");
     expect(rules).toContain("worker-ticket bind <id> <dispatchId>");
     expect(rules).toContain("never read, print or copy the file");
     expect(rules).toContain("without one the writer gets stuck at the PR step");
@@ -109,6 +109,10 @@ describe("selfUpdateRules is the whole procedure, from the codebase", () => {
     expect(STANDALONE_REVIEW_RULE).not.toContain("a folder or repo Orca knows");
     expect(STANDALONE_REVIEW_RULE.indexOf("BOT_WORKER_MCP_TRIM")).toBeLessThan(STANDALONE_REVIEW_RULE.indexOf("worker-start --run"));
     expect(STANDALONE_REVIEW_RULE).toContain("Up to 5 review rounds");
+    // The merge is the bot's decision, not the script's: no approving as the merging account any more.
+    expect(STANDALONE_REVIEW_RULE).toContain("asks the bot to merge");
+    expect(STANDALONE_REVIEW_RULE).toContain("ticket names `merge-gate`");
+    expect(STANDALONE_REVIEW_RULE).not.toContain("approves the PR as the merging account");
   });
 
   test("review by risk: docs and prompt text need no reviewer, runtime code does", () => {
@@ -227,7 +231,8 @@ describe("selfUpdateRules, the restart and the checks", () => {
     expect(STANDALONE_REVIEW_RULE).toContain("Bash timeout of 600000");
     expect(STANDALONE_REVIEW_RULE).toContain("exit 3 means CI has not finished so run it again");
     expect(STANDALONE_REVIEW_RULE).toContain("exit 4 means the PR conflicts with its base");
-    expect(STANDALONE_REVIEW_RULE).toContain("approves the PR as the merging account when that account did not open it and its latest review on this commit is not already an approval (a failed approval is no merge)");
+    expect(STANDALONE_REVIEW_RULE).toContain("exit 1 prints why the bot refused (red CI included)");
+    expect(STANDALONE_REVIEW_RULE).toContain("a review or verify written by the PR author or the app does not count");
     expect(STANDALONE_REVIEW_RULE).toContain("Never fall back to a bare `gh pr merge`");
     // a fix made after review is checked again before it can merge
     expect(STANDALONE_REVIEW_RULE.indexOf("re-run `bun run typecheck` and `bun test`")).toBeGreaterThan(

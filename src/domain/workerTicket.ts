@@ -50,9 +50,13 @@ export type WorkerGrant = ActionName | typeof COMMIT_IDENTITY;
 export const DEFAULT_WORKER_ACTIONS: readonly WorkerGrant[] = ["pr-create", "comment", "pr-edit", COMMIT_IDENTITY];
 /**
  * The most a worker ticket can ever grant. No review (a worker approving its own
- * PR), no merge, no close/reopen, no label removal: those stay with a turn.
+ * PR), no raw merge (`pr-merge`), no close/reopen, no label removal: those stay
+ * with a turn. `merge-gate` is the one merge a worker may ask for, and only as
+ * an explicit opt-in on a writer's ticket: the bot decides it in code (checks,
+ * review, verify on the named sha), so the worker holds a request, not the power.
+ * A reviewer's or verifier's ticket never names it.
  */
-export const WORKER_ACTION_CEILING: readonly WorkerGrant[] = [...DEFAULT_WORKER_ACTIONS, "git-auth", "labels-add", "reviewers-request"];
+export const WORKER_ACTION_CEILING: readonly WorkerGrant[] = [...DEFAULT_WORKER_ACTIONS, "git-auth", "labels-add", "reviewers-request", "merge-gate"];
 
 /** The brain says `git` / `push`; on the wire both are the `git-auth` action (a push-capable token). */
 const ALIASES: Readonly<Record<string, WorkerGrant>> = { git: "git-auth", push: "git-auth" };

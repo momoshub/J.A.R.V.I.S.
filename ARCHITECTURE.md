@@ -310,7 +310,13 @@ no classes.
   never run a command, and only the brain's run bridge can mint one.
 - **Self-update.** A fix lands through a PR that CI (`.github/workflows/ci.yml`)
   passes (typecheck, tests, the real-Slack e2e in its own workflow `e2e.yml` on a push to main only, its token held by the main-only `e2e` environment, and a `gitleaks` secret scan whose known false positives are allowlisted by value in `.gitleaks.toml`), merged only by `bin/merge-when-green.sh` (exit 4 at once on a PR that
-  conflicts with its base, which GitHub never runs CI on). When it touches runtime code
+  conflicts with its base, which GitHub never runs CI on). The merge is decided by the bot, not the script: the
+  script asks the `merge-gate` action (`domain/mergeGate.ts` rules, `application/mergeGate.ts` GitHub reads and the single merge call, behind `MERGE_GATE=on`),
+  which merges with the app's own credential only when the head is the named sha, the required checks (`checks`, `gitleaks`) are green on it and,
+  for runtime code, the latest `[review round N]` review ends `VERDICT: clean` and a `[verify]` comment ends `VERDICT: verified` naming the sha, written by an account named in `MERGE_GATE_ATTESTERS` (never the PR's author or the app; an empty list means no runtime PR merges), with a raw `pr-merge` refused while the gate is on.
+  The writer's worker ticket names `merge-gate` (never a raw `pr-merge`); a reviewer's or verifier's never does. Who holds what: the writer holds a ticket
+  and a one-shot push credential, the reviewer and verifier a non-admin login that can only post reviews and comments, the app's private key and the merge live in the bot alone
+  (the owner's by-hand steps to finish this are in the README, "Who merges"). When it touches runtime code
   (logic, commands, adapters, `bin/` scripts, or a mixed PR) a reviewer Orca worker
   reads it first, up to 5 rounds (each round is a real GitHub review, request changes or approve; fixes are pushes answered by a `[fix round N]` comment); docs,
   prompt text, skills and dashboard UI need no reviewer. `bin/jarvis-restart.sh` runs typecheck and tests, rebuilds the
@@ -322,7 +328,7 @@ no classes.
   `jarvis-release.sh rollback` is the way back that needs neither the bot, the merge script nor CI
   (`docs/releases.md`). With `SELF_PR_AUTHOR`/`SELF_PR_REVIEWER` set, the
   PR is opened as the author and reviewed, approved and merged as the reviewer
-  (the reviewer's own approving review is the clean verdict; `merge-when-green.sh` approves right before the merge only when that account has not already approved this head). `restartWhenIdle` then drains: timers that start turns hold, and new
+  (the reviewer's `[review round N]` review ending `VERDICT: clean` is the clean verdict the merge gate reads; with `MERGE_GATE` off `merge-when-green.sh` still approves as that account right before the merge, unless it already approved this head). `restartWhenIdle` then drains: timers that start turns hold, and new
   chat messages are still answered, each turn on `RESTART_TURN_BUDGET_MS` (2 min;
   commands, slash commands and buttons wait in the inbox instead);
   one past it tells its thread to hold on, is cut and its inbox row stays
