@@ -50,4 +50,33 @@ describe("textWithVoice", () => {
     const text = await textWithVoice("", files, undefined);
     expect(text).toContain("could not be transcribed (transcription is not set up)");
   });
+
+  test("several clips are transcribed one after another, in order", async () => {
+    const order: string[] = [];
+    const two = [
+      { ...files[0]!, name: "one.m4a" },
+      { ...files[0]!, name: "two.m4a" },
+    ];
+    let running = 0;
+    const text = await textWithVoice("", two, async (c) => {
+      running += 1;
+      expect(running).toBe(1);
+      order.push(c.name);
+      await new Promise((r) => setTimeout(r, 5));
+      running -= 1;
+      return { ok: true, text: `words of ${c.name}` };
+    });
+    expect(order).toEqual(["one.m4a", "two.m4a"]);
+    expect(text.indexOf("one.m4a")).toBeLessThan(text.indexOf("two.m4a"));
+  });
+
+  test("no files passed (a stranger's message in a followed thread): nothing is fetched, a text-less message stays empty", async () => {
+    let called = false;
+    const text = await textWithVoice("", undefined, async () => {
+      called = true;
+      return { ok: true, text: "x" };
+    });
+    expect(text).toBe("");
+    expect(called).toBe(false);
+  });
 });

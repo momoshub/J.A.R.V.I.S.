@@ -48,6 +48,25 @@ describe("createWhisperTranscriber", () => {
     expect(await badConv(clip)).toEqual({ ok: false, reason: "the audio could not be converted" });
   });
 
+  test("an oversized clip is refused before any download", async () => {
+    let fetched = false;
+    const t = createWhisperTranscriber(cfg, {
+      exists: here,
+      fetchAudio: async () => {
+        fetched = true;
+        return new Uint8Array([1]);
+      },
+      run: async () => ({ code: 0, stdout: "x" }),
+    });
+    expect(await t({ ...clip, size: 60 * 1024 * 1024 })).toEqual({ ok: false, reason: "file is too large" });
+    expect(fetched).toBe(false);
+  });
+
+  test("a killed ffmpeg run reads as a timeout", async () => {
+    const t = createWhisperTranscriber(cfg, { exists: here, fetchAudio: audio, run: async () => ({ code: 137, stdout: "" }) });
+    expect(await t(clip)).toEqual({ ok: false, reason: "transcription timed out" });
+  });
+
   test("a failed download is a failed transcript, not an exception", async () => {
     const t = createWhisperTranscriber(cfg, {
       exists: here,
@@ -71,6 +90,11 @@ describe("fetchSlackAudio", () => {
     }) as unknown as typeof fetch;
     await expect(fetchSlackAudio(clip.url, "t", doFetch)).rejects.toThrow("not a Slack file url");
     expect(calls).toHaveLength(1);
+  });
+
+  test("a declared content-length over the cap is refused without reading the body", async () => {
+    const doFetch = (async () => new Response("x", { headers: { "content-length": String(60 * 1024 * 1024) } })) as unknown as typeof fetch;
+    await expect(fetchSlackAudio(clip.url, "t", doFetch)).rejects.toThrow("file is too large");
   });
 
   test("returns the bytes", async () => {

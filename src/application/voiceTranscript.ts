@@ -20,16 +20,19 @@ export const textWithVoice = async (
 ): Promise<string> => {
   const clips = audioClipsOf(files);
   if (clips.length === 0) return typed;
-  const results = await Promise.all(
-    clips.map(async (clip) => {
-      if (!transcribe) return { name: clip.name, transcript: { ok: false, reason: "transcription is not set up" } as Transcript };
-      try {
-        return { name: clip.name, transcript: await transcribe(clip) };
-      } catch (e) {
-        log(`voice transcription failed for "${clip.name}": ${describe(e)}`);
-        return { name: clip.name, transcript: { ok: false, reason: describe(e) } as Transcript };
-      }
-    }),
-  );
+  // One after another: each run is a large model on the host, several at once would starve it.
+  const results: { name: string; transcript: Transcript }[] = [];
+  for (const clip of clips) {
+    if (!transcribe) {
+      results.push({ name: clip.name, transcript: { ok: false, reason: "transcription is not set up" } });
+      continue;
+    }
+    try {
+      results.push({ name: clip.name, transcript: await transcribe(clip) });
+    } catch (e) {
+      log(`voice transcription failed for "${clip.name}": ${describe(e)}`);
+      results.push({ name: clip.name, transcript: { ok: false, reason: describe(e) } });
+    }
+  }
   return withTranscripts(typed, results);
 };

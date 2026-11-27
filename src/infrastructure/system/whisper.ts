@@ -61,6 +61,8 @@ export const fetchSlackAudio = async (url: string, token: string, doFetch: typeo
       continue;
     }
     if (!res.ok) throw new Error(`download failed (http ${res.status})`);
+    const length = Number(res.headers.get("content-length"));
+    if (Number.isFinite(length) && length > MAX_AUDIO_BYTES) throw new Error("file is too large");
     const bytes = new Uint8Array(await res.arrayBuffer());
     if (bytes.length > MAX_AUDIO_BYTES) throw new Error("file is too large");
     if (bytes.length === 0) throw new Error("empty download");
@@ -81,6 +83,7 @@ export const createWhisperTranscriber = (
     if (!exists(cfg.modelPath)) return { ok: false, reason: "the speech-to-text model is not installed" };
     if (!exists(cfg.ffmpegBin)) return { ok: false, reason: "ffmpeg is not installed" };
     if (!clip.url) return { ok: false, reason: "the clip has no download url" };
+    if (clip.size !== undefined && clip.size > MAX_AUDIO_BYTES) return { ok: false, reason: "file is too large" };
     let dir: string | undefined;
     try {
       dir = await mkdtemp(join(tmpdir(), "voice-"));
@@ -88,7 +91,7 @@ export const createWhisperTranscriber = (
       const wav = join(dir, "clip.wav");
       await writeFile(input, await fetchAudio(clip.url));
       const conv = await exec([cfg.ffmpegBin, "-nostdin", "-y", "-loglevel", "error", "-i", input, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le", wav], cfg.timeoutMs);
-      if (conv.code !== 0) return { ok: false, reason: "the audio could not be converted" };
+      if (conv.code !== 0) return { ok: false, reason: conv.code === 137 || conv.code === 143 ? "transcription timed out" : "the audio could not be converted" };
       // `-l auto` detects the language (Vietnamese and English alike); `-nt` drops timestamps.
       const out = await exec([cfg.whisperBin, "-m", cfg.modelPath, "-f", wav, "-l", "auto", "-nt"], cfg.timeoutMs);
       if (out.code !== 0) return { ok: false, reason: out.code === 137 || out.code === 143 ? "transcription timed out" : "transcription failed" };
