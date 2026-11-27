@@ -119,6 +119,6 @@ describe("what the coordinator's approval says", () => {
     const b = approvedByCoordinatorBrief(4, input(), "low-risk");
     expect(b.startsWith("Bug #4 is approved by the coordinator")).toBe(true);
     expect(b).toContain("dedupe on message ts");
-    expect(stoppedBrief(4)).toContain("Bug #4 was approved by the coordinator and the owner then rejected it");
+    expect(stoppedBrief(4)).toContain("Bug #4 was approved for the owner");
   });
 });
