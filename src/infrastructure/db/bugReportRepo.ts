@@ -17,6 +17,8 @@ export type BugReport = {
   readonly noticeTs: string;
   readonly createdAt: number;
   readonly decidedAt: number;
+  /** `coordinator` when the coordinator approved it (the owner's Reject can still stop it), empty when the owner pressed the button. */
+  readonly decidedBy: string;
 };
 
 export type NewBugReport = Pick<BugReport, "fingerprint" | "threadLink" | "issue" | "summary" | "plan" | "reportedIn">;
@@ -34,6 +36,7 @@ type Row = {
   notice_ts: string;
   created_at: number;
   decided_at: number;
+  decided_by: string;
 };
 
 const toReport = (r: Row): BugReport => ({
@@ -49,6 +52,7 @@ const toReport = (r: Row): BugReport => ({
   noticeTs: r.notice_ts,
   createdAt: r.created_at,
   decidedAt: r.decided_at,
+  decidedBy: r.decided_by ?? "",
 });
 
 export type BugReportRepo = {
@@ -63,8 +67,10 @@ export type BugReportRepo = {
   /** How many reports were filed at or after `since`. */
   countSince: (since: number) => number;
   setNotice: (id: number, channel: string, ts: string) => void;
-  /** Pending -> approved or rejected; false when it was not pending (so a second press changes nothing). */
-  decide: (id: number, state: "approved" | "rejected", at: number) => boolean;
+  /** Pending -> approved or rejected; false when it was not pending (so a second press changes nothing). `by` is `coordinator` for the coordinator's own approval. */
+  decide: (id: number, state: "approved" | "rejected", at: number, by?: string) => boolean;
+  /** Approved by the coordinator -> rejected, by the owner's Reject; false for anything else (an owner's own approval is final). */
+  revokeCoordinator: (id: number, at: number) => boolean;
   /** Drop a report whose question never went out. */
   discard: (id: number) => void;
 };
@@ -83,7 +89,10 @@ export const createBugReportRepo = (db: DbClient): BugReportRepo => {
   const linksStmt = db.query<{ thread_link: string }, [string]>("SELECT thread_link FROM bug_reports WHERE state = ?");
   const countStmt = db.query<{ n: number }, [number]>("SELECT COUNT(*) AS n FROM bug_reports WHERE created_at >= ?");
   const noticeStmt = db.query("UPDATE bug_reports SET notice_channel = ?, notice_ts = ? WHERE id = ?");
-  const decideStmt = db.query("UPDATE bug_reports SET state = ?, decided_at = ? WHERE id = ? AND state = 'pending'");
+  const decideStmt = db.query("UPDATE bug_reports SET state = ?, decided_at = ?, decided_by = ? WHERE id = ? AND state = 'pending'");
+  const revokeStmt = db.query(
+    "UPDATE bug_reports SET state = 'rejected', decided_at = ?, decided_by = '' WHERE id = ? AND state = 'approved' AND decided_by = 'coordinator'",
+  );
   const discardStmt = db.query("DELETE FROM bug_reports WHERE id = ?");
 
   return {
@@ -112,7 +121,8 @@ export const createBugReportRepo = (db: DbClient): BugReportRepo => {
     threadLinks: (state) => linksStmt.all(state).map((r) => ({ threadLink: r.thread_link })),
     countSince: (since) => countStmt.get(since)?.n ?? 0,
     setNotice: (id, channel, ts) => void noticeStmt.run(channel, ts, id),
-    decide: (id, state, at) => decideStmt.run(state, at, id).changes > 0,
+    decide: (id, state, at, by = "") => decideStmt.run(state, at, by, id).changes > 0,
+    revokeCoordinator: (id, at) => revokeStmt.run(at, id).changes > 0,
     discard: (id) => void discardStmt.run(id),
   };
 };

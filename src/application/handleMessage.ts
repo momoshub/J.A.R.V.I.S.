@@ -62,6 +62,7 @@ import type { BugReportApprovalDeps } from "./bugReportApproval.ts";
 import type { ReviewRunApprovalDeps } from "./reviewRunApproval.ts";
 import type { CoordinatorApprovalDeps } from "./coordinatorApproval.ts";
 import type { Coordinator } from "./coordinator.ts";
+import type { WriterClaims } from "./writerClaims.ts";
 import type { McpToolsPort } from "../infrastructure/mcp/approvals.ts";
 import type { SettingsRepo } from "../infrastructure/db/settingsRepo.ts";
 import { requestAccess } from "./accessRequests.ts";
@@ -127,6 +128,9 @@ export type HandleMessageDeps = {
   journeys?: JourneyRepo;
   /** The coordinator, the owner's housekeeping coordinator, for the internal `coordinator` command. */
   coordinator?: Coordinator;
+  coordinatorName?: string;
+  /** Who holds which writer job, for the internal `claim` command. */
+  writerClaims?: WriterClaims;
   /** The bug reports the bot raised about itself, for the `bug-report` command. */
   bugReports?: BugReportRepo;
   /** The inner child's issue queue, for the `inner-child` command. */
@@ -388,7 +392,7 @@ export type InboundMessage = {
 };
 
 /** The message was typed by the person it is from: not started by the bot (`trigger`, `unprompted`, `autoContinue`), not a followed thread's chatter. */
-export const typedByPerson = (m: InboundMessage): boolean => !m.trigger && !m.unprompted && !m.autoContinue && !m.following && !m.batched;
+export const typedByPerson = (m: InboundMessage): boolean => !m.trigger && !m.unprompted && !m.autoContinue && !m.composed && !m.following && !m.batched;
 
 /**
  * The turn runs on words that `actor` typed themselves, followed thread or not. `typedByPerson` is false for a followed thread's

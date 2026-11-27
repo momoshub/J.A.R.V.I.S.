@@ -1076,6 +1076,7 @@ describe("typedByPerson", () => {
     expect(typedByPerson({ ...typed, trigger: "loop" })).toBe(false);
     expect(typedByPerson({ ...typed, unprompted: true })).toBe(false);
     expect(typedByPerson({ ...typed, autoContinue: true })).toBe(false);
+    expect(typedByPerson({ ...typed, composed: true })).toBe(false);
     expect(typedByPerson({ ...typed, following: true })).toBe(false);
     expect(typedByPerson({ ...typed, batched: true })).toBe(false);
   });

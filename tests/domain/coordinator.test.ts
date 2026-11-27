@@ -18,6 +18,7 @@ import {
   localClock,
   localDay,
   mayFixProdItself,
+  mayApproveItself,
   parseBlockerArgs,
   parseOwnPrs,
   prFindings,
@@ -451,3 +452,48 @@ describe("button ids", () => {
     expect(coordinatorPressKind("jv:jueki:other")).toBeUndefined();
   });
 });
+
+describe("routeBlocker: the coordinator approves the small non-prod ones itself", () => {
+  const NOW = 1_000 * HOUR_MS;
+  const low = { reversible: true };
+  const ask = { quiet: false, kind: "other" as const, text: "retry the failed lint step" };
+
+  test("a non-prod, low-risk, in-role `other` blocker is approved by the coordinator, quiet hours or not", () => {
+    expect(routeBlocker(facts(low), undefined, NOW, ask)).toEqual({ route: "approve" });
+    expect(routeBlocker(facts(low), undefined, NOW, { ...ask, quiet: true })).toEqual({ route: "approve" });
+  });
+
+  test("silence is not low-risk: no --reversible, or any risky fact, goes to the owner", () => {
+    expect(routeBlocker(facts(), undefined, NOW, ask)).toEqual({ route: "raise", repeat: false });
+    for (const r of [{ dataWrite: true }, { schemaChange: true }, { secretOrIam: true }, { beyondRole: true }, { ownerDecision: true }]) {
+      expect(routeBlocker(facts({ ...low, ...r }), undefined, NOW, ask)).toEqual({ route: "raise", repeat: false });
+    }
+  });
+
+  test("only a plain `other` wall: a permission, prod-write, decision or repeat-failure one is the owner's", () => {
+    for (const kind of ["permission", "prod-write", "decision", "repeat-failure"] as const) {
+      expect(routeBlocker(facts(low), undefined, NOW, { ...ask, kind })).toEqual({ route: "raise", repeat: false });
+    }
+  });
+
+  test("a sentence naming roles, permissions, auth, tickets, tokens, secrets, approvals or prod is not low-risk", () => {
+    for (const text of ["needs a new role", "refresh the token", "touches the approval code", "reads prod data"]) {
+      expect(mayApproveItself(facts(low), "other", text)).toBe(false);
+      expect(routeBlocker(facts(low), undefined, NOW, { ...ask, text })).toEqual({ route: "raise", repeat: false });
+    }
+  });
+
+  test("prod keeps today's rule: never approved here, however low-risk", () => {
+    expect(routeBlocker(facts({ ...low, prod: true }), undefined, NOW, ask)).toEqual({ route: "raise", repeat: true });
+  });
+
+  test("a wall the owner was already asked about stays with the owner, and a decided one stays decided", () => {
+    expect(routeBlocker(facts(low), { state: "pending", prod: false, lastRaisedAt: NOW - DAY_MS }, NOW, ask)).toEqual({ route: "hold", why: "already-raised" });
+    expect(routeBlocker(facts(low), { state: "rejected", prod: false, lastRaisedAt: NOW - DAY_MS }, NOW, ask)).toEqual({ route: "hold", why: "decided" });
+  });
+
+  test("a caller that states no kind (the old call) never gets an approval", () => {
+    expect(routeBlocker(facts(low), undefined, NOW, { quiet: false })).toEqual({ route: "raise", repeat: false });
+  });
+});
+

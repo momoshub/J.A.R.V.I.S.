@@ -237,7 +237,21 @@ no classes.
   the digest and one direct line. The digest and every blocker are written in
   `COORDINATOR_LANG` (Vietnamese by default), and the digest message carries the grey
   usage footer: the last tick's line plus the day's total, kept in `coordinator_usage`
-  and counted only for a turn that really ran. See "The coordinator sweeps" in CLAUDE.md.
+  and counted only for a turn that really ran.
+  The coordinator also takes the small approvals
+  off the owner's hands, in code: a non-prod `other` blocker that is provably
+  low-risk is approved by the coordinator, and a new bug report is approved by it
+  when the owner himself asked for the fix in that very thread (read from the
+  turn ticket's owner bit, never from text) or when it is a low-risk fix to the
+  bot's own source filed from the owner's own conversation; everything else, and
+  every report from someone else's conversation, still waits for the owner's
+  buttons, and the owner can Reject what the coordinator approved. Nothing a
+  non-owner writes can cause an approval, and the fix and stop turns the bot starts itself from a report's brief carry no owner bit (`unprompted` / `composed`). Its tick also holds the writer claims:
+  one writer per job (`bug:<id>`, `journey:<id>`, `branch:<name>`), taken before
+  `worker-start`, refused for a second claimant with the holder's dispatch id and
+  thread, released when the worker ends or dies, with dead and duplicate ones
+  reported in the digest. See "The coordinator sweeps" and "One writer per job"
+  in CLAUDE.md.
 - **Followed threads: debounce and gate.** An untagged message in a thread the bot
   follows (the `asked` and `own-thread` routes; tagged messages, DMs, one-on-one
   threads and command lines skip all of this) is not a turn yet. `app.ts` hands it
@@ -345,8 +359,10 @@ No I/O, no frameworks. Just data shapes and functions of their inputs.
 - `acceptedBots.ts` - the `ACCEPTED_BOT_IDS` allowlist (an allowlisted bot posting with a person's user token is that user speaking) and the per-thread loop guard that caps consecutive accepted-bot turns
 - `threadFollow.ts`, `followGate.ts` - which untagged thread messages the bot answers, and the pure rules of the gate in front of a followed thread (settings, bypass, batch windows, verdict parsing, the gate's prompt)
 - `voiceMessage.ts` (domain), `voiceTranscript.ts` (application), `infrastructure/system/whisper.ts` - a voice message (an audio clip, no text) starts a turn: the clip is fetched with the bot token, converted by ffmpeg and transcribed by local whisper.cpp, and the transcript becomes the message text with a note to reply in text plus a spoken clip; a failure becomes a note in the text, never a dropped clip
-- `bugReport.ts` - the internal `bug-report` command's pure parts: flag parsing, the Slack-link check, the fingerprint that dedupes, the owner's DM text, the `jv:bug-report:` button ids (the prefix is code-handled: `application/bugReportApproval.ts` decides a press, owner only, on the stored notice channel/ts, and only an approve starts the fix turn)
-- `coordinator.ts` - the coordinator's pure rules: quiet hours and the owner's day, what a journey or worker ticket needs, own PRs from `gh`, urgent / low-risk / the prod self-fix rule, how a blocker is routed, the digest and the turn's text
+- `bugReport.ts` - the internal `bug-report` command's pure parts: flag parsing, the Slack-link check, the fingerprint that dedupes, the owner's DM text, the `jv:bug-report:` button ids (the prefix is code-handled: `application/bugReportApproval.ts` decides a press, owner only, on the stored notice channel/ts, and only an approve starts the fix turn), and `routeBugReport`, the pure rule by which the coordinator approves the small ones (the owner's own ask in that thread, or a low-risk own-source fix from the owner's conversation)
+- `lowRisk.ts` - the words (role, permission, auth, ticket, token, secret, approval, prod...) that keep a bug report or a coordinator blocker out of the approve-it-myself lane
+- `writerClaim.ts` - one writer per job: the `bug:` / `journey:` / `branch:` key grammar, who may take a claim, what a tick finds (dead, never bound, two on one key)
+- `coordinator.ts` - the coordinator's pure rules: quiet hours and the owner's day, what a journey or worker ticket needs, own PRs from `gh`, urgent / low-risk / the prod self-fix rule, the non-prod self-approval rule, how a blocker is routed, the digest and the turn's text
 - `journey.ts` - the bot's own work log: statuses, flag parsing for the internal `journey` command (run only by the brain's own turn, never typed), the one-line and help text
 - `watch.ts`, `reminder.ts`, `loop.ts`, `selfUpdate.ts`, `runControl.ts`, `threadBackground.ts`, `backgroundJobs.ts` - waits, reminders, draining restart, stopping a turn and the background agents its thread started
 - `stalePromise.ts`, `tellPrompt.ts` - the stale-promise rules (bilingual promise heuristic, the model's yes/no question, which threads may be nudged, the per-thread record) and the internal steer text shared by `tell` and the sweep
@@ -377,7 +393,7 @@ Orchestrates the domain and depends on **ports**, not concrete adapters.
 - `learningApproval.ts` (+ `domain/learning.ts`) - learnings need the owner's approval: only the owner's own typed `learn` is saved active; a member's `learn`, the agent's `learn` and every `POST /api/learnings` are stored pending (`learnings.status`, migration v35), kept out of every prompt (`injectedLearnings` is the one place the injection reads, active only) and put to the owner with `jv:learning:approve|reject` buttons - in the thread of the turn that proposed it when that is the owner's DM or a thread they started (source recorded in `learnings.source_*`, migration v39), otherwise in the owner's DM with a link to that thread - a press is honoured only on the notice exactly as last rendered (`domain/noticeFingerprint.ts` over its text and buttons, stored in `learnings.notice_fingerprint`, migration v40; `slackProxy` also refuses a turn's `chat.update` on any stored notice) - decided in code in `slack/app.ts` like `jv:loop:` and never handed to the model; after a decision the notice keeps its buttons (`updateInteractive`: the pressed one relabelled `Approved by` / `Rejected by`, the other flips the decision, which `LearningsRepo.decide` allows), unlike the other approval notices, which are settled with `settleInteractive`. Each learning also has an optional scope (`learnings.scope_channels`, migration v45; empty = global, the default and every older row): `injectedLearnings(repo, channelId)` injects a channel-scoped learning only into turns in its channels, the API takes `scope` (`global` | `channel` | channel id list), the owner's notice shows it and `learn approve <id> global|<channel ids>` changes it, and in adapter mode a scoped fact is filed into the channel's own note.
 - `threadQueue.ts`, `runRegistry.ts` - one turn per thread (what a person queues behind it is merged into one turn), and stopping the running one
 - `followGate.ts` (application), `followGateModel.ts` - the per-thread buffer for a followed thread (a quiet window, a hard cap, injectable timers) and the cheap pal-model call that says reply, skip or wait
-- `coordinator.ts`, `coordinatorApproval.ts` (application) - the coordinator's tick (picture, deterministic actions, the daily turn, the digest, blockers) and the owner's code-decided Approve / Reject on a blocker
+- `coordinator.ts`, `coordinatorApproval.ts` (application) - the coordinator's tick (picture, deterministic actions, the daily turn, the digest, blockers) and the owner's code-decided Approve / Reject on a blocker; `writerClaims.ts` (application) - the claim operations the `claim` command, the worker-end hook and the tick share
 - `ciGate.ts` (application) - the CI gate of `quick-review`: idempotent request-changes and approve against GitHub's own state, the watcher row for a running CI, and its poll
 - `watcher.ts`, `reminders.ts`, `loops.ts`, `reviewInbox.ts`, `reviewRounds.ts`, `reviewGuard.ts`, `innerChild.ts`, `learningHarvest.ts`, `offlineAlarm.ts`, `orcaQuestions.ts`, `idleReaper.ts`, `stuckSweeper.ts`, `stalePromiseSweep.ts` - the timers (`orcaQuestions` also sits on the tool-trace sink, linking each Orca worker to the thread that started it)
 - `githubApp.ts` - calls from the GitHub App: dedupe/queue, identity mapping, the turn, the answer back

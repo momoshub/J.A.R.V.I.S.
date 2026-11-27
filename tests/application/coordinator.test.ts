@@ -6,6 +6,7 @@ import { DEFAULT_PROD_REPING_MS, HOUR_MS, DAY_MS, MINUTE_MS, type BlockerFacts, 
 import { NO_STUCK_WORK } from "../../src/domain/stuckWork.ts";
 import { createJourneyRepo } from "../../src/infrastructure/db/journeyRepo.ts";
 import { createCoordinatorRepo } from "../../src/infrastructure/db/coordinatorRepo.ts";
+import { createWriterClaimRepo } from "../../src/infrastructure/db/writerClaimRepo.ts";
 import { createWatchRepo } from "../../src/infrastructure/db/watchRepo.ts";
 import { migrate } from "../../src/infrastructure/db/schema.ts";
 import type { Watch } from "../../src/infrastructure/db/watchRepo.ts";
@@ -601,6 +602,90 @@ describe("rearmWatch: a lapsed worker watch armed again, the grant bounded by th
     for (let i = 0; i < 5; i++) w.add({ ...base, createdAt: T0, ...grant, parentWatchId: old.id }, T0);
     const id = rearmWatch(w, old, T0 + HOUR_MS);
     expect(w.get(id)).toMatchObject({ createdBy: "", writeTargets: [] });
+  });
+});
+
+describe("blockers: a low-risk non-prod one is approved by the coordinator, not put to the owner", () => {
+  test("approved on the spot, handled, one digest line, nothing asked, and the next tick does not hand it over", async () => {
+    const s = setup();
+    const out = await s.coordinator.blocker({ key: "retry-lint", kind: "other", text: "retry the failed lint step", facts: facts({ reversible: true }) });
+    expect(out).toContain("approved by me");
+    expect(s.asked).toHaveLength(0);
+    expect(s.repo.blockerByKey("retry-lint")).toMatchObject({ state: "approved" });
+    expect(s.repo.approvedUnhandled()).toHaveLength(0);
+    expect(s.posts[0]!.text).toContain("approved by me (non-prod, low-risk");
+    await s.coordinator.tick();
+    expect(s.turns).toHaveLength(0);
+  });
+
+  test("the same wall asked again is decided, not approved twice", async () => {
+    const s = setup();
+    await s.coordinator.blocker({ key: "retry-lint", kind: "other", text: "retry the failed lint step", facts: facts({ reversible: true }) });
+    const again = await s.coordinator.blocker({ key: "retry-lint", kind: "other", text: "retry the failed lint step", facts: facts({ reversible: true }) });
+    expect(again).toContain("owner already decided");
+  });
+
+  test("anything not provably low-risk still goes to the owner's buttons", async () => {
+    const s = setup();
+    await s.coordinator.blocker({ key: "a", kind: "other", text: "retry the failed lint step", facts: facts() });
+    await s.coordinator.blocker({ key: "b", kind: "other", text: "rotate the token", facts: facts({ reversible: true }) });
+    await s.coordinator.blocker({ key: "c", kind: "decision", text: "pick a vendor", facts: facts({ reversible: true }) });
+    expect(s.asked).toHaveLength(3);
+  });
+});
+
+describe("writer claims on the tick", () => {
+  const withClaims = () => {
+    const db = new Database(":memory:");
+    migrate(db);
+    const claims = createWriterClaimRepo(db);
+    const s = setup(NOON, {
+      claims: { live: claims.live, release: (id, why) => claims.release(id, why, NOON) },
+    });
+    return { s, claims };
+  };
+  const take = (claims: ReturnType<typeof createWriterClaimRepo>, key: string, dispatch: string, at = NOON - HOUR_MS) => {
+    const c = claims.add({ key, channelId: "C1", threadTs: "1.1", actor: OWNER, createdAt: at }, at);
+    if (dispatch) claims.bind(c.id, dispatch);
+    return c;
+  };
+
+  test("a claim whose worker is dead is released by the tick and reported in the digest", async () => {
+    const { s, claims } = withClaims();
+    take(claims, "bug:23", "ctx_dead");
+    take(claims, "bug:24", "ctx_alive");
+    s.set.scan({ tasks: [{ taskId: "t1", dispatchId: "ctx_dead", title: "fix", why: "worker gone" }], prs: [] } as never);
+    await s.coordinator.tick();
+    expect(claims.live().map((c) => c.key)).toEqual(["bug:24"]);
+    expect(s.posts[0]!.text).toContain("released the claim on bug:23: its worker ctx_dead is gone");
+  });
+
+  test("a claim never bound to a writer is released once it is old enough", async () => {
+    const { s, claims } = withClaims();
+    take(claims, "bug:25", "", NOON - HOUR_MS);
+    take(claims, "bug:26", "", NOON - 60_000);
+    await s.coordinator.tick();
+    expect(claims.live().map((c) => c.key)).toEqual(["bug:26"]);
+    expect(s.posts[0]!.text).toContain("no writer was ever started for it");
+  });
+
+  test("two writers on one key are reported, once a day, and neither is released", async () => {
+    const { s, claims } = withClaims();
+    take(claims, "bug:27", "ctx_a");
+    take(claims, "bug:27", "ctx_b");
+    await s.coordinator.tick();
+    expect(s.posts[0]!.text).toContain("two writers on bug:27");
+    expect(claims.live()).toHaveLength(2);
+    s.clock.t += 30 * MINUTE_MS;
+    await s.coordinator.tick();
+    const digest = s.updates.at(-1)?.text ?? s.posts[0]!.text;
+    expect(digest.split("two writers on bug:27")).toHaveLength(2);
+  });
+
+  test("status lists the live claims", async () => {
+    const { s, claims } = withClaims();
+    take(claims, "bug:28", "ctx_a");
+    expect(s.coordinator.status()).toContain("bug:28 (worker ctx_a");
   });
 });
 
