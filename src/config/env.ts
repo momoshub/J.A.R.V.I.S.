@@ -278,10 +278,12 @@ const schema = z
     // (a reviewer or investigator cannot edit, push or merge, a writer cannot merge
     // by hand), written by the same bin/worker-mcp-trim.ts --role <role>.
     WORKER_ROLE_MCP_DENY: z.string().optional(),
-    // The one folder every Orca worker starts in (`--worktree path:<it>`), so the
-    // exclusion above is written into a folder only workers use and never into one
-    // a person works in (~/Workspaces). bin/worker-mcp-trim.ts creates it, registers
-    // it with Orca as a plain folder and trims it. Blank = ~/.jarvis/worker-home.
+    // The shared worker home. Each role's Orca workers start in <it>-<role>
+    // (`--worktree path:<it>-<role>`), a folder next to it, so the exclusion above and
+    // the role's tool rules are written into folders only workers use and never into
+    // one a person works in (~/Workspaces). bin/worker-mcp-trim.ts --role <role>
+    // creates it, registers it with Orca as a plain folder and writes it; with no
+    // --role it does the same for <it> itself. Blank = ~/.jarvis/worker-home.
     WORKER_HOME_DIR: z.string().optional(),
     // Voice messages (an audio clip with no text) are transcribed locally before
     // their turn: ffmpeg converts to 16 kHz mono wav, whisper.cpp's whisper-cli
@@ -391,6 +393,7 @@ export type AppConfig = {
   /** Raw `WORKER_ROLE_MCP_DENY`: per-role server exclusions, read by the trim helper. */
   workerRoleMcpDeny: string;
   /** Absolute folder every Orca worker starts in. */
+  /** The shared worker home; each role's workers start in `<it>-<role>` (`roleHomeDir`). */
   workerHomeDir: string;
   /** whisper.cpp CLI, the ggml model and ffmpeg for voice messages, and the limit on each step. */
   whisperBin: string;

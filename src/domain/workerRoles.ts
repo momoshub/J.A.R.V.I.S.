@@ -12,12 +12,16 @@
  * host's MCP exclusions (`WORKER_MCP_DENY` plus `WORKER_ROLE_MCP_DENY` for the role).
  *
  * What is enforced and what is not: a `deny` rule is checked by the session before
- * it runs a tool, whatever its permission mode. The `allow` list is the surface the
- * role is meant to use, so a worker is not stopped by a prompt on every `gh pr view`;
- * a command outside both asks for approval, and the watch reports a worker parked
- * on one. Both match command prefixes, so a deliberate `bash -c "..."` wrapper is
- * not caught: this takes away the capabilities a role never needs, it is not a
- * sandbox (the credentials a shell can read are a separate boundary).
+ * it runs a tool, whatever its permission mode (checked on 2.1.285 in a worker that
+ * runs with permission prompts off). The `allow` list only matters in a mode that
+ * asks: there a command outside both lists asks for approval and the watch reports
+ * the worker parked on it; in a worker that never asks it changes nothing, and the
+ * deny list is the whole boundary. Rules match command prefixes (also behind a
+ * `VAR=value` assignment, and `git -c ...` / `git --...` is denied outright for the
+ * read-only roles), so a deliberate `bash -c "..."` or `env git ...` wrapper, a
+ * redirect (`> file`) or a GraphQL mutation read from a file is not caught: this
+ * takes away the capabilities a role never needs, it is not a sandbox (the
+ * credentials a shell can read are a separate boundary).
  */
 
 const asRecord = (v: unknown): Record<string, unknown> | undefined =>
@@ -57,11 +61,23 @@ const bash = (...prefixes: string[]): string[] => prefixes.map(rule);
  * denied `GH_TOKEN=x git push` and let `GH_TOKEN=$(echo x) gh pr merge` through), so every denied
  * command also gets the same rule behind any assignment, and every allowed `gh` one the form a worker uses.
  */
-const denyBash = (...prefixes: string[]): string[] => prefixes.flatMap((p) => [rule(p), rule(`*=* ${p.endsWith(":*") ? p.slice(0, -2) : p}:*`)]);
+const denyBash = (...prefixes: string[]): string[] => [
+  ...new Set(prefixes.flatMap((p) => [rule(p), rule(`*=* ${p}`)])),
+];
 const withAssignment = (rules: readonly string[]): string[] =>
   rules.flatMap((r) => (r.startsWith("Bash(gh ") ? [r, `Bash(*=* ${r.slice("Bash(".length, -1).replace(/:\*$/, "")}*)`] : [r]));
 /** A helper script is called by absolute path, so the rule matches the name wherever it lives. */
 const githubApp = (...actions: string[]): string[] => actions.map((a) => `Bash(*github-app.sh ${a}*)`);
+
+/**
+ * A reviewer or verifier writes a review body or an evidence file to scratch, not into a checkout: the
+ * allow rules name the temp folders and the deny rules every home folder (a deny wins over an allow).
+ * Path rules are `Edit(path)` ones, which the session applies to every file-writing tool (a `Write(path)`
+ * rule is refused with a warning, checked on 2.1.285). A shell redirect is not a tool this can see, so
+ * this keeps the file tools out of the repository, no more.
+ */
+const SCRATCH_WRITE = ["Edit(//private/tmp/**)", "Edit(//tmp/**)", "Edit(//var/folders/**)"];
+const NO_HOME_WRITE = ["Edit(//Users/**)", "Edit(//home/**)"];
 
 const READ_TOOLS = ["Read", "Grep", "Glob", "WebFetch", "WebSearch"];
 const READ_SHELL = bash("ls:*", "cat:*", "head:*", "tail:*", "wc:*", "grep:*", "rg:*", "find:*", "jq:*", "sort:*", "diff:*", "pwd", "echo:*", "date:*", "sleep:*", "mkdir:*", "cd:*");
@@ -78,12 +94,20 @@ const RUN_CHECKS = bash("bun run typecheck", "bun test:*", "bun install:*", "bun
 
 /** An API call that changes anything but a review or a comment. */
 const GH_API_MUTATIONS = [
-  "gh api*-X PUT", "gh api*-X DELETE", "gh api*-X PATCH", "gh api*--method PUT", "gh api*--method DELETE", "gh api*--method PATCH",
-  "gh api*--method=PUT", "gh api*--method=DELETE", "gh api*--method=PATCH", "gh api*/merge", "gh api*/git/refs", "gh api*/contents/",
+  "gh api*-X PUT", "gh api*-X DELETE", "gh api*-X PATCH", "gh api*-XPUT", "gh api*-XDELETE", "gh api*-XPATCH",
+  "gh api*--method PUT", "gh api*--method DELETE", "gh api*--method PATCH", "gh api*--method=PUT", "gh api*--method=DELETE", "gh api*--method=PATCH",
+  "gh api*/merge",
 ];
+/** GraphQL has its own merge and push mutations; a mutation can also come from a file, which no rule sees. */
+const GRAPHQL_WRITES = ["gh api graphql*mergePullRequest", "gh api graphql*AutoMerge", "gh api graphql*createCommitOnBranch", "gh api graphql*updateRef", "gh api graphql*createRef", "gh api graphql*createPullRequest"];
+/** A role with no business writing to GitHub gets no GraphQL at all (`gh pr view` and the REST reads cover its reads). */
+const NO_GRAPHQL = ["gh api graphql*"];
+/** Global git options in front of the subcommand (`git -c k=v push`, `--git-dir`, `--no-pager`) get past the per-subcommand rules. */
+const GIT_OPTIONS = ["git -*"];
+
 /** Every way to put a commit, a branch or a merge on the remote or into a checkout the role does not own. */
 const GIT_WRITES = denyBash("git push:*", "git -C * push:*", "git commit:*", "git -C * commit:*", "git add:*", "git -C * add:*", "git merge:*", "git -C * merge:*", "git rebase:*", "git reset:*", "git cherry-pick:*", "git revert:*", "git tag:*", "git stash:*", "git checkout:*", "git switch:*", "git restore:*", "git apply:*", "git am:*");
-const RAW_MERGE = [...denyBash("gh pr merge:*"), ...githubApp("pr-merge"), ...denyBash(...GH_API_MUTATIONS.map((m) => `${m}:*`))];
+const RAW_MERGE = [...denyBash("gh pr merge:*"), ...githubApp("pr-merge"), ...denyBash(...GH_API_MUTATIONS.map((m) => `${m}:*`), ...GRAPHQL_WRITES.map((m) => `${m}:*`))];
 
 /**
  * The profiles. Read-only roles (reviewer, investigator) get no editing tool and no
@@ -101,23 +125,23 @@ export const ROLE_PROFILES: Readonly<Record<WorkerRole, RoleProfile>> = {
     deny: [...RAW_MERGE, ...denyBash("gh auth switch:*", "gh pr close:*")],
   },
   reviewer: {
-    allow: withAssignment([...READ_TOOLS, "Write", ...READ_SHELL, ...READ_GIT, ...READ_GH, ...ORCA, ...RUN_CHECKS,
+    allow: withAssignment([...READ_TOOLS, ...SCRATCH_WRITE, ...READ_SHELL, ...READ_GIT, ...READ_GH, ...ORCA, ...RUN_CHECKS,
       ...bash("gh pr review:*", "gh pr comment:*", "gh api:*", "git worktree add:*", "git worktree remove:*", "git worktree prune"),
       ...githubApp("comment"),
     ]),
     deny: [
-      "Edit", "NotebookEdit", ...GIT_WRITES, ...RAW_MERGE,
-      ...denyBash("gh pr create:*", "gh pr edit:*", "gh pr close:*", "gh pr reopen:*", "gh pr ready:*", "gh pr ready", "gh issue create:*", "gh issue edit:*", "gh issue close:*", "gh release:*", "gh auth switch:*"),
+      "Edit", "NotebookEdit", ...NO_HOME_WRITE, ...GIT_WRITES, ...RAW_MERGE, ...denyBash(...GIT_OPTIONS, ...NO_GRAPHQL),
+      ...denyBash("gh pr create:*", "gh pr edit:*", "gh pr close:*", "gh pr reopen:*", "gh pr ready:*", "gh issue create:*", "gh issue edit:*", "gh issue close:*", "gh release:*", "gh auth switch:*"),
       ...githubApp("pr-create", "pr-edit", "pr-close", "pr-reopen", "labels-add", "labels-remove", "reviewers-request", "git", "push", "review", "ticket-renew"),
     ],
   },
   verifier: {
-    allow: withAssignment([...READ_TOOLS, "Write", ...READ_SHELL, ...READ_GIT, ...READ_GH, ...ORCA, ...RUN_CHECKS,
+    allow: withAssignment([...READ_TOOLS, ...SCRATCH_WRITE, ...READ_SHELL, ...READ_GIT, ...READ_GH, ...ORCA, ...RUN_CHECKS,
       ...bash("gh pr comment:*", "gh api:*", "git worktree add:*", "git worktree remove:*", "git worktree prune"),
       ...githubApp("comment"),
     ]),
     deny: [
-      "Edit", "NotebookEdit", ...GIT_WRITES, ...RAW_MERGE,
+      "Edit", "NotebookEdit", ...NO_HOME_WRITE, ...GIT_WRITES, ...RAW_MERGE, ...denyBash(...GIT_OPTIONS, ...NO_GRAPHQL),
       ...denyBash("gh pr create:*", "gh pr edit:*", "gh pr close:*", "gh pr reopen:*", "gh pr review:*", "gh issue create:*", "gh issue edit:*", "gh issue close:*", "gh release:*", "gh auth switch:*"),
       ...githubApp("pr-create", "pr-edit", "pr-close", "pr-reopen", "labels-add", "labels-remove", "reviewers-request", "git", "push", "review", "ticket-renew"),
     ],
@@ -125,7 +149,7 @@ export const ROLE_PROFILES: Readonly<Record<WorkerRole, RoleProfile>> = {
   investigator: {
     allow: withAssignment([...READ_TOOLS, ...READ_SHELL, ...READ_GIT, ...READ_GH, ...ORCA, ...bash("gh api:*")]),
     deny: [
-      "Edit", "Write", "NotebookEdit", ...GIT_WRITES, ...RAW_MERGE,
+      "Edit", "Write", "NotebookEdit", ...GIT_WRITES, ...RAW_MERGE, ...denyBash(...GIT_OPTIONS, ...NO_GRAPHQL),
       ...denyBash("git worktree add:*", "git worktree remove:*", "git -C * worktree add:*", "gh pr create:*", "gh pr edit:*", "gh pr close:*", "gh pr reopen:*", "gh pr review:*", "gh pr comment:*", "gh issue create:*", "gh issue edit:*", "gh issue comment:*", "gh issue close:*", "gh release:*", "gh auth switch:*"),
       ...githubApp("pr-create", "pr-edit", "pr-close", "pr-reopen", "comment", "labels-add", "labels-remove", "reviewers-request", "git", "push", "review", "ticket-renew"),
     ],

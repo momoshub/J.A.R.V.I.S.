@@ -565,7 +565,7 @@ const blockedLead = (tasks: readonly string[]): string =>
 export const readyMessage = (note: string, waited: number, output?: string): string => {
   const usage = parseWorkerUsageLine(output ?? "");
   // The usage line is JSON for the watcher to store; the turn gets it as a sentence.
-  const report = parseWorkerReportLine(output ?? "");
+  const report = parseWorkerReportLine(output ?? "", (output ?? "").match(WORKER_LINE)?.[1]);
   const lines = (output ?? "")
     .trim()
     .split("\n")

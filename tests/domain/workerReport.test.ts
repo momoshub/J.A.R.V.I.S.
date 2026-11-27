@@ -92,6 +92,12 @@ describe("findWorkerReport", () => {
     const r = findWorkerReport(shown);
     expect(r.ok && r.report.role).toBe("reviewer");
   });
+  test("the last valid block in the record wins, so a quoted template before the worker's end is not its report", () => {
+    const template = fenced({ ...base, pr: null, head_sha: null, verdict: "none", findings: [] });
+    const mine = fenced({ ...base, pr: 7 });
+    const r = findWorkerReport({ brief: template, terminal: { preview: template }, outcome: { body: mine } });
+    expect(r.ok && r.report.pr).toBe(7);
+  });
   test("reports the first problem when no block is valid, and a plain miss when there is none", () => {
     const r = findWorkerReport({ body: fenced({ ...base, role: "owner" }) });
     expect(r.ok).toBe(false);
@@ -113,6 +119,8 @@ describe("report line and hand-back", () => {
     expect(parseWorkerReportLine(`orca worker ctx_ab-1 finished: outcome ok\n${line}`)).toEqual(report);
     expect(parseWorkerReportLine(line.replace('"reviewer"', '"boss"'))).toBeUndefined();
     expect(parseWorkerReportLine("nothing")).toBeUndefined();
+    expect(parseWorkerReportLine(line, "ctx_ab-1")).toEqual(report);
+    expect(parseWorkerReportLine(line, "ctx_other")).toBeUndefined();
   });
 
   test("the summary names role, PR, head, verdict, blockers and owner actions, clipped", () => {
@@ -131,6 +139,11 @@ describe("report line and hand-back", () => {
     expect(msg).toContain("not a fact");
     expect(msg).toContain("verdict changes");
     expect(msg).not.toContain('"head_sha"');
+  });
+
+  test("a report line for another dispatch is not this worker's report", () => {
+    const out = `orca worker ctx_ab-1 finished: outcome succeeded\n${workerReportLine("ctx_zz-9", report)}`;
+    expect(readyMessage("go", 1000, out)).not.toContain("structured report");
   });
 
   test("no report line, no report sentence", () => {

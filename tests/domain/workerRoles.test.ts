@@ -69,6 +69,45 @@ describe("rule syntax (checked against Claude Code 2.1.285)", () => {
     expect(ROLE_PROFILES.reviewer.allow).toContain("Bash(*=* gh pr review*)");
   });
 
+  test("global git options and GraphQL are shut for the read-only roles; the writer keeps GraphQL minus merge and push mutations", () => {
+    for (const r of ["reviewer", "verifier", "investigator"] as const) {
+      expect(ROLE_PROFILES[r].deny).toContain("Bash(git -*)");
+      expect(ROLE_PROFILES[r].deny).toContain("Bash(*=* git -*)");
+      expect(ROLE_PROFILES[r].deny).toContain("Bash(gh api graphql*)");
+    }
+    expect(ROLE_PROFILES.writer.deny).not.toContain("Bash(git -*)");
+    expect(ROLE_PROFILES.writer.deny).not.toContain("Bash(gh api graphql*)");
+    for (const m of ["mergePullRequest", "AutoMerge", "createCommitOnBranch", "updateRef"]) {
+      expect(ROLE_PROFILES.writer.deny).toContain(`Bash(gh api graphql*${m}*)`);
+    }
+    expect(ROLE_PROFILES.reviewer.deny).toContain("Bash(gh api*-XPUT*)");
+  });
+
+  test("a read of a file or a ref through gh api is not denied", () => {
+    const denied = ROLE_PROFILES.reviewer.deny.join("\n");
+    expect(denied).not.toContain("/contents");
+    expect(denied).not.toContain("/git/refs");
+  });
+
+  test("reviewer and verifier may write only to scratch with the file tools; the investigator not at all", () => {
+    for (const r of ["reviewer", "verifier"] as const) {
+      expect(ROLE_PROFILES[r].allow).not.toContain("Write");
+      expect(ROLE_PROFILES[r].allow).toContain("Edit(//private/tmp/**)");
+      expect(ROLE_PROFILES[r].deny).toContain("Edit(//Users/**)");
+    }
+    expect(ROLE_PROFILES.writer.allow).toContain("Write");
+  });
+
+  test("a path rule is an Edit(path) one: the session refuses Write(path)", () => {
+    for (const r of WORKER_ROLES) {
+      for (const rule of [...ROLE_PROFILES[r].allow, ...ROLE_PROFILES[r].deny]) expect(rule.startsWith("Write(")).toBe(false);
+    }
+  });
+
+  test("a deny list has no repeats", () => {
+    for (const r of WORKER_ROLES) expect(new Set(ROLE_PROFILES[r].deny).size).toBe(ROLE_PROFILES[r].deny.length);
+  });
+
   test("git -C is never allowed (a wildcard before the subcommand also approves -c options); cd is", () => {
     for (const r of WORKER_ROLES) {
       expect(ROLE_PROFILES[r].allow.filter((a) => a.includes("git -C"))).toEqual([]);

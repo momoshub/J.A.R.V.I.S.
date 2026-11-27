@@ -340,6 +340,10 @@ const main = async () => {
     // A name that matches no server excludes nothing from the workers, and a typo is silent.
     const unknown = unknownMcpServers(createClaudeJsonReader()(), config.workerMcpDeny);
     const roleDeny = parseRoleMcpDeny(config.workerRoleMcpDeny);
+    const roleUnknown = Object.values(roleDeny.deny).flatMap((names) => unknownMcpServers(createClaudeJsonReader()(), names));
+    if (roleUnknown.length > 0) {
+      activity.line(`WARNING: WORKER_ROLE_MCP_DENY names no user-scope MCP server in ~/.claude.json (it excludes nothing): ${[...new Set(roleUnknown)].join(", ")}`);
+    }
     if (roleDeny.unknown.length > 0) {
       activity.line(`WARNING: WORKER_ROLE_MCP_DENY names no worker role (it excludes nothing): ${roleDeny.unknown.join(", ")}`);
     }

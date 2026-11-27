@@ -49,7 +49,7 @@ describe("selfUpdateRules is the whole procedure, from the codebase", () => {
   test("below owner the writer is never an Orca worker", () => {
     expect(agentRules).toContain("never `orca`");
     expect(agentRules).not.toContain("worker-ticket");
-    expect(agentRules).not.toContain("worker-start --run <runId> --spec-file <brief> --task-title <short> --worktree path:$BOT_WORKER_HOME-reviewer --agent claude --model \"$BOT_WORKER_MODEL\"");
+    expect(agentRules).not.toContain("worker-start --run <runId> --spec-file <brief> --task-title <short> --worktree path:$BOT_WORKER_HOME-writer --agent claude --model \"$BOT_WORKER_MODEL\"");
   });
 
   test("docs and tests move with the code, and prompt text goes through the probe gate", () => {

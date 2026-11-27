@@ -139,7 +139,7 @@ const trimFolder = (dir: string, names: readonly string[], role?: WorkerRole): n
   }
   keepOutOfGit(dir);
   const what = [
-    names.length ? `${names.length} MCP server${names.length === 1 ? "" : "s"} excluded` : "",
+    merged.added.length ? `${merged.added.length} MCP server${merged.added.length === 1 ? "" : "s"} excluded` : "",
     role ? `${role} tool rules set` : "",
   ].filter(Boolean).join(", ");
   const settled = role ? `already up to date (${what})` : `already excludes all ${names.length}`;

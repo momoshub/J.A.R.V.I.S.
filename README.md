@@ -462,11 +462,21 @@ run it with the role first and to start the worker in that folder.
 | `verifier` | the same as the reviewer, and no review | run the change in a worktree of its own, comment its verdict |
 | `investigator` | edit or write a file, commit, push, merge, comment, any write to GitHub | read the repository and GitHub |
 
-Deny rules are enforced by the session before a tool runs (checked on Claude Code 2.1.285 against `git push`, `gh pr merge` and a merge through `gh api`, also behind a `GH_TOKEN=$(...)` assignment and through `cd <repo> && git ...`, which is how a worker reaches the repository: `git -C` is not allowed). The allow list is the
-surface the role is meant to use: a command in neither asks for approval, and the
-watch reports a worker parked on one. Rules match command prefixes, so a `bash -c`
-wrapper is not caught: this takes away what a role never needs, it is not a
-sandbox, and the credentials a shell can read are a separate boundary. The two
+Deny rules are enforced by the session before a tool runs, whatever its permission mode (checked on Claude Code 2.1.285 against `git push`, `gh pr merge` and a merge through `gh api`, also behind a `GH_TOKEN=$(...)` assignment and through `cd <repo> && git ...`, which is how a worker reaches the repository: `git -C` is not allowed). The allow list only
+matters in a permission mode that asks: there a command in neither list asks for
+approval and the watch reports the worker parked on it. Orca launches workers
+with prompts off, where the allow list changes nothing and the deny list is the
+whole boundary. Rules match command prefixes (also behind a `VAR=value`
+assignment; `git -c ...` and `git --...` are denied outright for the read-only
+roles, and `gh api graphql` too), so a `bash -c` or `env git ...` wrapper, a shell
+redirect (`> file`, `tee`, `sed -i`) or a GraphQL mutation read from a file is not
+caught: the investigator has no write tool, but it is not stopped from a
+redirect, and a reviewer or verifier may use the file tools only for scratch
+folders (`/tmp`, `/private/tmp`, `/var/folders`), not under a home folder. The
+writer can still push to any branch it can reach: keeping `main` closed to it is
+branch protection's job, not this profile's. This takes away what a role never
+needs, it is not a sandbox, and the credentials a shell can read are a separate
+boundary. The two
 lists in a role's folder are replaced on every run (a rule dropped from a profile
 is dropped there), other settings in the file stay. Change a role's profile in
 `src/domain/workerRoles.ts`.

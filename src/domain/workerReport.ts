@@ -142,35 +142,29 @@ export const legacyVerdict = (text: string): "clean" | "changes" | "verified" | 
 
 /**
  * The report in whatever a worker left, a report text or the JSON of `worker-show --full`
- * (it holds the `worker_done` body somewhere; every string in it is searched). The first
- * string holding a valid block wins; when none is valid, the first problem found.
+ * (it holds the `worker_done` body somewhere; every string in it is searched). The LAST
+ * valid block in the record wins, like the last block of one text: whatever the record
+ * quotes before the worker's own end (its brief, a template) must not be read as its report.
+ * When none is valid, the first problem found.
  */
 export const findWorkerReport = (value: unknown): ParseResult => {
   let firstError: string | undefined;
-  const walk = (v: unknown, depth: number): WorkerReport | undefined => {
-    if (depth > 12) return undefined;
+  let last: WorkerReport | undefined;
+  const walk = (v: unknown, depth: number): void => {
+    if (depth > 12) return;
     if (typeof v === "string") {
-      if (!v.includes("```" + WORKER_REPORT_FENCE)) return undefined;
+      if (!v.includes("```" + WORKER_REPORT_FENCE)) return;
       const r = parseWorkerReport(v);
-      if (r.ok) return r.report;
-      firstError ??= r.error;
-      return undefined;
-    }
-    if (Array.isArray(v)) {
-      for (const x of v) {
-        const r = walk(x, depth + 1);
-        if (r) return r;
-      }
+      if (r.ok) last = r.report;
+      else firstError ??= r.error;
+    } else if (Array.isArray(v)) {
+      for (const x of v) walk(x, depth + 1);
     } else if (isObj(v)) {
-      for (const x of Object.values(v)) {
-        const r = walk(x, depth + 1);
-        if (r) return r;
-      }
+      for (const x of Object.values(v)) walk(x, depth + 1);
     }
-    return undefined;
   };
-  const report = walk(value, 0);
-  return report ? { ok: true, report } : { ok: false, error: firstError ?? `no \`${WORKER_REPORT_FENCE}\` block found` };
+  walk(value, 0);
+  return last ? { ok: true, report: last } : { ok: false, error: firstError ?? `no \`${WORKER_REPORT_FENCE}\` block found` };
 };
 
 /** The line `bin/orca-worker-wait.ts` prints for a worker that reported, which the hand-back reads back. */
@@ -179,10 +173,10 @@ export const workerReportLine = (dispatchId: string, report: WorkerReport): stri
 const REPORT_LINE = /^orca worker (ctx_[A-Za-z0-9_-]+) report (\{.*\})$/m;
 export const REPORT_LINE_PREFIX = /^orca worker ctx_[A-Za-z0-9_-]+ report \{/;
 
-/** Read a report line back out of a check's output (validated again: the output is only text). */
-export const parseWorkerReportLine = (output: string): WorkerReport | undefined => {
+/** Read a report line back out of a check's output (validated again: the output is only text), for `dispatchId` when given. */
+export const parseWorkerReportLine = (output: string, dispatchId?: string): WorkerReport | undefined => {
   const m = output.match(REPORT_LINE);
-  if (!m) return undefined;
+  if (!m || (dispatchId !== undefined && m[1] !== dispatchId)) return undefined;
   try {
     const r = validateWorkerReport(JSON.parse(m[2] ?? ""));
     return r.ok ? r.report : undefined;
@@ -199,7 +193,7 @@ export const reportSummary = (r: WorkerReport): string => {
     `${r.role} ${r.status}${r.pr !== null ? ` on PR #${r.pr}` : ""}${r.head_sha ? ` at ${r.head_sha.slice(0, 7)}` : ""}, verdict ${r.verdict}`,
     `${blockers.length} blocker${blockers.length === 1 ? "" : "s"}, ${r.findings.length - blockers.length} nit${r.findings.length - blockers.length === 1 ? "" : "s"}`,
   ];
-  for (const f of blockers.slice(0, 5)) parts.push(`blocker: ${clip(f.summary, 160)}${f.file ? ` (${f.file}${f.line ? `:${f.line}` : ""})` : ""}`);
+  for (const f of blockers.slice(0, 5)) parts.push(`blocker: ${clip(f.summary, 160)}${f.file ? ` (${clip(f.file, 120)}${f.line ? `:${f.line}` : ""})` : ""}`);
   if (r.owner_actions.length) parts.push(`owner actions: ${r.owner_actions.slice(0, 5).map((a) => clip(a, 200)).join(" | ")}`);
   return parts.join("; ");
 };
