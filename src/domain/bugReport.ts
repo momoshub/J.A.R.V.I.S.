@@ -18,6 +18,13 @@ export const BUG_REJECT_ACTION = `${BUG_REPORT_ACTION_PREFIX}reject`;
 
 export type BugReportState = "pending" | "approved" | "rejected";
 
+/** `decided_by` of a report the coordinator's code route approved. */
+export const DECIDED_BY_COORDINATOR = "coordinator";
+/** `decided_by` of a report the agent approved in a turn the owner's own message started. */
+export const DECIDED_BY_AGENT = "agent";
+/** Approvals made for the owner rather than by them: the owner's Reject still stops them. */
+export const isDelegatedApproval = (decidedBy: string): boolean => decidedBy === DECIDED_BY_COORDINATOR || decidedBy === DECIDED_BY_AGENT;
+
 export const MAX_ISSUE = 200;
 export const MAX_SUMMARY = 500;
 export const MAX_PLAN = 700;
@@ -202,10 +209,36 @@ export const approvalText = (id: number, i: BugReportInput): string =>
 export const settledText = (id: number, i: BugReportInput, kind: "approved" | "rejected", by: string): string =>
   `🐞 bug #${id} - ${kind === "approved" ? "approved by" : "rejected by"} <@${by}>${kind === "approved" ? ", fixing it" : ", leaving it"}\n*Issue:* ${i.issue}\n<${i.thread}|the thread>`;
 
+/** The settled notice of a report the agent decided in the owner's own turn: says so, never names the owner as the one who pressed. */
+export const settledByAgentText = (id: number, i: BugReportInput, kind: "approved" | "rejected"): string =>
+  `🐞 bug #${id} - ${kind} by me, in a turn your own message started\n*Issue:* ${i.issue}\n<${i.thread}|the thread>`;
+
 /** What the fix turn the owner's Approve press starts is told to do. */
 export const approvedBrief = (id: number, i: BugReportInput): string =>
   [
     `Bug #${id} is approved by the owner (they pressed Approve): this is the owner asking for the fix, so fix it now, in the usual way (a worktree and a PR), and tell the owner here when it is up.`,
+    `thread: ${i.thread}`,
+    `issue: ${i.issue}`,
+    ...(i.summary ? [`cause: ${i.summary}`] : []),
+    `plan: ${i.plan}`,
+  ].join("\n");
+
+/**
+ * The notice (and audit line) of a report the agent approved in the owner's own turn: what, from which thread, and the one
+ * button left to take it back. `link` is the thread the approving turn ran in.
+ */
+export const approvedByAgentText = (id: number, i: BugReportInput, link: string | undefined, fixing: "started" | "this-turn"): string =>
+  [
+    `🐞 bug #${id} - :warning: I approved it myself, in a turn your own message started${link ? ` (<${link}|that thread>)` : ""}, ${fixing === "started" ? "fixing it in a new turn" : "fixing it in that turn"}`,
+    `*Issue:* ${i.issue}`,
+    `<${i.thread}|the thread the bug is from>`,
+    "Press Reject and the fix is told to stop and undo.",
+  ].join("\n");
+
+/** What the fix turn an agent approval starts is told to do (the same ask as an owner's Approve). */
+export const approvedByAgentBrief = (id: number, i: BugReportInput): string =>
+  [
+    `Bug #${id} is approved by the agent in a turn the owner's own message started, and the owner can still reject it: this is the owner's ask for the fix, so fix it now, in the usual way (a worktree and a PR), and tell the owner here when it is up.`,
     `thread: ${i.thread}`,
     `issue: ${i.issue}`,
     ...(i.summary ? [`cause: ${i.summary}`] : []),
@@ -233,4 +266,4 @@ export const approvedByCoordinatorBrief = (id: number, i: BugReportInput, reason
 
 /** Told to the fix turn when the owner presses Reject on a report the coordinator approved. */
 export const stoppedBrief = (id: number): string =>
-  `Bug #${id} was approved by the coordinator and the owner then rejected it (they pressed Reject): stop. Change nothing more, do not merge or restart anything, close any PR you opened for it unmerged, and say so.`;
+  `Bug #${id} was approved for the owner (by the coordinator or by me in their turn) and the owner then rejected it (they pressed Reject): stop. Change nothing more, do not merge or restart anything, close any PR you opened for it unmerged, and say so.`;

@@ -178,14 +178,71 @@ describe("only the owner can decide", () => {
     expect(d.learnings!.pending()[0]?.content).toBe("approve of anything that ships behind a flag");
   });
 
-  test("the owner's own turn cannot approve: that is a typed line or a button, never something it runs for itself", async () => {
+  const ownerTurnRun = (d: CommandDeps, who: ReturnType<typeof actor>, line: string, ownerBit: boolean) =>
+    dispatchCommand(d, who, "C1", line, { prefix: "X/jv", fromBrainRun: true, threadTs: "1700000000.000100", ...(ownerBit ? { ownerTurn: { named: [] } } : {}) });
+
+  test("a turn the owner's own message started approves, and the owner's DM gets the audit line with how to take it back", async () => {
     const d = build();
     await run(d, MEMBER, `learn ${FACT}`);
     const { id } = d.learnings!.pending()[0]!;
-    expect(await run(d, actor(), `learn approve ${id}`, true)).toContain("never something I run for myself");
-    expect(await run(d, actor(), `learn reject ${id}`, true)).toContain("never something I run for myself");
+    slackCalls.posts.length = 0;
+    const out = await ownerTurnRun(d, actor(), `learn approve ${id}`, true);
+    expect(out).toContain("by me in the owner's own turn");
+    expect(d.learnings!.get(id)?.status).toBe("active");
+    expect(promptOf(d)).toContain(FACT);
+    const audit = slackCalls.posts.find((p) => p.channel === OWNER && p.text.includes("I approved learning"));
+    expect(audit?.text).toContain(FACT);
+    expect(audit?.text).toContain(`unlearn ${id}`);
+    // the notice itself says the agent decided, and keeps Reject as the way back
+    expect(slackCalls.updated.at(-1)?.text).toContain("by me, in a turn your own message started");
+    expect(slackCalls.updated.at(-1)?.buttons).toContain(`${LEARNING_REJECT_ACTION}:Reject`);
+  });
+
+  test("the owner's turn can reject too, and an approval can name the scope", async () => {
+    const d = build();
+    await run(d, MEMBER, `learn ${FACT}`);
+    const { id } = d.learnings!.pending()[0]!;
+    expect(await ownerTurnRun(d, actor(), `learn reject ${id}`, true)).toContain("Rejected");
+    expect(d.learnings!.get(id)?.status).toBe("rejected");
+  });
+
+  test("no audit DM possible means no approval from a turn", async () => {
+    const d = build();
+    await run(d, MEMBER, `learn ${FACT}`);
+    const { id } = d.learnings!.pending()[0]!;
+    const blind: CommandDeps = { ...d, learningApproval: { ...d.learningApproval!, slack: undefined } };
+    expect(await ownerTurnRun(blind, actor(), `learn approve ${id}`, true)).toContain("did not approve");
+    expect(d.learnings!.get(id)?.status).toBe("pending");
+  });
+
+  test("a turn the owner's message did not start (watch, worker, tell, loop) is refused, whoever it runs as", async () => {
+    const d = build();
+    await run(d, MEMBER, `learn ${FACT}`);
+    const { id } = d.learnings!.pending()[0]!;
+    slackCalls.posts.length = 0;
+    expect(await ownerTurnRun(d, actor(), `learn approve ${id}`, false)).toContain("not started by one");
+    expect(await ownerTurnRun(d, actor(), `learn reject ${id}`, false)).toContain("not started by one");
     expect(d.learnings!.get(id)?.status).toBe("pending");
     expect(promptOf(d)).not.toContain(FACT);
+    expect(slackCalls.posts).toHaveLength(0);
+  });
+
+  test("a non-owner turn is refused, even one that somehow carries the owner bit", async () => {
+    const d = build();
+    await run(d, MEMBER, `learn ${FACT}`);
+    const { id } = d.learnings!.pending()[0]!;
+    expect(await ownerTurnRun(d, ADMIN, `learn approve ${id}`, true)).toContain("Only the owner");
+    expect(await ownerTurnRun(d, MEMBER, `learn approve ${id}`, true)).toContain("Only the owner");
+    expect(d.learnings!.get(id)?.status).toBe("pending");
+  });
+
+  test("the owner's typed line is unchanged: approves with no audit DM", async () => {
+    const d = build();
+    await run(d, MEMBER, `learn ${FACT}`);
+    const { id } = d.learnings!.pending()[0]!;
+    slackCalls.posts.length = 0;
+    expect(await run(d, actor(), `learn approve ${id}`)).toContain(`Approved #${id}`);
+    expect(slackCalls.posts.some((p) => p.text.includes("I approved learning"))).toBe(false);
   });
 
   test("decideLearning does not apply a decision to an unknown row or one already settled", async () => {
