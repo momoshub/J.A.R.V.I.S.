@@ -81,6 +81,7 @@ describe("selfUpdateRules is the whole procedure, from the codebase", () => {
     expect(rules).toContain("bun bin/verify-brief.ts agent");
     expect(rules).toContain('eval "$(bun bin/verify-brief.ts agent');
     expect(rules).toContain('--agent "$VERIFIER_AGENT" ${VERIFIER_MODEL:+--model "$VERIFIER_MODEL"}');
+    expect(rules).toContain("stop if `$VERIFIER_AGENT` is empty");
     // an Agent tool verifier has no Orca agent to pick, but still gets the brief
     expect(agentRules).toContain("bun bin/verify-brief.ts brief --pr <pr>");
     expect(agentRules).not.toContain("VERIFIER_AGENT");
