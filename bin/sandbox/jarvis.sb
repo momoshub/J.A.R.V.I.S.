@@ -44,6 +44,8 @@
 
 ;; --- secrets nobody in the sandbox may read ---------------------------------
 (deny file-read*
+  (subpath "@HOME@/.jarvis/data")
+  (subpath "@HOME@/.jarvis/keys")
   (regex #"^@REPO_RE@/\.env")
   (subpath "@HOME@/.config/gh")
   (subpath "@HOME@/.config/jarvis")
@@ -130,8 +132,17 @@
   (subpath "@HOME@/.claude/plugins")
   ;; programs the wrapper and the bot run unsandboxed (bun mints the session, gh answers the proxy)
   (subpath "@HOME@/.bun/bin")
-  (subpath "/opt/homebrew/bin")
-  (subpath "/usr/local/bin")
+  ;; Homebrew as a whole: /opt/homebrew/bin is a symlink farm, the programs (bun, gh) live in Cellar
+  (subpath "/opt/homebrew")
+  (subpath "/usr/local")
+  ;; Orca's agent hooks and status line, which the owner's own Claude settings run
+  (subpath "@HOME@/.orca")
+  ;; every entry directly in the home that starts with a dot: dotfiles the shell, git, editors and Claude read at start-up
+  ;; (.zshrc and what it sources, .p10k.zsh, .gitconfig, .claude.json, ...), and renaming a dot folder (~/.bun) to swap its contents
+  (regex #"^@HOME_RE@/\.[^/]*$")
+  (regex #"^@HOME_RE@/\.cache/p10k-")
+  ;; the bot's own state and scripts (launchd runs ~/.jarvis/bin/*.sh); the worker home is allowed back by the wrapper
+  (subpath "@HOME@/.jarvis")
   ;; Orca's saved settings, where the per-agent launch command (this wrapper) is stored: covered above
   ;; the bot's own checkout (see the blanket rule above)
   (subpath "@REPO@/bin")

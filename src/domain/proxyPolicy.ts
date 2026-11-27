@@ -53,7 +53,7 @@ const VALUE_FLAGS = new Set([
 /** Flags with no value a proxied `gh` command may carry. Anything not here or in VALUE_FLAGS is refused: an allowlist, not a denylist. */
 const GH_BOOLEAN_FLAGS = new Set([
   "--draft", "--comment", "--comments", "--approve", "--request-changes", "--paginate", "--slurp", "--include", "--silent", "--fill", "--all", "--watch", "--exit-status", "--fail-fast",
-  "--verbose", "--patch", "--name-only", "--log", "--log-failed", "--no-maintainer-edit", "--required", "--help", "-h",
+  "-c", "--verbose", "--patch", "--name-only", "--log", "--log-failed", "--no-maintainer-edit", "--required", "--help", "-h",
 ]);
 
 type Parsed = { positional: string[]; flags: Map<string, string | true>; /** Flags (by canonical name) given more than once. */ repeated: string[] };
@@ -170,6 +170,13 @@ export const classifyGh = (argv: readonly string[], repoHint?: string): Classifi
   const write = GH_WRITE[group]?.[verb];
   if (!(reads?.includes(verb) || write)) return fail(`gh ${group} ${verb} is not available through the proxy`);
 
+  // The same letter means different things in different gh commands (`pr review -a` approves, `pr list -a` is an assignee), so a
+  // write takes a short flag only from the few that mean the same everywhere; every other option is spelled out.
+  if (write) {
+    for (const a of rest) {
+      if (/^-[A-Za-z]$/.test(a) && !["-R", "-b", "-F", "-t", "-B", "-H", "-c"].includes(a)) return fail(`${a} is not accepted on a write: spell the option out (--assignee, --approve, ...)`);
+    }
+  }
   if (group === "pr" && verb === "review" && hasFlag(p, "--approve", "--request-changes")) {
     return fail("a proxied review is a comment only: approving or requesting changes would be recorded under the host's own account, not the app's");
   }

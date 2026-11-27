@@ -6,7 +6,8 @@
 # This is what turns "prompt rules are the only thing in the way" into an OS
 # boundary: the command, and everything it starts, cannot read the keychain, gh's
 # login, the GitHub App key, the bot's .env and databases or the Orca runtime
-# token, cannot reach the ssh agent, and cannot start anything outside the sandbox
+# token, cannot reach the ssh agent, and cannot start anything outside the sandbox through the paths the
+# profile names (see its header and the limits in CLAUDE.md: it is a denylist outside the checkout)
 # (launchd, LaunchServices, Apple Events, cron/at, shell startup files). What it
 # still needs from those credentials it asks the bot for, over loopback, with its
 # ticket: bin/sandbox-shims/{gh,orca,git-credential-jarvis} are first on its PATH.
@@ -80,6 +81,30 @@ profile=$(sed \
   -e "s|@HOME@|$HOME_DIR|g" \
   -e "s|@REPO@|$REPO|g" \
   "$PROFILE_TEMPLATE") || die "could not render the profile" 78
+# --- the paths this deployment really uses: databases and the worker home -----------------------------
+# .env may put the databases anywhere (here: ~/.jarvis/data); deny exactly the files the bot opens, with their -wal/-shm.
+env_value() { # <NAME>: the last NAME=value of the checkout's .env, quotes stripped
+  [ -r "$REPO/.env" ] || return 0
+  sed -n "s/^$1=//p" "$REPO/.env" | tail -1 | sed -e 's/^["'"'"']//' -e 's/["'"'"']$//'
+}
+abs_path() { # <value> <default>: ~ and relative paths the way src/config/env.ts reads them
+  local v=${1:-$2}
+  case "$v" in
+    "~/"*) v="$HOME_DIR/${v#\~/}" ;;
+    /*) ;;
+    *) v="$REPO/$v" ;;
+  esac
+  printf '%s' "$v"
+}
+db_rules=";; --- the databases this deployment names in .env ---"
+for pair in DATABASE_PATH:data/bot.db TOKEN_DATABASE_PATH:data/tokens.db INBOX_DATABASE_PATH:data/inbox.db; do
+  dbp=$(abs_path "$(env_value "${pair%%:*}")" "${pair#*:}")
+  safe_path "$dbp" "${pair%%:*}"
+  db_rules="$db_rules"$'\n'"(deny file-read* file-write* (regex #\"^$(re_escape "$dbp")\"))"
+done
+worker_home=$(abs_path "$(env_value WORKER_HOME_DIR)" "$HOME_DIR/.jarvis/worker-home")
+safe_path "$worker_home" "WORKER_HOME_DIR"
+profile="$profile"$'\n'"$db_rules"$'\n'";; the worker home (a worker's own working folder) is writable again"$'\n'"(allow file-write* (subpath \"$worker_home\"))"
 # Renaming a parent moves everything below it out from under its deny: no ancestor of the checkout or the home
 # (up to /) may be renamed or deleted.
 anc_rules=";; --- no renaming the folders above the checkout and the home ---"

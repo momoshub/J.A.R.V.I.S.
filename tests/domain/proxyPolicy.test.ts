@@ -238,3 +238,18 @@ describe("classifyGh: what the second review found", () => {
     expect(line("pr list --search fix").ok).toBe(true);
   });
 });
+
+describe("classifyGh: what the third review found", () => {
+  const no = (l: string): string => {
+    const c = classifyGh(l.split(" "), "o/r");
+    return c.ok ? "ALLOWED" : c.error;
+  };
+  test("gh's short letters mean different things per command: `pr review -a` approves and must not pass", () => {
+    expect(no("pr review -a 1")).toContain("spell the option out");
+    expect(no("pr review 1 -r -b x")).not.toBe("ALLOWED");
+    expect(no("pr review 1 --approve")).toContain("comment only");
+    expect(no("pr comment 1 -e")).toContain("spell the option out");
+    expect(no("pr review 1 -c -b fine")).toBe("ALLOWED");
+    expect(no("pr list -a me")).toBe("ALLOWED");
+  });
+});

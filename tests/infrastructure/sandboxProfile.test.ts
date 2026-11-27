@@ -23,6 +23,9 @@ let home = "";
 let repo = "";
 let work = "";
 
+/** The fake checkout's .env: a secret, and databases and a worker home somewhere other than the defaults. */
+const envText = (): string => `SLACK_BOT_TOKEN=SECRET\nDATABASE_PATH=~/.jarvis/data/bot.db\nTOKEN_DATABASE_PATH=${join(base, "elsewhere", "tok.db")}\nWORKER_HOME_DIR=~/.jarvis/wh\n`;
+
 const write = (p: string, s: string): void => {
   mkdirSync(join(p, ".."), { recursive: true });
   writeFileSync(p, s);
@@ -46,7 +49,7 @@ beforeAll(() => {
   write(join(home, "Library/Application Support/orca/orca-runtime.json"), '{"token":"T"}\n');
   write(join(home, ".zshrc"), "# rc\n");
   write(join(home, "Library/LaunchAgents/keep"), "");
-  write(join(repo, ".env"), "SLACK_BOT_TOKEN=SECRET\n");
+  write(join(repo, ".env"), envText());
   write(join(repo, "data/jarvis.db"), "DB\n");
   write(join(repo, "data/jarvis.db-wal"), "WAL\n");
   write(join(repo, "bin/tool.sh"), "#!/bin/sh\n");
@@ -61,6 +64,17 @@ beforeAll(() => {
   write(join(home, ".claude/plugins/p/hook.sh"), "#!/bin/sh\n");
   write(join(home, ".config/other/keep"), "");
   write(join(repo, ".env.local"), "X=1\n");
+  write(join(repo, ".env"), envText());
+  write(join(home, ".jarvis/data/bot.db"), "DB\n");
+  write(join(home, ".jarvis/data/bot.db-wal"), "WAL\n");
+  write(join(base, "elsewhere", "tok.db"), "TOK\n");
+  write(join(home, ".jarvis/keys/backup-age.key"), "AGE\n");
+  write(join(home, ".jarvis/bin/offsite-backup.sh"), "#!/bin/sh\n");
+  write(join(home, ".jarvis/briefs/brief.md"), "brief\n");
+  write(join(home, ".jarvis/wh/note"), "mine\n");
+  write(join(home, ".orca/agent-hooks/claude-hook.sh"), "#!/bin/sh\n");
+  write(join(home, ".p10k.zsh"), "# p10k\n");
+  write(join(home, ".bun/bin/bun"), "bun\n");
   write(join(repo, "tsconfig.json"), "{}\n");
   write(join(repo, ".git/HEAD"), "ref: refs/heads/main\n");
   write(join(repo, ".git/objects/keep"), "");
@@ -153,7 +167,7 @@ describe("sandbox profile (macOS)", () => {
   describe("round 1 of the review: renames, wider writes, keystrokes", () => {
     t("renaming a protected file or folder away does not open it (mv, then cat)", () => {
       closed(`mv '${repo}/.env' '${work}/e' && cat '${work}/e' >/dev/null`);
-      write(join(repo, ".env"), "SLACK_BOT_TOKEN=SECRET\n");
+      write(join(repo, ".env"), envText());
       closed(`mv '${repo}/data/jarvis.db' '${work}/d' && cat '${work}/d' >/dev/null`);
       write(join(repo, "data/jarvis.db"), "DB\n");
       closed(`mv "$HOME/.aws" '${work}/aws' && cat '${work}/aws/credentials' >/dev/null`);
@@ -230,6 +244,25 @@ describe("sandbox profile (macOS)", () => {
       } finally {
         server.kill();
       }
+    });
+    t("round 3: the databases .env really names are unreadable and unwritable, wherever they are (-wal too)", () => {
+      closed(`cat "$HOME/.jarvis/data/bot.db" >/dev/null`);
+      closed(`cat "$HOME/.jarvis/data/bot.db-wal" >/dev/null`);
+      closed(`echo x >> "$HOME/.jarvis/data/bot.db"`);
+      closed(`cat '${join(base, "elsewhere", "tok.db")}' >/dev/null`);
+      closed(`cat "$HOME/.jarvis/keys/backup-age.key" >/dev/null`);
+    });
+    t("round 3: what launchd and the owner's sessions run later is not writable (~/.jarvis/bin, ~/.orca hooks, Homebrew, dotfiles)", () => {
+      closed(`echo x >> "$HOME/.jarvis/bin/offsite-backup.sh"`);
+      closed(`echo x >> "$HOME/.orca/agent-hooks/claude-hook.sh"`);
+      closed(`echo x >> "$HOME/.p10k.zsh"`);
+      closed(`touch "$HOME/.new-dotfile-sourced-by-something"`);
+      closed(`mv "$HOME/.bun" "$HOME/.bunx" && echo evil > "$HOME/.bunx/bin/bun"`);
+      Bun.spawnSync({ cmd: ["mv", join(home, ".bunx"), join(home, ".bun")] });
+    });
+    t("round 3: the briefs stay readable and the worker home stays writable", () => {
+      expect(boxed(`cat "$HOME/.jarvis/briefs/brief.md"`)).toEqual({ code: 0, out: "brief\n" });
+      expect(boxed(`echo more >> "$HOME/.jarvis/wh/note" && cat "$HOME/.jarvis/wh/note"`)).toEqual({ code: 0, out: "mine\nmore\n" });
     });
     t("TIOCSTI (typing into the terminal that started us) is refused", () => {
       const probe = join(work, "tiocsti.py");
