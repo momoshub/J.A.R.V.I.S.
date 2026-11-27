@@ -2,6 +2,7 @@
 
 import { BOMB_SIZE, DEFAULT_CATEGORY, parseCategories, pickBomb, renderCategories } from "../../domain/emoji.ts";
 import { parseMessageLink, parsePostTarget } from "../../domain/slackLinks.ts";
+import { UNSIGNED } from "../../domain/messageFooter.ts";
 import { runWorkflowTurn, WORKFLOW_MIN_ROLE, type WorkflowDeps } from "../workflow.ts";
 import { afterWorkflowTurn, steerWorker } from "../workflowContinue.ts";
 import { allowanceFor, limitFor, PAL_WINDOW_MS, setLimit, type CommandLimitDeps } from "../commandLimits.ts";
@@ -380,8 +381,8 @@ Leaves a short note FOR another thread: what you posted there, why, the facts it
 
       let posted: Awaited<ReturnType<typeof deps.slack.post>>;
       try {
-        // Signed as plain Jarvis: the footer is visible in the target channel, and who asked is internal (audit log, brief).
-        posted = await deps.slack.post(channel, text, into, undefined);
+        // No footer: the message goes into another thread or channel, not the session's own, and who asked is internal (audit log, brief).
+        posted = await deps.slack.post(channel, text, into, UNSIGNED);
       } catch (e) {
         const err = e instanceof Error ? e.message : String(e);
         if (/not_in_channel|channel_not_found/.test(err)) return "I am not in that channel (or it does not exist), so I could not post. Invite me there first.";

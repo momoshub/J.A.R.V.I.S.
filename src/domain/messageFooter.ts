@@ -1,29 +1,27 @@
 /**
- * The grey line under every message this process writes: who wrote it, and
- * when it last changed.
+ * The grey line under a message this process writes into its own thread: who
+ * wrote it, what started the turn, and what the turn cost.
  *
  * Asked for by Kai after a thread filled with messages from Jarvis, the inner
  * child, a watch firing and a reminder, all under the same bot name - there was
- * no telling which part of the process had said what. So every message carries
- * a signature, and since Jarvis edits its own messages later (a drain notice
- * counted down, a question settled) it also says when that last happened.
+ * no telling which part of the process had said what. So a message in the
+ * session's own thread carries a signature.
  *
- * One line: `Jarvis · triggered by <kind> · <usage, when a turn reported it>`, plus ` · updated <time>`
- * only once the message has been edited after it was first sent (Kai: a fresh
- * post saying "updated" is noise). `triggered by <kind>` (nudge, tell, watch,
+ * One line: `Jarvis · triggered by <kind> · <usage, when a turn reported it>`.
+ * There is no "updated <time>" stamp: an edit keeps or rebuilds the footer as
+ * it was (Kai, 2026-11-27). `triggered by <kind>` (nudge, tell, watch,
  * loop, orca) appears only when one of the bot's own senders started the turn
  * and named itself (`InboundMessage.trigger`, set by `runTurn` / the drift
  * steer / the loop runner's DM) - never guessed from the text, since a person
- * can type a look-alike opening. A chat turn's footer is unchanged. It sits
- * right after the signature and is part of the line, so a restamp keeps it.
- * Tidying a streamed reply when its turn finishes is still the first send, so it carries no stamp either.
- * The time is a Slack date token, so each reader sees it in their own timezone;
- * the fallback (for clients that cannot render it) is the host clock with its
- * offset.
+ * can type a look-alike opening. A chat turn's footer is unchanged.
  *
- * The footer is a context block with a fixed `block_id`, which is how an edit
- * finds it again: restamping replaces only the time and keeps the signature,
- * the usage and any step summary sitting in the same block.
+ * A message that goes anywhere but the turn's own thread (the `post` command,
+ * a console post or edit, a write the model makes into another thread through
+ * the Slack proxy) gets no footer at all: `by` of `UNSIGNED` on
+ * `SlackAdminPort.post` / `update` leaves it off.
+ *
+ * The footer is a context block with a fixed `block_id`, which is how a rebuild
+ * replaces it rather than stacking a second one.
  */
 import { type Block, MAX_BLOCKS } from "./blockKit.ts";
 import type { InternalKind } from "./internalMessages.ts";
@@ -48,34 +46,14 @@ export const SIGNATURES = {
   stuckSweeper: "stuck-work sweeper",
 } as const;
 
-/** Marks the footer's context block, so an edit can find and restamp it. */
+/** `by` for a post or edit that is not in the turn's own thread: no footer at all. */
+export const UNSIGNED = null;
+
+/** Marks the footer's context block, so a rebuild finds and replaces it. */
 export const FOOTER_BLOCK_ID = "jv_footer";
-
-const pad = (n: number): string => String(n).padStart(2, "0");
-
-/** 420 -> "+07", -330 -> "-05:30", 0 -> "+00". Minutes east of UTC. */
-export const offsetLabel = (offsetMin: number): string => {
-  const sign = offsetMin < 0 ? "-" : "+";
-  const abs = Math.abs(Math.round(offsetMin));
-  const mins = abs % 60;
-  return `${sign}${pad(Math.floor(abs / 60))}${mins ? `:${pad(mins)}` : ""}`;
-};
 
 /** The host's offset east of UTC at `ms`, in minutes (DST-aware). */
 export const hostOffsetMin = (ms: number): number => -new Date(ms).getTimezoneOffset();
-
-/** "2026-11-08 14:32 +07": wall-clock time at the given offset. */
-export const clockFallback = (ms: number, offsetMin: number): string => {
-  const d = new Date(ms + offsetMin * 60_000);
-  const date = `${d.getUTCFullYear()}-${pad(d.getUTCMonth() + 1)}-${pad(d.getUTCDate())}`;
-  return `${date} ${pad(d.getUTCHours())}:${pad(d.getUTCMinutes())} ${offsetLabel(offsetMin)}`;
-};
-
-/** `updated <!date^1794123692^{date_short_pretty} {time}|2026-11-08 14:32 +07>`. */
-export const updatedStamp = (ms: number, offsetMin: number = hostOffsetMin(ms)): string =>
-  `updated <!date^${Math.floor(ms / 1000)}^{date_short_pretty} {time}|${clockFallback(ms, offsetMin)}>`;
-
-const STAMP = /updated <!date\^\d+\^[^|>]*\|[^>]*>/;
 
 /**
  * `triggered by watch`: what started a turn that no person chatted. A brief
@@ -86,14 +64,10 @@ export const triggerLabel = (kind?: InternalKind): string | undefined =>
 
 /**
  * The whole line: signature, then what triggered the turn when it was not a
- * person chatting, then what the turn reported (model, tokens, cost, time),
- * then - for an edit only, so only when `editedMs` is given - when it was last
- * written.
+ * person chatting, then what the turn reported (model, tokens, cost, time).
  */
-export const footerLine = (by: string, editedMs?: number, detail?: string, offsetMin?: number, trigger?: InternalKind): string =>
-  [by.trim() || SIGNATURES.jarvis, triggerLabel(trigger), detail?.trim(), editedMs === undefined ? undefined : updatedStamp(editedMs, offsetMin)]
-    .filter(Boolean)
-    .join(" · ");
+export const footerLine = (by: string, detail?: string, trigger?: InternalKind): string =>
+  [by.trim() || SIGNATURES.jarvis, triggerLabel(trigger), detail?.trim()].filter(Boolean).join(" · ");
 
 /** The footer as its own context block. */
 export const footerBlock = (line: string): Block => ({
@@ -110,11 +84,12 @@ const isFooter = (b: AnyBlock): boolean => b.block_id === FOOTER_BLOCK_ID;
 /**
  * `blocks` with the footer at the end. A footer already there is replaced, not
  * stacked, and the content is clipped so the footer still fits Slack's 50.
+ * No `line` (an unsigned message): no footer, and a stale one is dropped too.
  */
-export const withFooter = <T extends AnyBlock>(blocks: readonly T[], line: string): (T | Block)[] => [
-  ...blocks.filter((b) => !isFooter(b)).slice(0, MAX_BLOCKS - 1),
-  footerBlock(line),
-];
+export const withFooter = <T extends AnyBlock>(blocks: readonly T[], line?: string): (T | Block)[] =>
+  line === undefined
+    ? blocks.filter((b) => !isFooter(b)).slice(0, MAX_BLOCKS)
+    : [...blocks.filter((b) => !isFooter(b)).slice(0, MAX_BLOCKS - 1), footerBlock(line)];
 
 const FENCE = /^\s*```/;
 const FENCE_ROOM = 8; // "```\n" reopened at the top of a chunk + "\n```" closing it
@@ -177,7 +152,7 @@ const section = (chunk: string): Block => ({ type: "section", text: { type: "mrk
  * under Slack's 3000) rather than being refused whole. A post whose markdown
  * block Slack refuses can fall back to `signedSections`.
  */
-export const signedText = (mrkdwn: string, line: string): { text: string; blocks: Block[] } => {
+export const signedText = (mrkdwn: string, line?: string): { text: string; blocks: Block[] } => {
   const [head, ...rest] = sectionChunks(mrkdwn, MARKDOWN_LIMIT);
   return {
     text: mrkdwn || " ",
@@ -189,40 +164,7 @@ export const signedText = (mrkdwn: string, line: string): { text: string; blocks
 };
 
 /** The same post as sections only (one per `sectionChunks` chunk), then the footer. */
-export const signedSections = (mrkdwn: string, line: string): { text: string; blocks: Block[] } => ({
+export const signedSections = (mrkdwn: string, line?: string): { text: string; blocks: Block[] } => ({
   text: mrkdwn || " ",
   blocks: withFooter(sectionChunks(mrkdwn).map(section), line),
 });
-
-/**
- * The same message after an edit at `ms`: the footer's time moves on and
- * everything else in it stays. A message with no footer yet (one the model
- * posted itself) gets one signed `by`.
- */
-export const restamp = <T extends AnyBlock>(
-  blocks: readonly T[],
-  by: string,
-  ms: number,
-  offsetMin?: number,
-): (T | Block)[] => {
-  const at = blocks.findIndex(isFooter);
-  // A message already at Slack's 50 keeps every block it has: losing the
-  // settled note or the buttons is worse than a missing footer.
-  if (at < 0 && blocks.length >= MAX_BLOCKS) return [...blocks];
-  if (at < 0) return withFooter(blocks, footerLine(by, ms, undefined, offsetMin));
-  const footer = blocks[at]!;
-  const elements = Array.isArray(footer.elements) ? (footer.elements as Record<string, unknown>[]) : [];
-  const last = elements.at(-1);
-  const text = typeof last?.text === "string" ? last.text : "";
-  const stamp = updatedStamp(ms, offsetMin);
-  const next = !text.trim()
-    ? footerLine(by, ms, undefined, offsetMin)
-    : STAMP.test(text)
-      ? text.replace(STAMP, stamp)
-      : `${text} · ${stamp}`;
-  const restamped: AnyBlock = {
-    ...footer,
-    elements: [...elements.slice(0, -1), { type: "mrkdwn", text: next }],
-  };
-  return blocks.map((b, i) => (i === at ? (restamped as T) : b));
-};

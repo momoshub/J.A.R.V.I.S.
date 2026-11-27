@@ -81,7 +81,7 @@ describe("one grey line, not two", () => {
   });
 
   test("the grey line carries the footer's block id only when a footer is in it", () => {
-    // so an edit later can find it and move its "updated" time on
+    // so a rebuild replaces it rather than stacking a second one
     expect(collapsedBlocks("the answer", undefined, "Jarvis · $0.02")[1]).toMatchObject({ block_id: FOOTER_BLOCK_ID });
     expect(collapsedBlocks("the answer", { summary: "🔧 2 steps", failures: [] })[1]?.block_id).toBeUndefined();
   });

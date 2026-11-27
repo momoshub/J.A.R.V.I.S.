@@ -3,7 +3,7 @@ import type { InternalKind } from "../../src/domain/internalMessages.ts";
 import type { HandleResult, InboundMessage } from "../../src/application/handleMessage.ts";
 import { createTurnRunner } from "../../src/application/turnRunner.ts";
 
-type Posted = { channel: string; text: string; threadTs?: string; by?: string; trigger?: InternalKind };
+type Posted = { channel: string; text: string; threadTs?: string; by?: string | null; trigger?: InternalKind };
 
 const make = (result: HandleResult) => {
   const posted: Posted[] = [];
