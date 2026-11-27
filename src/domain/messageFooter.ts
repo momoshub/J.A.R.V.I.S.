@@ -46,6 +46,8 @@ export const SIGNATURES = {
   githubApp: "GitHub app",
   offlineAlarm: "offline alarm",
   stuckSweeper: "stuck-work sweeper",
+  /** The housekeeping coordinator that lives only in the owner's DM. */
+  jueki: "Jueki",
 } as const;
 
 /** Marks the footer's context block, so an edit can find and restamp it. */

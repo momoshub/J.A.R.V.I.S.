@@ -83,6 +83,11 @@ export type MessageRepo = {
    * `before` (ms), newest first, with the person that thread last heard from.
    */
   endedOnBot: (since: number, before: number, limit: number) => EndedThread[];
+  /**
+   * Threads whose newest stored turn is this person's own message (not one the bot wrote for itself),
+   * written between `since` and `before` (ms), oldest first: what nobody answered.
+   */
+  endedOnUser: (slackUserId: string, since: number, before: number, limit: number) => EndedThread[];
 };
 
 export type EndedThread = { channelId: string; threadTs: string; lastAt: number; slackUserId: string };
@@ -101,6 +106,13 @@ export const createMessageRepo = (db: DbClient): MessageRepo => {
      WHERE m.thread_ts != '' AND m.role = 'assistant' AND m.created_at >= ? AND m.created_at <= ?
        AND m.id = (SELECT MAX(x.id) FROM messages x WHERE x.channel_id = m.channel_id AND x.thread_ts = m.thread_ts)
      ORDER BY m.created_at DESC LIMIT ?`,
+  );
+  const endedUserStmt = db.query<{ channel_id: string; thread_ts: string; created_at: number }, [string, number, number, number]>(
+    `SELECT m.channel_id, m.thread_ts, m.created_at
+     FROM messages m
+     WHERE m.role = 'user' AND m.via_bot = 0 AND m.slack_user_id = ? AND m.created_at >= ? AND m.created_at <= ?
+       AND m.id = (SELECT MAX(x.id) FROM messages x WHERE x.channel_id = m.channel_id AND x.thread_ts = m.thread_ts)
+     ORDER BY m.created_at ASC LIMIT ?`,
   );
   const insertStmt = db.query(
     `INSERT INTO messages (channel_id, slack_user_id, role, content, created_at, slack_ts, thread_ts, via_bot)
@@ -144,6 +156,10 @@ export const createMessageRepo = (db: DbClient): MessageRepo => {
       endedStmt.all(since, before, Math.max(1, limit)).flatMap((r) =>
         r.user_id ? [{ channelId: r.channel_id, threadTs: r.thread_ts, lastAt: r.created_at, slackUserId: r.user_id }] : [],
       ),
+    endedOnUser: (slackUserId, since, before, limit) =>
+      endedUserStmt
+        .all(slackUserId, since, before, Math.max(1, limit))
+        .map((r) => ({ channelId: r.channel_id, threadTs: r.thread_ts, lastAt: r.created_at, slackUserId })),
     append: (message, createdAt) => {
       const row = insertStmt.get({
         $channelId: message.channelId,

@@ -166,6 +166,10 @@ import { createBackgroundAgents, defaultRunner } from "./infrastructure/llm/back
 import { recordedOwners, recordPrThread } from "./domain/stuckWork.ts";
 import { createStuckWorkProbe } from "./infrastructure/system/stuckWorkProbe.ts";
 import { createStuckSweeper } from "./application/stuckSweeper.ts";
+import { createJueki } from "./application/jueki.ts";
+import { createJuekiRepo } from "./infrastructure/db/juekiRepo.ts";
+import { createJuekiPrProbe } from "./infrastructure/system/juekiPrProbe.ts";
+import { DEFAULT_DEADLINE_MS, MAX_DEADLINE_MS } from "./domain/watch.ts";
 import { createIdleReaper } from "./application/idleReaper.ts";
 import { createStalePromiseSweep } from "./application/stalePromiseSweep.ts";
 import { classifyMessage, classifySystem, parsePromiseVerdict } from "./domain/stalePromise.ts";
@@ -368,8 +372,9 @@ const main = async () => {
   });
   // Scoped GitHub App tickets for Orca workers; revoked when `watch worker` sees the worker end.
   // Persisted by hash; the token itself is only ever in a 0600 file the brief names by path.
+  const workerTicketRepo = createWorkerTicketRepo(db);
   const workerTickets = createWorkerTickets(() => Date.now(), {
-    repo: createWorkerTicketRepo(db),
+    repo: workerTicketRepo,
     files: createWorkerTicketFiles(WORKER_TICKET_DIR, `http://127.0.0.1:${config.dashboardPort}`),
   });
   // Tickets that expired while the bot was down: delete their files and rows now, and on a timer.
@@ -712,6 +717,65 @@ const main = async () => {
     ownerSlackId: config.ownerSlackId,
     log: (l) => activity.line(`skill draft approval: ${l}`),
   };
+  // Jueki: the housekeeping coordinator that lives only in the owner's DM. A recurring tick
+  // (JUEKI_INTERVAL_MS, 0 = off) rebuilds its picture from the records, settles what code can,
+  // hands the rest to one turn in the owner's DM and keeps a single digest message edited all day.
+  // See domain/jueki.ts. Its turn goes through the same `runTurn` loops use, as the owner.
+  const juekiRepo = createJuekiRepo(db);
+  const juekiPrProbe = createJuekiPrProbe({
+    gh: defaultRunner(repoPath),
+    authors: [config.selfPrAccounts?.author, config.githubApp.slug ? `${config.githubApp.slug}[bot]` : undefined].filter(
+      (a): a is string => !!a,
+    ),
+  });
+  const jueki = createJueki({
+    clock,
+    ownerSlackId: config.ownerSlackId,
+    repo: juekiRepo,
+    journeys,
+    slack: slackAdmin,
+    tickets: {
+      bound: () =>
+        workerTicketRepo.bound().map((r) => ({ id: r.id, dispatchId: r.dispatchId, boundAt: r.boundAt, expiresAt: r.expiresAt })),
+      renew: (id, ttlMs) => {
+        const r = workerTickets.renew(id, ttlMs)[0];
+        return r?.ok ? { ok: true, expiresAt: r.expiresAt } : { ok: false, error: r && !r.ok ? r.error : "no such ticket" };
+      },
+    },
+    watches: {
+      waiting: () => watches.waiting(1000),
+      lapsedSince: (since) => watches.lapsedSince(since),
+      rearm: (w, now) =>
+        watches.add(
+          {
+            channelId: w.channelId,
+            threadTs: w.threadTs,
+            slackUserId: w.slackUserId,
+            note: w.note,
+            check: w.check,
+            everyMs: w.everyMs,
+            // A re-armed watch never outlives the 30 days one chain is allowed (counted from the first watch).
+            deadlineAt: Math.max(now + DEFAULT_DEADLINE_MS, Math.min(now + 12 * 60 * 60_000, w.createdAt + MAX_DEADLINE_MS)),
+            createdAt: now,
+            ...(w.createdBy && w.writeTargets.length > 0 && now - w.createdAt < MAX_DEADLINE_MS
+              ? { createdBy: w.createdBy, writeTargets: w.writeTargets, parentWatchId: w.id }
+              : {}),
+          },
+          now,
+        ).id,
+    },
+    scan: stuckWorkProbe.scan,
+    ownPrs: juekiPrProbe.scan,
+    unanswered: (id, since, before) => messages.endedOnUser(id, since, before, 50),
+    runTurn: (req) => deps.runTurn!(req),
+    offsetMinutes: () => config.jueki.tzOffsetMin,
+    quiet: { startHour: config.jueki.quietStartHour, endHour: config.jueki.quietEndHour },
+    enabled: () => !draining,
+    staleJourneyMs: config.jueki.staleJourneyMs,
+    repingMs: config.jueki.prodRepingMs,
+    prefix: config.commandPrefix,
+    log: (msg) => console.error(`[jueki] ${msg}`),
+  });
   const deps: RespondDeps = {
     users,
     messages,
@@ -737,6 +801,8 @@ const main = async () => {
     bugReports,
     selfIssues,
     bugReportApproval: { bugReports, slack: slackAdmin, clock, ownerSlackId: config.ownerSlackId },
+    jueki,
+    juekiApproval: { repo: juekiRepo, slack: slackAdmin, clock, ownerSlackId: config.ownerSlackId, onApproved: () => void jueki.tick() },
     skillDrafts,
     skillDraftApproval,
     reviewRunApproval: {
@@ -1676,6 +1742,14 @@ const main = async () => {
   (firstStale as { unref?: () => void } | undefined)?.unref?.();
   (staleTimer as { unref?: () => void } | undefined)?.unref?.();
 
+  // Jueki's tick: every JUEKI_INTERVAL_MS, never a process of its own. It starts a turn at most
+  // once per tick and holds while a restart drains. The first tick is two minutes after boot.
+  const juekiEveryMs = config.jueki.intervalMs;
+  const firstJueki = juekiEveryMs > 0 ? setTimeout(() => void jueki.tick(), 120_000) : undefined;
+  const juekiTimer = juekiEveryMs > 0 ? setInterval(() => void jueki.tick(), juekiEveryMs) : undefined;
+  (firstJueki as { unref?: () => void } | undefined)?.unref?.();
+  (juekiTimer as { unref?: () => void } | undefined)?.unref?.();
+
   // Dead man's switch for the host's flaky connection: keeps an "I'm offline"
   // notice armed on Slack's side, so an outage gets reported even though the
   // host cannot reach Slack to say so. Runs while draining too - a restart is
@@ -1709,6 +1783,8 @@ const main = async () => {
     clearInterval(reapTimer);
     clearTimeout(firstStale);
     clearInterval(staleTimer);
+    clearTimeout(firstJueki);
+    clearInterval(juekiTimer);
     clearInterval(alarmTimer);
     // A deliberate stop is not an outage. This covers `launchctl kickstart -k`
     // and a Mac shutting down or logging out too (all SIGTERM): a few unarmed
