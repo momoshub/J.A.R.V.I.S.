@@ -75,6 +75,8 @@ import { isTimeout } from "../../domain/threadSession.ts";
 import { toMrkdwn } from "../../domain/slackFormat.ts";
 import { MAX_BLOCKS, readableText, toBlockMessage, type Block } from "../../domain/blockKit.ts";
 import { createBotLoopGuard, isAcceptedBot, isPersonMessage } from "../../domain/acceptedBots.ts";
+import { textWithVoice, type Transcriber } from "../../application/voiceTranscript.ts";
+import { hasAudio, type RawAudioFile } from "../../domain/voiceMessage.ts";
 import { couldFollowThread, followVerdict, isOneOnOneThread, isSpeech, startsAutoFollow } from "../../domain/threadFollow.ts";
 import {
   formatBatchInput,
@@ -192,6 +194,11 @@ export type SlackAppConfig = {
    * never exits over a deaf socket - restarting it would not fix one.
    */
   inbox?: InboxReceiver;
+  /**
+   * Turns a voice message's audio clip into text. Absent, a voice message still
+   * starts a turn, carrying a note that the audio could not be transcribed.
+   */
+  transcribe?: Transcriber;
 };
 
 type Deps = RespondDeps & {
@@ -238,6 +245,8 @@ export type RawMessage = {
   text?: string;
   subtype?: string;
   bot_id?: string;
+  /** Attachments; a voice message is a clip here with no text. */
+  files?: RawAudioFile[];
   /** Set when the DM is a reply inside a thread; absent on a top-level message. */
   thread_ts?: string;
 };
@@ -287,7 +296,7 @@ export const mutedAway = (
  * that person, so its DM passes.
  */
 export const shouldHandleDm = (m: RawMessage, acceptedBotIds: readonly string[] = [], ownUserId?: string): boolean =>
-  isSpeech(m.subtype) && isPersonMessage(m, acceptedBotIds, ownUserId) && !!m.text && m.channel_type === "im";
+  isSpeech(m.subtype) && isPersonMessage(m, acceptedBotIds, ownUserId) && (!!m.text || hasAudio(m.files)) && m.channel_type === "im";
 
 /** Best-effort display name lookup; never throws, worst case returns undefined. */
 const fetchDisplayName = async (client: SlackClient, userId: string): Promise<string | undefined> => {
@@ -2212,6 +2221,8 @@ export const createSlackApp = (config: SlackAppConfig, deps: Deps) => {
       );
       if (!verdict.follow) return;
       if (viaBot && !admitBotTurn(m.channel, threadKeyOf(m), m.user)) return;
+      // A voice message is heard before anything else sees it: its transcript is its text.
+      const said = await textWithVoice(m.text ?? "", m.files, config.transcribe, log);
       // Tagged messages, DMs, one-on-one threads and command lines are never
       // held: they are answered at once, as before. Only the untagged routes
       // into a thread it is a guest in wait for a quiet moment and the gate.
@@ -2232,7 +2243,7 @@ export const createSlackApp = (config: SlackAppConfig, deps: Deps) => {
           { channel: m.channel, threadTs: m.thread_ts! },
           {
             userId: m.user!,
-            text: m.text!,
+            text: said,
             ts: m.ts,
             client: asClient(client),
             say: say as Incoming["say"],
@@ -2251,7 +2262,7 @@ export const createSlackApp = (config: SlackAppConfig, deps: Deps) => {
         takesOverBatch({
           allowed: decideAccess(m.user!, deps.ownerSlackId, deps.users.get).allowed,
           isCommand: commandLineOf(m.text!, config.commandPrefix) !== undefined,
-          hasText: hasContent(m.text!),
+          hasText: hasContent(said),
         })
       ) {
         followGate.cancel({ channel: m.channel, threadTs: m.thread_ts! }, "message answered at once");
@@ -2261,7 +2272,7 @@ export const createSlackApp = (config: SlackAppConfig, deps: Deps) => {
         userId: m.user!,
         teamId: context.teamId,
         inbox: inboxOf(context as InboxContext),
-        text: m.text!,
+        text: said,
         threadTs: threadKeyOf(m),
         messageTs: m.ts,
         client: asClient(client),
@@ -2273,12 +2284,14 @@ export const createSlackApp = (config: SlackAppConfig, deps: Deps) => {
       return;
     }
     if (viaBot && !admitBotTurn(m.channel, threadKeyOf(m), m.user)) return;
+    // A voice message is heard before anything else sees it: its transcript is its text.
+    const said = await textWithVoice(m.text ?? "", m.files, config.transcribe, log);
     await handle({
       channelId: m.channel,
       userId: m.user!,
       teamId: context.teamId,
       inbox: inboxOf(context as InboxContext),
-      text: m.text!,
+      text: said,
       threadTs: threadKeyOf(m),
       messageTs: m.ts,
       typed: true,

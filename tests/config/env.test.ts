@@ -11,6 +11,16 @@ const base = {
 };
 
 describe("loadConfig", () => {
+  test("voice transcription has sane defaults and every path can be set", () => {
+    const c = loadConfig(base);
+    expect(c.whisperBin).toBe("/opt/homebrew/bin/whisper-cli");
+    expect(c.ffmpegBin).toBe("/opt/homebrew/bin/ffmpeg");
+    expect(c.whisperModelPath).toBe(join(homedir(), ".local", "share", "whisper-models", "ggml-large-v3-turbo-q5_0.bin"));
+    expect(c.whisperTimeoutMs).toBe(120_000);
+    const o = loadConfig({ ...base, WHISPER_BIN: "/x/w", WHISPER_MODEL_PATH: "~/m.bin", FFMPEG_BIN: "/x/f", WHISPER_TIMEOUT_MS: "5000" });
+    expect([o.whisperBin, o.whisperModelPath, o.ffmpegBin, o.whisperTimeoutMs]).toEqual(["/x/w", join(homedir(), "m.bin"), "/x/f", 5000]);
+  });
+
   test("workers start in their own folder: ~/.jarvis/worker-home by default, blank included, ~ expanded", () => {
     expect(loadConfig(base).workerHomeDir).toBe(join(homedir(), ".jarvis", "worker-home"));
     expect(loadConfig({ ...base, WORKER_HOME_DIR: " " }).workerHomeDir).toBe(join(homedir(), ".jarvis", "worker-home"));

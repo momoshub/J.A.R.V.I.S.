@@ -60,6 +60,12 @@ describe("shouldHandleDm", () => {
   test("handles a DM that carries files (file_share is still a message)", () => {
     expect(shouldHandleDm({ ...base, subtype: "file_share" })).toBe(true);
   });
+  test("a voice message (a clip with no text) is handled, a text-less image is not", () => {
+    const voice = { ...base, text: "", subtype: "file_share", files: [{ subtype: "slack_audio", mimetype: "audio/mp4", url_private: "https://files.slack.com/files-pri/T1-F1/a.m4a" }] };
+    expect(shouldHandleDm(voice)).toBe(true);
+    expect(shouldHandleDm({ ...voice, text: undefined })).toBe(true);
+    expect(shouldHandleDm({ ...voice, files: [{ mimetype: "image/png" }] })).toBe(false);
+  });
   test("rejects non-DM channels and empty messages", () => {
     expect(shouldHandleDm({ ...base, channel_type: "channel" })).toBe(false);
     expect(shouldHandleDm({ ...base, text: undefined })).toBe(false);
