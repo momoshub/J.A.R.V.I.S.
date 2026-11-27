@@ -41,7 +41,7 @@ describe("role profiles", () => {
       expect(denied).toContain(`github-app.sh ${a}*`);
     }
     expect(denied).not.toContain("github-app.sh comment");
-    expect(ROLE_PROFILES.writer.allow).toContain("Bash(*/bin/github-app.sh:*)");
+    expect(ROLE_PROFILES.writer.allow).toContain("Bash(*/bin/github-app.sh*)");
     expect(ROLE_PROFILES.writer.deny.join("\n")).not.toContain("github-app.sh pr-create");
   });
 
@@ -49,6 +49,30 @@ describe("role profiles", () => {
     for (const r of WORKER_ROLES) {
       const deny = new Set(ROLE_PROFILES[r].deny);
       expect(ROLE_PROFILES[r].allow.filter((a) => deny.has(a))).toEqual([]);
+    }
+  });
+});
+
+describe("rule syntax (checked against Claude Code 2.1.285)", () => {
+  test("no rule mixes an inner * with the trailing :*, which the session reads as a literal prefix", () => {
+    for (const r of WORKER_ROLES) {
+      for (const rule of [...ROLE_PROFILES[r].allow, ...ROLE_PROFILES[r].deny]) {
+        expect(/^Bash\(.*\*.*:\*\)$/.test(rule)).toBe(false);
+      }
+    }
+  });
+
+  test("a denied command is also denied behind an assignment, which a command substitution would otherwise slip through", () => {
+    for (const r of ["writer", "reviewer"] as const) expect(ROLE_PROFILES[r].deny).toContain("Bash(*=* gh pr merge*)");
+    expect(ROLE_PROFILES.reviewer.deny).toContain("Bash(*=* git push*)");
+    expect(ROLE_PROFILES.reviewer.deny).toContain("Bash(git -C * push*)");
+    expect(ROLE_PROFILES.reviewer.allow).toContain("Bash(*=* gh pr review*)");
+  });
+
+  test("git -C is never allowed (a wildcard before the subcommand also approves -c options); cd is", () => {
+    for (const r of WORKER_ROLES) {
+      expect(ROLE_PROFILES[r].allow.filter((a) => a.includes("git -C"))).toEqual([]);
+      expect(ROLE_PROFILES[r].allow).toContain("Bash(cd:*)");
     }
   });
 });

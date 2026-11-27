@@ -462,7 +462,7 @@ run it with the role first and to start the worker in that folder.
 | `verifier` | the same as the reviewer, and no review | run the change in a worktree of its own, comment its verdict |
 | `investigator` | edit or write a file, commit, push, merge, comment, any write to GitHub | read the repository and GitHub |
 
-Deny rules are enforced by the session before a tool runs. The allow list is the
+Deny rules are enforced by the session before a tool runs (checked on Claude Code 2.1.285 against `git push`, `gh pr merge` and a merge through `gh api`, also behind a `GH_TOKEN=$(...)` assignment and through `cd <repo> && git ...`, which is how a worker reaches the repository: `git -C` is not allowed). The allow list is the
 surface the role is meant to use: a command in neither asks for approval, and the
 watch reports a worker parked on one. Rules match command prefixes, so a `bash -c`
 wrapper is not caught: this takes away what a role never needs, it is not a

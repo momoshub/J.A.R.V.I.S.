@@ -38,14 +38,39 @@ export type RoleProfile = {
   readonly deny: readonly string[];
 };
 
-const bash = (...prefixes: string[]): string[] => prefixes.map((p) => `Bash(${p})`);
+/**
+ * One `Bash(...)` rule per command prefix. A prefix is written `git push:*` (anything after it) or
+ * bare (`pwd`, exactly that command). The session reads a rule that mixes an inner `*` with the
+ * trailing `:*` as a literal prefix that never matches, so a prefix with an inner `*` (`git -C * push`)
+ * is emitted in the wildcard form instead (`Bash(git -C * push*)`).
+ */
+const rule = (prefix: string): string => {
+  if (!prefix.endsWith(":*")) return `Bash(${prefix})`;
+  const body = prefix.slice(0, -2);
+  return body.includes("*") ? `Bash(${body}*)` : `Bash(${prefix})`;
+};
+const bash = (...prefixes: string[]): string[] => prefixes.map(rule);
+/**
+ * A worker picks its GitHub account with an assignment in front of the command
+ * (`GH_TOKEN=$(gh auth token -u x) gh pr merge`). The session strips a literal assignment before it
+ * matches a rule, but not one with a command substitution (checked on 2.1.285: the plain prefix rule
+ * denied `GH_TOKEN=x git push` and let `GH_TOKEN=$(echo x) gh pr merge` through), so every denied
+ * command also gets the same rule behind any assignment, and every allowed `gh` one the form a worker uses.
+ */
+const denyBash = (...prefixes: string[]): string[] => prefixes.flatMap((p) => [rule(p), rule(`*=* ${p.endsWith(":*") ? p.slice(0, -2) : p}:*`)]);
+const withAssignment = (rules: readonly string[]): string[] =>
+  rules.flatMap((r) => (r.startsWith("Bash(gh ") ? [r, `Bash(*=* ${r.slice("Bash(".length, -1).replace(/:\*$/, "")}*)`] : [r]));
 /** A helper script is called by absolute path, so the rule matches the name wherever it lives. */
 const githubApp = (...actions: string[]): string[] => actions.map((a) => `Bash(*github-app.sh ${a}*)`);
 
 const READ_TOOLS = ["Read", "Grep", "Glob", "WebFetch", "WebSearch"];
-const READ_SHELL = bash("ls:*", "cat:*", "head:*", "tail:*", "wc:*", "grep:*", "rg:*", "find:*", "jq:*", "sort:*", "diff:*", "pwd", "echo:*", "date:*", "sleep:*", "mkdir:*");
-/** Reads of the repository and of GitHub, the part every role shares. */
-const READ_GIT = bash("git status:*", "git log:*", "git show:*", "git diff:*", "git rev-parse:*", "git ls-files:*", "git branch --show-current", "git fetch:*", "git -C * status:*", "git -C * log:*", "git -C * show:*", "git -C * diff:*", "git -C * rev-parse:*", "git -C * fetch:*", "git worktree list:*");
+const READ_SHELL = bash("ls:*", "cat:*", "head:*", "tail:*", "wc:*", "grep:*", "rg:*", "find:*", "jq:*", "sort:*", "diff:*", "pwd", "echo:*", "date:*", "sleep:*", "mkdir:*", "cd:*");
+/**
+ * Reads of the repository and of GitHub, the part every role shares. A worker is not inside the
+ * repository, so it runs `cd <repo> && git ...`: each part is matched on its own. `git -C <dir>` is
+ * not allowed: a wildcard before the subcommand would also approve `-c` options that run commands.
+ */
+const READ_GIT = bash("git status:*", "git log:*", "git show:*", "git diff:*", "git rev-parse:*", "git ls-files:*", "git branch --show-current", "git fetch:*", "git worktree list:*");
 const READ_GH = bash("gh pr view:*", "gh pr diff:*", "gh pr checks:*", "gh pr list:*", "gh run list:*", "gh run view:*", "gh issue view:*", "gh issue list:*", "gh repo view:*", "gh auth token:*");
 /** `orca orchestration` is how a worker asks, escalates and reports. */
 const ORCA = bash("orca orchestration:*");
@@ -53,12 +78,12 @@ const RUN_CHECKS = bash("bun run typecheck", "bun test:*", "bun install:*", "bun
 
 /** An API call that changes anything but a review or a comment. */
 const GH_API_MUTATIONS = [
-  "gh api*-X PUT*", "gh api*-X DELETE*", "gh api*-X PATCH*", "gh api*--method PUT*", "gh api*--method DELETE*", "gh api*--method PATCH*",
-  "gh api*--method=PUT*", "gh api*--method=DELETE*", "gh api*--method=PATCH*", "gh api*/merge*", "gh api*/git/refs*", "gh api*--input*/contents/*",
+  "gh api*-X PUT", "gh api*-X DELETE", "gh api*-X PATCH", "gh api*--method PUT", "gh api*--method DELETE", "gh api*--method PATCH",
+  "gh api*--method=PUT", "gh api*--method=DELETE", "gh api*--method=PATCH", "gh api*/merge", "gh api*/git/refs", "gh api*/contents/",
 ];
 /** Every way to put a commit, a branch or a merge on the remote or into a checkout the role does not own. */
-const GIT_WRITES = bash("git push:*", "git -C * push:*", "git commit:*", "git -C * commit:*", "git add:*", "git -C * add:*", "git merge:*", "git -C * merge:*", "git rebase:*", "git reset:*", "git cherry-pick:*", "git revert:*", "git tag:*", "git stash:*", "git checkout:*", "git switch:*", "git restore:*", "git apply:*", "git am:*");
-const RAW_MERGE = ["Bash(gh pr merge:*)", ...githubApp("pr-merge"), ...bash(...GH_API_MUTATIONS)];
+const GIT_WRITES = denyBash("git push:*", "git -C * push:*", "git commit:*", "git -C * commit:*", "git add:*", "git -C * add:*", "git merge:*", "git -C * merge:*", "git rebase:*", "git reset:*", "git cherry-pick:*", "git revert:*", "git tag:*", "git stash:*", "git checkout:*", "git switch:*", "git restore:*", "git apply:*", "git am:*");
+const RAW_MERGE = [...denyBash("gh pr merge:*"), ...githubApp("pr-merge"), ...denyBash(...GH_API_MUTATIONS.map((m) => `${m}:*`))];
 
 /**
  * The profiles. Read-only roles (reviewer, investigator) get no editing tool and no
@@ -70,38 +95,38 @@ const RAW_MERGE = ["Bash(gh pr merge:*)", ...githubApp("pr-merge"), ...bash(...G
  */
 export const ROLE_PROFILES: Readonly<Record<WorkerRole, RoleProfile>> = {
   writer: {
-    allow: [...READ_TOOLS, "Edit", "Write", "NotebookEdit", ...READ_SHELL, ...READ_GIT, ...READ_GH, ...ORCA, ...RUN_CHECKS,
+    allow: withAssignment([...READ_TOOLS, "Edit", "Write", "NotebookEdit", ...READ_SHELL, ...READ_GIT, ...READ_GH, ...ORCA, ...RUN_CHECKS,
       ...bash("git:*", "gh pr create:*", "gh pr edit:*", "gh pr comment:*", "gh pr review:*", "gh api:*", "bash bin/*", "bin/*", "*/bin/merge-when-green.sh:*", "*/bin/github-app.sh:*"),
-    ],
-    deny: [...RAW_MERGE, ...bash("gh auth switch:*", "gh pr close:*")],
+    ]),
+    deny: [...RAW_MERGE, ...denyBash("gh auth switch:*", "gh pr close:*")],
   },
   reviewer: {
-    allow: [...READ_TOOLS, "Write", ...READ_SHELL, ...READ_GIT, ...READ_GH, ...ORCA, ...RUN_CHECKS,
-      ...bash("gh pr review:*", "gh pr comment:*", "gh api:*", "git worktree add:*", "git worktree remove:*", "git -C * worktree add:*", "git -C * worktree remove:*", "git worktree prune"),
+    allow: withAssignment([...READ_TOOLS, "Write", ...READ_SHELL, ...READ_GIT, ...READ_GH, ...ORCA, ...RUN_CHECKS,
+      ...bash("gh pr review:*", "gh pr comment:*", "gh api:*", "git worktree add:*", "git worktree remove:*", "git worktree prune"),
       ...githubApp("comment"),
-    ],
+    ]),
     deny: [
       "Edit", "NotebookEdit", ...GIT_WRITES, ...RAW_MERGE,
-      ...bash("gh pr create:*", "gh pr edit:*", "gh pr close:*", "gh pr reopen:*", "gh pr ready:*", "gh pr ready", "gh issue create:*", "gh issue edit:*", "gh issue close:*", "gh release:*", "gh auth switch:*"),
+      ...denyBash("gh pr create:*", "gh pr edit:*", "gh pr close:*", "gh pr reopen:*", "gh pr ready:*", "gh pr ready", "gh issue create:*", "gh issue edit:*", "gh issue close:*", "gh release:*", "gh auth switch:*"),
       ...githubApp("pr-create", "pr-edit", "pr-close", "pr-reopen", "labels-add", "labels-remove", "reviewers-request", "git", "push", "review", "ticket-renew"),
     ],
   },
   verifier: {
-    allow: [...READ_TOOLS, "Write", ...READ_SHELL, ...READ_GIT, ...READ_GH, ...ORCA, ...RUN_CHECKS,
-      ...bash("gh pr comment:*", "gh api:*", "git worktree add:*", "git worktree remove:*", "git -C * worktree add:*", "git -C * worktree remove:*", "git worktree prune"),
+    allow: withAssignment([...READ_TOOLS, "Write", ...READ_SHELL, ...READ_GIT, ...READ_GH, ...ORCA, ...RUN_CHECKS,
+      ...bash("gh pr comment:*", "gh api:*", "git worktree add:*", "git worktree remove:*", "git worktree prune"),
       ...githubApp("comment"),
-    ],
+    ]),
     deny: [
       "Edit", "NotebookEdit", ...GIT_WRITES, ...RAW_MERGE,
-      ...bash("gh pr create:*", "gh pr edit:*", "gh pr close:*", "gh pr reopen:*", "gh pr review:*", "gh issue create:*", "gh issue edit:*", "gh issue close:*", "gh release:*", "gh auth switch:*"),
+      ...denyBash("gh pr create:*", "gh pr edit:*", "gh pr close:*", "gh pr reopen:*", "gh pr review:*", "gh issue create:*", "gh issue edit:*", "gh issue close:*", "gh release:*", "gh auth switch:*"),
       ...githubApp("pr-create", "pr-edit", "pr-close", "pr-reopen", "labels-add", "labels-remove", "reviewers-request", "git", "push", "review", "ticket-renew"),
     ],
   },
   investigator: {
-    allow: [...READ_TOOLS, ...READ_SHELL, ...READ_GIT, ...READ_GH, ...ORCA, ...bash("gh api:*")],
+    allow: withAssignment([...READ_TOOLS, ...READ_SHELL, ...READ_GIT, ...READ_GH, ...ORCA, ...bash("gh api:*")]),
     deny: [
       "Edit", "Write", "NotebookEdit", ...GIT_WRITES, ...RAW_MERGE,
-      ...bash("git worktree add:*", "git worktree remove:*", "git -C * worktree add:*", "gh pr create:*", "gh pr edit:*", "gh pr close:*", "gh pr reopen:*", "gh pr review:*", "gh pr comment:*", "gh issue create:*", "gh issue edit:*", "gh issue comment:*", "gh issue close:*", "gh release:*", "gh auth switch:*"),
+      ...denyBash("git worktree add:*", "git worktree remove:*", "git -C * worktree add:*", "gh pr create:*", "gh pr edit:*", "gh pr close:*", "gh pr reopen:*", "gh pr review:*", "gh pr comment:*", "gh issue create:*", "gh issue edit:*", "gh issue comment:*", "gh issue close:*", "gh release:*", "gh auth switch:*"),
       ...githubApp("pr-create", "pr-edit", "pr-close", "pr-reopen", "comment", "labels-add", "labels-remove", "reviewers-request", "git", "push", "review", "ticket-renew"),
     ],
   },
