@@ -12,7 +12,7 @@ export const COORDINATOR_COMMANDS: readonly CommandDef[] = [
     minRole: "owner",
     ownHelp: true,
     usage:
-      'act "<what I did>" | blocker <key> --kind <permission|prod-write|decision|repeat-failure|other> [--prod] [--incident] [--customer-impact] [--deadline-min N] [--reversible] [--data-write] [--schema-change] [--secret-iam] [--beyond-role] [--owner-decision] "<sentence>" | fixed <key> "<what I did>" | status | help',
+      'act "<what I did>" | blocker <key> --kind <permission|prod-write|decision|repeat-failure|other> [--prod] [--incident] [--customer-impact] [--deadline-min N] [--reversible] [--data-write] [--schema-change] [--secret-iam] [--beyond-role] [--owner-decision] [--for <user> --thread <link>] "<sentence>" | fixed <key> "<what I did>" | status | help',
     summary: "The coordinator's own housekeeping: digest line, blocker (low-risk non-prod ones approved by me, the rest put to the owner), prod self-fix report, status",
     run: async ({ deps, actor, rest, prefix }) => {
       const coordinator = deps.coordinator;
@@ -26,7 +26,8 @@ export const COORDINATOR_COMMANDS: readonly CommandDef[] = [
         return [
           "*coordinator* - the owner's housekeeping coordinator (DM only; state in the database, never in a session)",
           `- \`${prefix} coordinator act "<what I did>"\` - one line in today's digest, written in the digest's language (COORDINATOR_LANG, Vietnamese by default)`,
-          `- \`${prefix} coordinator blocker <key> --kind <permission|prod-write|decision|repeat-failure|other> [--prod] [--incident] [--customer-impact] [--deadline-min N] [--reversible] [--data-write] [--schema-change] [--secret-iam] [--beyond-role] [--owner-decision] "<sentence>"\``,
+          `- \`${prefix} coordinator blocker <key> --kind <permission|prod-write|decision|repeat-failure|other> [--prod] [--incident] [--customer-impact] [--deadline-min N] [--reversible] [--data-write] [--schema-change] [--secret-iam] [--beyond-role] [--owner-decision] [--for <user> --thread <link>] "<sentence>"\``,
+          "  `--for <user> --thread <slack link>`: the wall is another person's (a journey someone else asked for), so the owner is asked to unblock THEM and an Approve continues in their thread, not as the owner.",
           "  routed in code: a non-prod `--kind other` blocker that is low-risk (`--reversible`, no data write, no schema change, no secret or IAM change, inside the owner's role, no owner decision, and no role, permission, auth, ticket, token, secret, approval or prod word in the sentence) is approved by me and answers `approved`; any other non-prod is put to the owner once; prod is put again until they act; prod that is urgent (incident, customer impact, or a deadline within 2h) AND low-risk (reversible, no data write, no schema change, no secret or IAM change, within the owner's role) answers `self-fix`. A fact not stated is false, `--reversible` included.",
           `- \`${prefix} coordinator fixed <key> "<what I did>"\` - report a self-fixed prod item: digest line plus one direct DM line`,
           `- \`${prefix} coordinator status\``,
@@ -51,7 +52,7 @@ export const COORDINATOR_COMMANDS: readonly CommandDef[] = [
       if (sub === "blocker") {
         const read = parseBlockerArgs(args);
         if (!read.ok) return `${read.error}. \`${prefix} coordinator help\``;
-        return coordinator.blocker({ key: read.key, kind: read.kind, text: read.text, facts: read.facts });
+        return coordinator.blocker({ key: read.key, kind: read.kind, text: read.text, facts: read.facts, ...(read.subject ? { subject: read.subject } : {}) });
       }
       return `I do not know \`${sub}\`. \`${prefix} coordinator help\``;
     },

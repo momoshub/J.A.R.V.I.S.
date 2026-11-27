@@ -999,9 +999,10 @@ export const createKitListeners = (
   /**
    * Approve / Reject on a coordinator blocker. Decided HERE and never handed to the model
    * (`onKitAction` skips `isCoordinatorAction`, the current and the legacy ids): only the owner's press on the latest
-   * notice counts, checked in `decideCoordinatorPress`. An approval is stored; the coordinator's next tick acts on it.
+   * notice counts, checked in `decideCoordinatorPress`. An approval is stored and the coordinator's next tick acts on it; one about another person
+   * (an unblock) is acted on here, in THEIR thread.
    */
-  const onCoordinatorPress = async ({ ack, body, action, client }: KitActionArgs) => {
+  const onCoordinatorPress = async ({ ack, body, action, client, context }: KitActionArgs) => {
     await ack();
     const by = body.user?.id;
     const value = action.value;
@@ -1021,6 +1022,18 @@ export const createKitListeners = (
         await (client as KitClient).chat
           .postEphemeral?.({ channel, user: by, thread_ts: body.message?.thread_ts ?? body.message?.ts, text: notice })
           .catch(logAndIgnore("coordinator press notice"));
+      }
+      // A blocker about another person: carry on in THEIR thread, as the owner who pressed (an approve),
+      // or tell them no in one line (a reject, plain code, no turn).
+      if (outcome.kind === "approved" && outcome.unblock) {
+        const { channelId, threadTs, brief } = outcome.unblock;
+        // The brief carries text a non-owner session wrote (the need and the plan): the turn is no one's typed message, so it runs without the owner bit.
+        await kitTurn(client, context, by, { channelId, threadTs }, brief, true);
+      } else if (outcome.kind === "rejected" && outcome.unblock) {
+        const { channelId, threadTs, notice: text } = outcome.unblock;
+        await (client as KitClient).chat
+          .postMessage({ channel: channelId, thread_ts: threadTs, text })
+          .catch(logAndIgnore("coordinator unblock reject post"));
       }
     } catch (err) {
       log(`coordinator press failed: ${err instanceof Error ? err.message : String(err)}`);

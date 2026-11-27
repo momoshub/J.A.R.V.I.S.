@@ -765,6 +765,7 @@ const main = async () => {
     staleJourneyMs: config.coordinator.staleJourneyMs,
     repingMs: config.coordinator.prodRepingMs,
     prefix: config.commandPrefix,
+    scheduled: config.coordinator.intervalMs > 0,
     log: (msg) => console.error(`[coordinator] ${msg}`),
   });
   const deps: RespondDeps = {

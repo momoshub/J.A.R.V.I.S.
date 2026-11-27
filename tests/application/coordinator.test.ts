@@ -2,7 +2,7 @@ import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { createCoordinator, dayThreadTs, rearmWatch, type CoordinatorDeps, type CoordinatorTurnRequest } from "../../src/application/coordinator.ts";
 import type { FooterUsage } from "../../src/domain/usageFooter.ts";
-import { DEFAULT_PROD_REPING_MS, HOUR_MS, DAY_MS, MINUTE_MS, type BlockerFacts, type OwnPr } from "../../src/domain/coordinator.ts";
+import { DEFAULT_PROD_REPING_MS, HOUR_MS, DAY_MS, MINUTE_MS, MAX_UNBLOCKS_PER_DAY, type BlockerFacts, type BlockerSubject, type OwnPr } from "../../src/domain/coordinator.ts";
 import { NO_STUCK_WORK } from "../../src/domain/stuckWork.ts";
 import { createJourneyRepo } from "../../src/infrastructure/db/journeyRepo.ts";
 import { createCoordinatorRepo } from "../../src/infrastructure/db/coordinatorRepo.ts";
@@ -604,6 +604,137 @@ describe("rearmWatch: a lapsed worker watch armed again, the grant bounded by th
     expect(w.get(id)).toMatchObject({ createdBy: "", writeTargets: [] });
   });
 });
+
+describe("a person other than the owner is stuck", () => {
+  const PAL = "U0PAL000001";
+  const subject = (n = 1): BlockerSubject => ({
+    forUser: PAL,
+    channelId: "C0TEST00001",
+    threadTs: `1795000000.00000${n}`,
+    permalink: `https://team.slack.com/archives/C0TEST00001/p179500000000000${n}`,
+    plan: "open the PR for them",
+  });
+  const unblock = (s: ReturnType<typeof setup>, key: string, text: string, sub = subject()) =>
+    s.coordinator.blocker({ key, kind: "unblock", text, facts: facts({ ownerDecision: true }), subject: sub });
+
+  test("it is put to the owner as 'unblock them', with Approve / Reject, once, and the session is told to say so", async () => {
+    const s = setup();
+    const out = await unblock(s, "u1", "needs the staging grant");
+    expect(out).toContain("raised to the owner");
+    expect(out).toContain("owner was asked");
+    expect(s.asked).toHaveLength(1);
+    expect(s.asked[0]!.text).toContain(`<@${PAL}> is stuck: needs the staging grant. Plan: open the PR for them.`);
+    expect(s.asked[0]!.text).toContain("Approve = unblock them, I continue in their thread; Reject = I tell them no");
+    expect(s.asked[0]!.ids).toEqual(["jv:coordinator:approve", "jv:coordinator:reject"]);
+    expect(s.asked[0]!.by).toBe(NAME);
+    expect(s.repo.blockerByKey("u1")).toMatchObject({ kind: "unblock", forUser: PAL, channelId: "C0TEST00001" });
+  });
+
+  test("the same ask again is not put twice, and the session is still told the owner was asked", async () => {
+    const s = setup();
+    await unblock(s, "u1", "needs the staging grant");
+    const again = await unblock(s, "u1", "needs the staging grant");
+    expect(again).toContain("not asked twice");
+    expect(again).toContain("owner was asked");
+    expect(s.asked).toHaveLength(1);
+  });
+
+  test("quiet hours hold it; the tick after them puts it, once", async () => {
+    const s = setup(NIGHT);
+    const out = await unblock(s, "u1", "needs the staging grant");
+    expect(out).toContain("quiet hours");
+    expect(s.asked).toHaveLength(0);
+    s.clock.t = NIGHT + 8 * HOUR_MS;
+    await s.coordinator.tick();
+    await s.coordinator.tick();
+    expect(s.asked).toHaveLength(1);
+    expect(s.asked[0]!.text).toContain(`<@${PAL}> is stuck`);
+  });
+
+  test("a rejected ask is not asked again; the session is told the owner said no", async () => {
+    const s = setup();
+    await unblock(s, "u1", "needs the staging grant");
+    s.repo.decide(s.repo.blockerByKey("u1")!.id, "rejected", s.clock.t);
+    const out = await unblock(s, "u1", "needs the staging grant");
+    expect(out).toContain("rejected");
+    expect(out).toContain("said no");
+    expect(s.asked).toHaveLength(1);
+  });
+
+  test("the coordinator never approves an unblock itself, however low-risk the facts look", async () => {
+    const s = setup();
+    const out = await s.coordinator.blocker({
+      key: "u-low",
+      kind: "other",
+      text: "needs a go-ahead",
+      facts: facts({ reversible: true }),
+      subject: subject(),
+    });
+    expect(out).not.toContain("approved by me");
+    expect(out).toContain("raised to the owner");
+    expect(s.asked).toHaveLength(1);
+    expect(s.repo.blockerByKey("u-low")).toMatchObject({ kind: "unblock", state: "pending" });
+  });
+
+  test("an approved unblock is never handed to the coordinator's turn as 'go ahead as the owner'", async () => {
+    const s = setup();
+    await unblock(s, "u1", "needs the staging grant");
+    const b = s.repo.blockerByKey("u1")!;
+    s.repo.decide(b.id, "approved", s.clock.t);
+    await s.coordinator.tick();
+    await settle();
+    expect(s.turns.join(" ")).not.toContain("blocker #");
+  });
+
+  test("an owner's own approved blocker still is", async () => {
+    const s = setup();
+    await s.coordinator.blocker({ key: "own", kind: "decision", text: "which one?", facts: facts() });
+    s.repo.decide(s.repo.blockerByKey("own")!.id, "approved", s.clock.t);
+    await s.coordinator.tick();
+    await settle();
+    expect(s.turns[0]!.text).toContain("go ahead as them");
+  });
+
+  test("only so many unblock asks reach the owner in a day; a repeat of one already asked is not an extra", async () => {
+    const s = setup();
+    for (let i = 0; i < MAX_UNBLOCKS_PER_DAY; i++) await unblock(s, `u${i}`, `need ${i}`, subject(i % 9 + 1));
+    expect(s.asked).toHaveLength(MAX_UNBLOCKS_PER_DAY);
+    expect(await unblock(s, "extra", "one more")).toContain("most times in a day");
+    expect(s.asked).toHaveLength(MAX_UNBLOCKS_PER_DAY);
+    expect(s.repo.blockerByKey("extra")).toBeUndefined();
+    expect(await unblock(s, "u0", "need 0", subject(1))).toContain("not asked twice");
+  });
+
+  test("a stale journey another person asked for is marked as theirs in the picture; the owner's own is not", async () => {
+    const s = setup();
+    const link = "https://team.slack.com/archives/C0TEST00001/p1795000000000001";
+    const theirs = s.journeys.add({ title: "their build", status: "planned", area: "", channelId: "C0TEST00001", threadTs: "1795000000.000001", permalink: link, prs: [], progress: 0, now: "", next: "", createdBy: PAL }, NOON - 5 * DAY_MS);
+    const mine = journey(s, "my build", 30, NOON - 5 * DAY_MS);
+    await s.coordinator.tick();
+    await settle();
+    const text = s.turns[0]!.text;
+    const lineOf = (id: number) => text.split("\n").find((l) => l.startsWith(`- journey #${id}:`)) ?? "";
+    expect(lineOf(theirs.id)).toContain("NOT the owner's own");
+    expect(lineOf(theirs.id)).toContain(`--for ${PAL} --thread ${link}`);
+    expect(lineOf(mine.id)).not.toContain("NOT the owner's own");
+  });
+
+  test("with no tick scheduled, quiet hours do not hold an unblock: nothing would raise it later", async () => {
+    const s = setup(NIGHT, { scheduled: false });
+    expect(await unblock(s, "u1", "needs the staging grant")).toContain("owner was asked");
+    expect(s.asked).toHaveLength(1);
+  });
+
+  test("when the owner cannot be reached the session is not told they were asked", async () => {
+    const s = setup(NOON, { slack: { postDm: async () => undefined, update: async () => {}, postDmInteractive: async () => undefined, settleInteractive: async () => {} } as never });
+    const out = await unblock(s, "u1", "needs the staging grant");
+    expect(out).toContain("could not be reached");
+    expect(out).not.toContain("raised to the owner");
+    const off = setup(NOON, { scheduled: false, slack: { postDm: async () => undefined, update: async () => {}, postDmInteractive: async () => undefined, settleInteractive: async () => {} } as never });
+    expect(await unblock(off, "u1", "needs the staging grant")).toContain("ask the owner directly");
+  });
+});
+
 
 describe("blockers: a low-risk non-prod one is approved by the coordinator, not put to the owner", () => {
   test("approved on the spot, handled, one digest line, nothing asked, and the next tick does not hand it over", async () => {

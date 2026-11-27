@@ -1730,10 +1730,15 @@ const migrateCoordinator = (db: Database): void => {
         decided_at     INTEGER NOT NULL DEFAULT 0
       );
     `);
+    // v56: a blocker may be about a person other than the owner (who is stuck, and where their thread is).
+    const cols = db.query<{ name: string }, []>("PRAGMA table_info(coordinator_blockers)").all().map((c) => c.name);
+    for (const col of ["for_user", "channel_id", "thread_ts", "permalink", "plan"]) {
+      if (!cols.includes(col)) db.exec(`ALTER TABLE coordinator_blockers ADD COLUMN ${col} TEXT NOT NULL DEFAULT ''`);
+    }
     const { user_version } = db.query<{ user_version: number }, []>("PRAGMA user_version").get() ?? {
       user_version: 0,
     };
-    if (user_version < 55) db.exec("PRAGMA user_version = 55;");
+    if (user_version < 56) db.exec("PRAGMA user_version = 56;");
     db.exec("COMMIT");
   } catch (e) {
     db.exec("ROLLBACK");

@@ -43,6 +43,7 @@ import { LEARNINGS_COMMANDS } from "./commands/learnings.ts";
 import { JOURNEY_COMMANDS } from "./commands/journeys.ts";
 import { BUG_REPORT_COMMANDS } from "./commands/bugReport.ts";
 import { COORDINATOR_COMMANDS } from "./commands/coordinator.ts";
+import { UNBLOCK_COMMANDS } from "./commands/unblock.ts";
 import { CLAIM_COMMANDS } from "./commands/claims.ts";
 import { ERRANDS_COMMANDS } from "./commands/errands.ts";
 import { REVIEW_COMMANDS, runReview } from "./commands/review.ts";
@@ -127,6 +128,7 @@ export const COMMANDS: readonly CommandDef[] = [
   ...JOURNEY_COMMANDS,
   ...BUG_REPORT_COMMANDS,
   ...COORDINATOR_COMMANDS,
+  ...UNBLOCK_COMMANDS,
   ...CLAIM_COMMANDS,
   ...ERRANDS_COMMANDS,
   ...REVIEW_COMMANDS,

@@ -2155,6 +2155,39 @@ describe("coordinator blocker press listener", () => {
     expect(r.turns).toHaveLength(0);
   });
 
+  test("a blocker about another person: approve starts a turn in THEIR thread, reject posts one line there and nowhere else", async () => {
+    const r = rig();
+    const posts: Record<string, unknown>[] = [];
+    const client = { chat: { postMessage: async (a: Record<string, unknown>) => void posts.push(a), postEphemeral: async () => ({}) } };
+    const subject = { forUser: "U0PAL000001", channelId: "C0TEST00001", threadTs: "1795000000.123456", permalink: "https://team.slack.com/archives/C0TEST00001/p1795000000123456", plan: "open the PR" };
+    const open = (key: string, ts: string) => {
+      const b = r.repo.openBlocker({ key, kind: "unblock", prod: false, text: "needs access", subject }, 1);
+      r.repo.setNotice(b.id, NOTICE.channel, ts);
+      return b.id;
+    };
+    const press = (id: number, ts: string, actionId: string) =>
+      r.listeners.onCoordinatorPress({
+        ack: async () => {},
+        client,
+        body: { user: { id: OWNER }, channel: { id: NOTICE.channel }, message: { ts } },
+        action: { action_id: actionId, type: "button", value: String(id) },
+      });
+    await press(open("u-approve", "501.5"), "501.5", "jv:coordinator:approve");
+    expect(r.turns).toHaveLength(1);
+    expect(r.turns[0]).toMatchObject({ channelId: "C0TEST00001", threadTs: "1795000000.123456", userId: OWNER });
+    expect(r.turns[0]!.text).toContain("approved by the owner");
+    expect(r.turns[0]!.text).toContain("<@U0PAL000001>");
+    // A text the bot built from a non-owner's words: no owner bit.
+    expect((r.turns[0] as { composed?: boolean }).composed).toBe(true);
+    expect(posts).toHaveLength(0);
+    expect(r.hook()).toBe(0);
+    await press(open("u-reject", "502.5"), "502.5", "jv:coordinator:reject");
+    expect(r.turns).toHaveLength(1);
+    expect(posts).toHaveLength(1);
+    expect(posts[0]).toMatchObject({ channel: "C0TEST00001", thread_ts: "1795000000.123456" });
+    expect(String(posts[0]!.text)).toContain("said no");
+  });
+
   test("the generic kit listener never turns a legacy-id press into a model turn either", async () => {
     const r = rig();
     await r.listeners.onKitAction({

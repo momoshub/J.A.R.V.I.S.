@@ -25,6 +25,11 @@ import {
   ageLine,
   blockerDue,
   blockerText,
+  MAX_UNBLOCKS_PER_DAY,
+  hasSubject,
+  journeySubject,
+  otherJourneyNote,
+  type BlockerSubject,
   cleanKey,
   digestFooter,
   digestLine,
@@ -168,6 +173,8 @@ export type CoordinatorDeps = {
   readonly staleJourneyMs?: number;
   readonly repingMs?: number;
   readonly prefix: string;
+  /** False when no tick is scheduled (`COORDINATOR_INTERVAL_MS=0`): nothing would raise a held blocker later, so an unblock is put at once. */
+  readonly scheduled?: boolean;
   readonly log?: (msg: string) => void;
 };
 
@@ -176,6 +183,8 @@ export type BlockerInput = {
   readonly kind: BlockerKind;
   readonly text: string;
   readonly facts: BlockerFacts;
+  /** Who is stuck, when it is a person other than the owner (the kind is then `unblock`). */
+  readonly subject?: BlockerSubject;
 };
 
 export type Coordinator = {
@@ -248,7 +257,7 @@ export const createCoordinator = (deps: CoordinatorDeps): Coordinator => {
   };
 
   /** Put a blocker to the owner now: a new message, and the previous one (a prod re-ask) is settled. */
-  const raise = async (b: CoordinatorBlocker): Promise<void> => {
+  const raise = async (b: CoordinatorBlocker): Promise<boolean> => {
     const posted = await deps.slack.postDmInteractive(
       deps.ownerSlackId,
       blockerText(deps.name, b, b.raisedCount, deps.lang),
@@ -260,7 +269,7 @@ export const createCoordinator = (deps: CoordinatorDeps): Coordinator => {
     );
     if (!posted) {
       log(`could not raise blocker ${b.id}; trying again next tick`);
-      return;
+      return false;
     }
     const before = { channel: b.noticeChannel, ts: b.noticeTs };
     deps.repo.setNotice(b.id, posted.channel, posted.ts);
@@ -270,7 +279,8 @@ export const createCoordinator = (deps: CoordinatorDeps): Coordinator => {
         .settleInteractive(before.channel, before.ts, words.askedAgain(b.id), deps.name)
         .catch(logAndIgnore("coordinator superseded blocker"));
     }
-    await act(words.blockerPut(b.prod, b.id, b.kind, b.text));
+    await act(words.blockerPut(b.prod, b.id, b.kind, `${b.forUser ? `<@${b.forUser}>: ` : ""}${b.text}`));
+    return true;
   };
 
   /** A pending blocker the coordinator fixed itself: closed, and the message that asked is settled so nobody presses it. */
@@ -284,20 +294,46 @@ export const createCoordinator = (deps: CoordinatorDeps): Coordinator => {
     await act(words.blockerClosed(b.id, why));
   };
 
+  /** What a turn that asked the owner to unblock a person is told (it then tells that person in one line). */
+  const unblockReply = async (b: CoordinatorBlocker, route: BlockerRoute): Promise<string> => {
+    // The coordinator never approves an unblock itself (that would be acting as the owner with nobody pressing): an `approve` route, which cannot arise for kind `unblock`, is put to the owner like a raise.
+    if (route.route === "raise" || route.route === "approve") {
+      if (await raise(b)) return "raised to the owner. Do not ask again. Tell the person in one line that the owner was asked.";
+      return deps.scheduled === false
+        ? "the owner could not be reached just now and nothing retries it. Tell the person to ask the owner directly."
+        : "the owner could not be reached just now; it is tried again soon. Tell the person in one line that the owner will be asked.";
+    }
+    if (route.route === "self-fix") return "held: nothing to do here.";
+    const why: Record<typeof route.why, string> = {
+      "already-raised": "the owner was already asked about this and is not asked twice. Tell the person in one line that the owner was asked.",
+      decided: `the owner already decided it (${b.state}). ${b.state === "rejected" ? "Tell the person the owner said no." : "Carry on in their thread; do not ask again."}`,
+      "not-due": "the owner was just asked. Tell the person in one line that the owner was asked.",
+      "quiet-hours": "the owner is asked when quiet hours end. Tell the person in one line that the owner will be asked in the morning.",
+    };
+    return `held: ${why[route.why]}`;
+  };
+
   const blocker = async (input: BlockerInput): Promise<string> => {
     const key = cleanKey(input.key);
     const text = digestLine(input.text);
     if (!key || !text) return "A blocker needs a key and a sentence of what is in the way. Nothing was raised.";
     const now = deps.clock();
     const prior = deps.repo.blockerByKey(key);
-    const route: BlockerRoute = routeBlocker(input.facts, prior, now, { quiet: quietNow(), repingMs, kind: input.kind, text });
+    // With no tick scheduled nothing would raise a held unblock later, so quiet hours do not hold it.
+    const quiet = quietNow() && !(input.subject && deps.scheduled === false);
+    // A person's unblock is always kind `unblock` for the rules (never an `other` wall the coordinator may approve itself).
+    const route: BlockerRoute = routeBlocker(input.facts, prior, now, { quiet, repingMs, kind: input.subject ? "unblock" : input.kind, text });
     if (route.route === "self-fix") {
       // The grant `fixed` checks, and the end of any earlier ask: an owner asked about something the coordinator is now fixing would be asked all night.
       deps.repo.mark("selffix", key, now);
       if (prior?.state === "pending") await closeAsked(prior, words.nowFixed);
       return `self-fix: prod, urgent and low-risk (reversible, no data write, no schema change, no secret or IAM change), inside the owner's role. Do it, then run \`${deps.prefix} coordinator fixed ${key} "<what you did>"\`.`;
     }
-    const b = deps.repo.openBlocker({ key, kind: input.kind, prod: input.facts.prod, text }, now);
+    if (input.subject && !prior && deps.repo.unblocksSince(now - DAY_MS) >= MAX_UNBLOCKS_PER_DAY) {
+      return "The owner has been asked to unblock people the most times in a day, so this one was not sent. Tell the person to ask the owner directly.";
+    }
+    const b = deps.repo.openBlocker({ key, kind: input.subject ? "unblock" : input.kind, prod: input.facts.prod, text, ...(input.subject ? { subject: input.subject } : {}) }, now);
+    if (input.subject) return unblockReply(b, route);
     if (route.route === "approve") {
       // Decided here, in code, from the facts and the sentence: never from anything a person wrote. It is handled on the spot
       // (the turn that asked is told below), so the next tick does not hand it over as one the owner approved.
@@ -366,9 +402,10 @@ export const createCoordinator = (deps: CoordinatorDeps): Coordinator => {
         deps.journeys.update(j.id, { status: "done", note: `closed by ${deps.name}: it sat at 100% and was never closed` }, now, COORDINATOR_ACTOR);
         await act(words.closedJourney(j.id, j.title));
       } else if (picture.staleJourneys.length < PICTURE_CAP && fresh("nudge", ref("journey", j.id), now, NUDGE_REPEAT_MS)) {
+        const other = journeySubject(j, deps.ownerSlackId);
         picture.staleJourneys.push({
           ref: `journey #${j.id}`,
-          line: `${j.status} ${j.progress}%, quiet for ${ageLine(action.idleMs)} - "${j.title}"${j.now ? ` (now: ${j.now})` : ""}${j.prs.length > 0 ? ` ${j.prs.join(" ")}` : ""}`,
+          line: `${j.status} ${j.progress}%, quiet for ${ageLine(action.idleMs)} - "${j.title}"${j.now ? ` (now: ${j.now})` : ""}${j.prs.length > 0 ? ` ${j.prs.join(" ")}` : ""}${other ? otherJourneyNote(other, deps.prefix) : ""}`,
         });
       }
     }
@@ -484,6 +521,8 @@ export const createCoordinator = (deps: CoordinatorDeps): Coordinator => {
     await raiseDue(now);
     const approved = deps.repo.approvedUnhandled();
     for (const b of approved) {
+      // An approved unblock was acted on at the press, in the stuck person's thread (and marked handled): never go ahead "as the owner" on it here.
+      if (hasSubject(b)) continue;
       picture.approvedBlockers.push({ ref: `blocker #${b.id} (${b.kind})`, line: `${b.text} - the owner approved: go ahead as them` });
     }
 

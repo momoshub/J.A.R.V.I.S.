@@ -4,7 +4,7 @@
  * the message the digest lives on, and the blockers put to the owner.
  */
 import type { DbClient } from "./client.ts";
-import { addDayUsage, isBlockerKind, type BlockerKind, type DayUsage } from "../../domain/coordinator.ts";
+import { addDayUsage, isBlockerKind, type BlockerKind, type BlockerSubject, type DayUsage } from "../../domain/coordinator.ts";
 import type { FooterUsage } from "../../domain/usageFooter.ts";
 
 export type CoordinatorBlocker = {
@@ -22,6 +22,13 @@ export type CoordinatorBlocker = {
   readonly handledAt: number;
   readonly createdAt: number;
   readonly decidedAt: number;
+  /** Who is stuck, when it is somebody other than the owner (`BlockerSubject`); empty otherwise. */
+  readonly forUser: string;
+  /** Their thread: where an approval carries on. */
+  readonly channelId: string;
+  readonly threadTs: string;
+  readonly permalink: string;
+  readonly plan: string;
 };
 
 export type CoordinatorLine = { readonly at: number; readonly text: string };
@@ -40,6 +47,11 @@ type BlockerRow = {
   handled_at: number;
   created_at: number;
   decided_at: number;
+  for_user: string;
+  channel_id: string;
+  thread_ts: string;
+  permalink: string;
+  plan: string;
 };
 
 const NUM_FIELDS = ["inputTokens", "outputTokens", "cacheReadTokens", "cacheWriteTokens", "costUsd", "durationMs"] as const;
@@ -79,6 +91,11 @@ const toBlocker = (r: BlockerRow): CoordinatorBlocker => ({
   handledAt: r.handled_at,
   createdAt: r.created_at,
   decidedAt: r.decided_at,
+  forUser: r.for_user,
+  channelId: r.channel_id,
+  threadTs: r.thread_ts,
+  permalink: r.permalink,
+  plan: r.plan,
 });
 
 export type CoordinatorRepo = {
@@ -103,7 +120,12 @@ export type CoordinatorRepo = {
    * raised again as prod BECOMES prod (never the other way): a prod blocker must never fall under the
    * once-only rule. A key the coordinator fixed itself opens again from nothing.
    */
-  openBlocker: (b: { key: string; kind: BlockerKind; prod: boolean; text: string }, at: number) => CoordinatorBlocker;
+  openBlocker: (
+    b: { key: string; kind: BlockerKind; prod: boolean; text: string; subject?: BlockerSubject },
+    at: number,
+  ) => CoordinatorBlocker;
+  /** How many unblock asks were opened since `at` (the daily cap). */
+  unblocksSince: (at: number) => number;
   setNotice: (id: number, channel: string, ts: string) => void;
   /** Record that it was put to the owner (again). */
   raised: (id: number, at: number) => void;
@@ -144,7 +166,8 @@ export const createCoordinatorRepo = (db: DbClient): CoordinatorRepo => {
   const byKeyStmt = db.query<BlockerRow, [string]>("SELECT * FROM coordinator_blockers WHERE key = ?");
   const byIdStmt = db.query<BlockerRow, [number]>("SELECT * FROM coordinator_blockers WHERE id = ?");
   const openStmt = db.query(
-    `INSERT INTO coordinator_blockers (key, kind, prod, text, created_at) VALUES ($key, $kind, $prod, $text, $at)
+    `INSERT INTO coordinator_blockers (key, kind, prod, text, created_at, for_user, channel_id, thread_ts, permalink, plan)
+     VALUES ($key, $kind, $prod, $text, $at, $forUser, $channelId, $threadTs, $permalink, $plan)
      ON CONFLICT(key) DO UPDATE SET
        prod = MAX(coordinator_blockers.prod, excluded.prod),
        kind = CASE WHEN coordinator_blockers.state = 'fixed' THEN excluded.kind ELSE coordinator_blockers.kind END,
@@ -155,7 +178,15 @@ export const createCoordinatorRepo = (db: DbClient): CoordinatorRepo => {
        notice_ts = CASE WHEN coordinator_blockers.state = 'fixed' THEN '' ELSE coordinator_blockers.notice_ts END,
        handled_at = CASE WHEN coordinator_blockers.state = 'fixed' THEN 0 ELSE coordinator_blockers.handled_at END,
        decided_at = CASE WHEN coordinator_blockers.state = 'fixed' THEN 0 ELSE coordinator_blockers.decided_at END,
+       for_user = CASE WHEN coordinator_blockers.state = 'fixed' OR coordinator_blockers.for_user = '' THEN excluded.for_user ELSE coordinator_blockers.for_user END,
+       channel_id = CASE WHEN coordinator_blockers.state = 'fixed' OR coordinator_blockers.for_user = '' THEN excluded.channel_id ELSE coordinator_blockers.channel_id END,
+       thread_ts = CASE WHEN coordinator_blockers.state = 'fixed' OR coordinator_blockers.for_user = '' THEN excluded.thread_ts ELSE coordinator_blockers.thread_ts END,
+       permalink = CASE WHEN coordinator_blockers.state = 'fixed' OR coordinator_blockers.for_user = '' THEN excluded.permalink ELSE coordinator_blockers.permalink END,
+       plan = CASE WHEN coordinator_blockers.state = 'fixed' OR coordinator_blockers.for_user = '' THEN excluded.plan ELSE coordinator_blockers.plan END,
        state = CASE WHEN coordinator_blockers.state = 'fixed' THEN 'pending' ELSE coordinator_blockers.state END`,
+  );
+  const unblocksStmt = db.query<{ n: number }, [number]>(
+    "SELECT COUNT(*) AS n FROM coordinator_blockers WHERE kind = 'unblock' AND created_at >= ?",
   );
   const noticeStmt = db.query("UPDATE coordinator_blockers SET notice_channel = $channel, notice_ts = $ts WHERE id = $id");
   const raisedStmt = db.query(
@@ -194,9 +225,21 @@ export const createCoordinatorRepo = (db: DbClient): CoordinatorRepo => {
       return r ? toBlocker(r) : undefined;
     },
     openBlocker: (b, at) => {
-      openStmt.run({ $key: b.key, $kind: b.kind, $prod: b.prod ? 1 : 0, $text: b.text, $at: at });
+      openStmt.run({
+        $key: b.key,
+        $kind: b.kind,
+        $prod: b.prod ? 1 : 0,
+        $text: b.text,
+        $at: at,
+        $forUser: b.subject?.forUser ?? "",
+        $channelId: b.subject?.channelId ?? "",
+        $threadTs: b.subject?.threadTs ?? "",
+        $permalink: b.subject?.permalink ?? "",
+        $plan: b.subject?.plan ?? "",
+      });
       return toBlocker(byKeyStmt.get(b.key) as BlockerRow);
     },
+    unblocksSince: (at) => unblocksStmt.get(at)?.n ?? 0,
     setNotice: (id, channel, ts) => void noticeStmt.run({ $id: id, $channel: channel, $ts: ts }),
     raised: (id, at) => void raisedStmt.run({ $id: id, $at: at }),
     close: (id, at) => Number(closeStmt.run({ $id: id, $at: at }).changes) > 0,

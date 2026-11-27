@@ -12,8 +12,9 @@
  * words of the digest and of a blocker. The tick is `application/coordinator.ts`, the
  * rows are `infrastructure/db/coordinatorRepo.ts`.
  */
+import { SLACK_LINK_RE, linkThread } from "./bugReport.ts";
 import { ciStatusOf, type RollupEntry } from "./ciGate.ts";
-import { cleanLine } from "./journey.ts";
+import { cleanLine, tokenize, unwrapLink } from "./journey.ts";
 import { touchesSensitive } from "./lowRisk.ts";
 import { compactTokens, usageFooter, type FooterUsage } from "./usageFooter.ts";
 import { humanDuration, watchesWorker } from "./watch.ts";
@@ -72,6 +73,10 @@ export type Words = {
   readonly approve: string;
   readonly reject: string;
   readonly settled: (id: number, kind: string, text: string, verdict: "approved" | "rejected", by: string) => string;
+  /** The line of a blocker about another person: who is stuck, what is in the way, the plan and a link to their thread. */
+  readonly unblockAsk: (user: string, need: string, plan: string, link: string) => string;
+  readonly unblockHint: string;
+  readonly unblockSettled: (id: number, kind: string, user: string, text: string, verdict: "approved" | "rejected", by: string) => string;
   readonly closedAsked: (id: number, kind: string, text: string, why: string) => string;
   readonly askedAgain: (id: number) => string;
   readonly selfFixDm: (key: string, line: string) => string;
@@ -99,6 +104,10 @@ const WORDS: Readonly<Record<CoordinatorLang, (name: string) => Words>> = {
     approve: "Approve",
     reject: "Reject",
     settled: (id, kind, text, verdict, by) => `*${name}* - blocker #${id} (${kind}): ${text}\n_${verdict === "approved" ? "Approved" : "Rejected"} by <@${by}>._`,
+    unblockAsk: (user, need, plan, link) => `<@${user}> is stuck: ${need}.${plan ? ` Plan: ${plan}.` : ""}${link ? ` <${link}|Their thread>` : ""}`,
+    unblockHint: "_Approve = unblock them, I continue in their thread; Reject = I tell them no._",
+    unblockSettled: (id, kind, user, text, verdict, by) =>
+      `*${name}* - blocker #${id} (${kind}): <@${user}> is stuck: ${text}\n_${verdict === "approved" ? "Approved" : "Rejected"} by <@${by}>${verdict === "approved" ? ": unblocking them, I continue in their thread" : ": I tell them no"}._`,
     closedAsked: (id, kind, text, why) => `*${name}* - blocker #${id} (${kind}): ${text}\n_${why}._`,
     askedAgain: (id) => `*${name}* - blocker #${id} asked again below.`,
     selfFixDm: (key, line) => `*${name}* - fixed a prod item myself (urgent and low-risk, inside your role): ${line} (\`${key}\`)`,
@@ -124,6 +133,10 @@ const WORDS: Readonly<Record<CoordinatorLang, (name: string) => Words>> = {
     approve: "Duyệt",
     reject: "Từ chối",
     settled: (id, kind, text, verdict, by) => `*${name}* - việc vướng #${id} (${kind}): ${text}\n_${verdict === "approved" ? "Đã duyệt" : "Đã từ chối"} bởi <@${by}>._`,
+    unblockAsk: (user, need, plan, link) => `<@${user}> đang bị vướng: ${need}.${plan ? ` Kế hoạch: ${plan}.` : ""}${link ? ` <${link}|Thread của họ>` : ""}`,
+    unblockHint: "_Duyệt = em gỡ vướng cho họ, em làm tiếp trong thread của họ; Từ chối = em báo họ là không._",
+    unblockSettled: (id, kind, user, text, verdict, by) =>
+      `*${name}* - việc vướng #${id} (${kind}): <@${user}> đang bị vướng: ${text}\n_${verdict === "approved" ? "Đã duyệt" : "Đã từ chối"} bởi <@${by}>${verdict === "approved" ? ": gỡ vướng cho họ, em làm tiếp trong thread của họ" : ": em báo họ là không"}._`,
     closedAsked: (id, kind, text, why) => `*${name}* - việc vướng #${id} (${kind}): ${text}\n_${why}._`,
     askedAgain: (id) => `*${name}* - việc vướng #${id} đã hỏi lại ở tin dưới.`,
     selfFixDm: (key, line) => `*${name}* - em vừa tự sửa một việc prod (gấp và rủi ro thấp, trong quyền của anh): ${line} (\`${key}\`)`,
@@ -347,8 +360,8 @@ export const parseOwnPrs = (stdout: string, authors: readonly string[]): OwnPr[]
 
 // ---------------------------------------------------------------- blockers
 
-/** What kind of wall the coordinator hit. */
-export const BLOCKER_KINDS = ["permission", "prod-write", "decision", "repeat-failure", "other"] as const;
+/** What kind of wall the coordinator hit. `unblock` is a person other than the owner stuck on something only the owner can give (it always has a subject). */
+export const BLOCKER_KINDS = ["permission", "prod-write", "decision", "repeat-failure", "other", "unblock"] as const;
 export type BlockerKind = (typeof BLOCKER_KINDS)[number];
 export const isBlockerKind = (v: string): v is BlockerKind => (BLOCKER_KINDS as readonly string[]).includes(v);
 
@@ -396,6 +409,41 @@ export const isLowRisk = (f: BlockerFacts): boolean => f.reversible && !f.dataWr
  */
 export const mayFixProdItself = (f: BlockerFacts): boolean =>
   f.prod && isUrgent(f) && isLowRisk(f) && !f.beyondRole && !f.ownerDecision;
+
+/**
+ * Who is stuck, when it is not the owner: a blocker with a subject is put to the owner as "unblock THAT
+ * person", and an approval carries on in THEIR thread, not in the owner's DM.
+ */
+export type BlockerSubject = {
+  /** Slack user id of the person who is stuck. */
+  readonly forUser: string;
+  readonly channelId: string;
+  readonly threadTs: string;
+  /** The Slack link of their thread, as the owner is shown it. */
+  readonly permalink: string;
+  /** What Jarvis will do once approved; may be empty. */
+  readonly plan: string;
+};
+
+/** A Slack user id, from a bare id or a `<@U...>` mention. */
+export const parseUserId = (token: string): string | undefined => {
+  const m = /^(?:<@([UW][A-Z0-9]{2,})(?:\|[^>]*)?>|([UW][A-Z0-9]{2,}))$/.exec(token.trim());
+  return m?.[1] ?? m?.[2];
+};
+
+/** The subject a `--for <user> --thread <link>` pair names, or why it does not. */
+const subjectOf = (
+  forUser: string | undefined,
+  thread: string | undefined,
+  plan: string,
+): { ok: true; subject: BlockerSubject } | { ok: false; error: string } => {
+  const user = parseUserId(forUser ?? "");
+  if (!user) return { ok: false, error: "`--for` is the Slack user id (or mention) of the person who is stuck" };
+  const link = unwrapLink((thread ?? "").trim());
+  const where = SLACK_LINK_RE.test(link) ? linkThread(link) : undefined;
+  if (!where) return { ok: false, error: "`--thread` is the Slack link of the thread (or DM) where that person is stuck" };
+  return { ok: true, subject: { forUser: user, channelId: where.channelId, threadTs: where.threadTs, permalink: link, plan } };
+};
 
 /**
  * The non-prod rule: the coordinator approves a blocker itself, the small approvals the owner built it to take off
@@ -485,12 +533,14 @@ const BOOL_FLAGS: Readonly<Record<string, keyof BlockerFacts>> = {
 /**
  * `<key> --kind K [--prod] [--incident] [--customer-impact] [--deadline-min N]
  * [--reversible] [--data-write] [--schema-change] [--secret-iam] [--beyond-role]
- * [--owner-decision] <sentence>`. A fact not stated is false, and `reversible`
- * is a claim that must be made: silence is never low-risk.
+ * [--owner-decision] [--for <user> --thread <link>] <sentence>`. A fact not stated
+ * is false, and `reversible` is a claim that must be made: silence is never
+ * low-risk. `--for` and `--thread` come together: the wall is that person's, and
+ * the kind is then `unblock`.
  */
 export const parseBlockerArgs = (
   tokens: readonly string[],
-): { ok: true; key: string; kind: BlockerKind; text: string; facts: BlockerFacts } | { ok: false; error: string } => {
+): { ok: true; key: string; kind: BlockerKind; text: string; facts: BlockerFacts; subject?: BlockerSubject } | { ok: false; error: string } => {
   const words: string[] = [];
   const facts: { -readonly [K in keyof BlockerFacts]: BlockerFacts[K] } = {
     prod: false,
@@ -504,6 +554,8 @@ export const parseBlockerArgs = (
     ownerDecision: false,
   };
   let kind: BlockerKind = "other";
+  let forUser: string | undefined;
+  let thread: string | undefined;
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i] ?? "";
     if (!t.startsWith("--") || t === "--") {
@@ -518,6 +570,10 @@ export const parseBlockerArgs = (
       const v = (tokens[++i] ?? "").toLowerCase();
       if (!isBlockerKind(v)) return { ok: false, error: `\`--kind\` is one of ${BLOCKER_KINDS.join(", ")}` };
       kind = v;
+    } else if (name === "for") {
+      forUser = tokens[++i] ?? "";
+    } else if (name === "thread") {
+      thread = tokens[++i] ?? "";
     } else if (name === "deadline-min") {
       const n = Number(tokens[++i]);
       if (!Number.isFinite(n) || n < 0) return { ok: false, error: "`--deadline-min` is a number of minutes" };
@@ -530,7 +586,12 @@ export const parseBlockerArgs = (
   const text = words.slice(1).join(" ").trim();
   if (!key) return { ok: false, error: "name the wall with a short key first" };
   if (!text) return { ok: false, error: "say what is in the way in a sentence" };
-  return { ok: true, key, kind, text, facts };
+  if (forUser === undefined && thread === undefined) {
+    return kind === "unblock" ? { ok: false, error: "`--kind unblock` needs `--for <user> --thread <link>`" } : { ok: true, key, kind, text, facts };
+  }
+  const who = subjectOf(forUser, thread, "");
+  if (!who.ok) return who;
+  return { ok: true, key, kind: "unblock", text, facts, subject: who.subject };
 };
 
 /** Buttons are code-handled: the press never reaches a model (`application/coordinatorApproval.ts`). */
@@ -568,23 +629,106 @@ export const cleanKey = (v: string): string =>
     .replace(/^-+|-+$/g, "")
     .slice(0, 80);
 
-export const blockerText = (
-  name: string,
-  b: { id: number; kind: BlockerKind; prod: boolean; text: string },
-  repeat: number,
-  lang: CoordinatorLang = DEFAULT_LANG,
-): string => {
+/** What the owner is shown about a blocker: its words, and who is stuck when it is somebody else. */
+export type BlockerView = {
+  id: number;
+  kind: BlockerKind;
+  prod: boolean;
+  text: string;
+  forUser?: string;
+  permalink?: string;
+  plan?: string;
+};
+
+/** A blocker that is a person other than the owner being stuck (its approval continues in their thread). */
+export const hasSubject = (b: { forUser?: string; channelId?: string; threadTs?: string }): boolean =>
+  !!b.forUser && !!b.channelId && !!b.threadTs;
+
+export const blockerText = (name: string, b: BlockerView, repeat: number, lang: CoordinatorLang = DEFAULT_LANG): string => {
   const w = wordsOf(name, lang);
-  return [w.blockerHead(b.prod, b.id, b.kind, repeat), b.text, b.prod ? w.blockerProdHint : w.blockerHint].join("\n");
+  const body = b.forUser ? [w.unblockAsk(b.forUser, b.text, b.plan ?? "", b.permalink ?? ""), w.unblockHint] : [b.text, b.prod ? w.blockerProdHint : w.blockerHint];
+  return [w.blockerHead(b.prod, b.id, b.kind, repeat), ...body].join("\n");
 };
 
 export const settledBlockerText = (
   name: string,
-  b: { id: number; kind: BlockerKind; prod: boolean; text: string },
+  b: BlockerView,
   verdict: "approved" | "rejected",
   by: string,
   lang: CoordinatorLang = DEFAULT_LANG,
-): string => wordsOf(name, lang).settled(b.id, b.kind, b.text, verdict, by);
+): string => {
+  const w = wordsOf(name, lang);
+  return b.forUser ? w.unblockSettled(b.id, b.kind, b.forUser, b.text, verdict, by) : w.settled(b.id, b.kind, b.text, verdict, by);
+};
+
+/** What the turn the owner's Approve starts in the stuck person's thread is told. */
+export const unblockApprovedBrief = (b: { id: number; forUser: string; text: string; plan: string }): string =>
+  [
+    `Blocker #${b.id} is approved by the owner (they pressed Approve): the owner is unblocking <@${b.forUser}>, who was stuck in this thread. Carry on here for that person, within the owner's grant, and tell them in one line that the owner approved.`,
+    `need: ${b.text}`,
+    ...(b.plan ? [`plan: ${b.plan}`] : []),
+  ].join("\n");
+
+/** What the owner's Reject posts in the stuck person's thread: code writes it, no model turn. */
+export const unblockRejectedText = (b: { forUser: string; text: string }): string =>
+  `<@${b.forUser}> the owner looked at this and said no: ${b.text}. Nothing changes on my side.`;
+
+// ---------------------------------------------------------------- unblock (any session)
+
+export const MAX_NEED = 300;
+export const MAX_PLAN = 500;
+/** Unblock asks that go to the owner within a day, so a looping turn cannot flood the DM. */
+export const MAX_UNBLOCKS_PER_DAY = 10;
+
+export type UnblockInput = { readonly need: string; readonly subject: BlockerSubject };
+
+const UNBLOCK_FLAGS = ["thread", "for", "need", "plan"] as const;
+
+/** `--thread <link> --for <user> --need "..." [--plan "..."]`, in any order, `--flag=value` too. */
+export const parseUnblock = (rest: string): { ok: true; input: UnblockInput } | { ok: false; error: string } => {
+  const found: Record<string, string> = {};
+  const tokens = tokenize(rest);
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i] ?? "";
+    const m = /^--([\w-]+)(?:=([\s\S]*))?$/.exec(t);
+    const name = m?.[1];
+    if (!name || !(UNBLOCK_FLAGS as readonly string[]).includes(name)) return { ok: false, error: `I do not know \`${t}\`` };
+    const value = m[2] ?? tokens[++i];
+    if (value === undefined || value.startsWith("--")) return { ok: false, error: `\`--${name}\` needs a value` };
+    found[name] = value;
+  }
+  const need = cleanLine(found.need ?? "", MAX_NEED);
+  if (!need) return { ok: false, error: "`--need` says what is blocking them" };
+  const who = subjectOf(found.for, found.thread, cleanLine(found.plan ?? "", MAX_PLAN));
+  return who.ok ? { ok: true, input: { need, subject: who.subject } } : who;
+};
+
+const hash = (v: string): string => {
+  let h = 5381;
+  for (let i = 0; i < v.length; i++) h = ((h << 5) + h + v.charCodeAt(i)) >>> 0;
+  return h.toString(36);
+};
+
+/** What makes two unblock asks the same one: the thread and the need's words, case and punctuation aside. */
+export const unblockKey = (i: UnblockInput): string =>
+  cleanKey(`unblock:${i.subject.channelId}:${i.subject.threadTs}:${hash(i.need.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim())}`);
+
+// ---------------------------------------------------------------- another person's journey
+
+/** A journey somebody other than the owner asked for: whose it is and where they asked. */
+export const journeySubject = (
+  j: { readonly createdBy: string; readonly permalink: string },
+  ownerSlackId: string,
+): { readonly user: string; readonly link: string } | undefined => {
+  const user = parseUserId(j.createdBy);
+  return user && user !== ownerSlackId ? { user, link: j.permalink } : undefined;
+};
+
+/** The note on a stale journey that is not the owner's own: raise it as an unblock for that person, never as the owner's work. */
+export const otherJourneyNote = (s: { user: string; link: string }, prefix: string): string =>
+  s.link
+    ? ` - NOT the owner's own: <@${s.user}> asked for it (${s.link}); if it needs the owner, raise it with \`${prefix} coordinator blocker <key> --for ${s.user} --thread ${s.link} "<what ${s.user} needs from the owner>"\`, never as the owner's work`
+    : ` - NOT the owner's own: <@${s.user}> asked for it (no thread link kept); if it needs the owner, say who is stuck by name in the blocker sentence, never as the owner's work`;
 
 export const selfFixDmText = (name: string, key: string, line: string, lang: CoordinatorLang = DEFAULT_LANG): string =>
   wordsOf(name, lang).selfFixDm(key, cleanLine(line, MAX_LINE));
@@ -684,6 +828,7 @@ export const coordinatorTurnText = (name: string, day: string, quiet: boolean, p
     "",
     "The picture below is what code could not settle by itself. Work through it, acting inside the owner's existing role:",
     "- stale journey: read it, then close it if it is done (`journey done`), resume it (start or steer the work), or `journey update --now` with what you found. Never leave it as it was.",
+    `- stale journey marked NOT the owner's own: another person asked for it, in their own thread, so it is not the owner's work to start or drop. If it is stuck on something only the owner can give or decide, raise it as an unblock for that person (\`${prefix} coordinator blocker <key> --for <user> --thread <link> "<what they need>"\`); the owner's Approve continues in THEIR thread, not here. Otherwise \`journey update --now\` with what you found.`,
     "- dead worker: look at its task and decide redo, resume or drop; renew or re-bind what lapsed (`worker-ticket renew`, a new `watch worker`), inside the owner's role.",
     "- ticket past its lifetime: mint a replacement bound to the same dispatch the way the parallel guide says.",
     "- red CI on an own PR: read the failure and fix it through the self-fix procedure.",
