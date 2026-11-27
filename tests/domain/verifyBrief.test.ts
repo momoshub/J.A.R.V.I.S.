@@ -184,6 +184,12 @@ describe("checkVerdict", () => {
     const c = "Exercised:\n- ticket.1: ok\n\nticket.2 looked fine to me\nVERDICT: verified";
     expect(checkVerdict(["ticket.1", "ticket.2"], c).missing).toEqual(["ticket.2"]);
   });
+  test("two VERDICT lines, in either order, are conflicting and never ok", () => {
+    const both = "Exercised: ticket.1\nVERDICT: not verified - a\nVERDICT: verified";
+    expect(checkVerdict(["ticket.1"], both)).toMatchObject({ ok: false, verdict: "conflicting" });
+    expect(checkVerdict(["ticket.1"], "Exercised: ticket.1\nVERDICT: verified\nVERDICT: not verified - b").ok).toBe(false);
+    expect(checkVerdict(["ticket.1"], "VERDICT: verified\nVERDICT: verified").ok).toBe(false);
+  });
   test("VERDICT: failed is the not-verified verdict", () => {
     expect(checkVerdict(["ticket.1"], "Exercised: ticket.1\nVERDICT: failed - broke")).toMatchObject({ ok: true, verdict: "not verified" });
   });
@@ -229,6 +235,8 @@ describe("parseVerifyBriefArgs", () => {
     expect(() => parseVerifyBriefArgs(["brief", "--head", "-x"])).toThrow();
     expect(() => parseVerifyBriefArgs(["check", "--brief", "a"])).toThrow();
     expect(() => parseVerifyBriefArgs(["frob"])).toThrow();
-    expect(parseVerifyBriefArgs([])).toEqual({ cmd: "help" });
+    expect(() => parseVerifyBriefArgs([])).toThrow();
+    expect(parseVerifyBriefArgs(["help"])).toEqual({ cmd: "help" });
+    expect(parseVerifyBriefArgs(["--help"])).toEqual({ cmd: "help" });
   });
 });

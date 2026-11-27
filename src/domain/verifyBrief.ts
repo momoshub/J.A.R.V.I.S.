@@ -397,7 +397,7 @@ export const requiredItemsOf = (brief: string): readonly string[] => {
 
 export type VerdictCheck = {
   readonly ok: boolean;
-  readonly verdict: "verified" | "not verified" | "missing";
+  readonly verdict: "verified" | "not verified" | "missing" | "conflicting";
   readonly exercised: readonly string[];
   readonly missing: readonly string[];
 };
@@ -413,13 +413,18 @@ const ITEM = /^\s*(?:[-*]|\d+[.)])?\s*(?:n\/a\s+)?([a-z]+\.\d+)/i;
  * Whether a `[verify]` comment accounts for every required item. Ids count on
  * an `Exercised:` / `n/a` line (any markdown emphasis around it) and, under such
  * a header, on the list lines that start with an id (one line per item, as the
- * brief asks). `VERDICT: failed` is the same as `not verified`. A `verified`
+ * brief asks). `VERDICT: failed` is the same as `not verified`; two VERDICT
+ * lines (a pasted template, a contradiction) are `conflicting` and never ok. A `verified`
  * that leaves an item unaccounted for is not ok; an id in prose never counts.
  */
 export const checkVerdict = (required: readonly string[], comment: string): VerdictCheck => {
   const lines = comment.split("\n").map(stripMarkdown);
-  const v = lines.map((l) => /^\s*VERDICT:\s*(verified|not verified|failed)\b/i.exec(l)?.[1]?.toLowerCase()).find(Boolean);
-  const verdict = v === "verified" ? "verified" : v === "not verified" || v === "failed" ? "not verified" : "missing";
+  const verdicts = lines.flatMap((l) => {
+    const w = /^\s*VERDICT:\s*(verified|not verified|failed)\b/i.exec(l)?.[1]?.toLowerCase();
+    return w ? [w === "verified" ? "verified" : "not verified"] : [];
+  });
+  // exactly one VERDICT line: a pasted template or a contradiction is not a verdict
+  const verdict = verdicts.length === 0 ? "missing" : verdicts.length > 1 ? "conflicting" : (verdicts[0] as "verified" | "not verified");
   const named = new Set<string>();
   let underHeader = false;
   for (const line of lines) {
@@ -435,7 +440,7 @@ export const checkVerdict = (required: readonly string[], comment: string): Verd
   }
   const exercised = required.filter((r) => named.has(r));
   const missing = required.filter((r) => !named.has(r));
-  return { ok: verdict !== "missing" && (verdict === "not verified" || missing.length === 0), verdict, exercised, missing };
+  return { ok: (verdict === "not verified" || verdict === "verified") && (verdict === "not verified" || missing.length === 0), verdict, exercised, missing };
 };
 
 /** Agent ids Orca can launch that are not Claude, in the order a verifier prefers them. */
@@ -489,7 +494,8 @@ export type VerifyBriefArgs =
 
 export const parseVerifyBriefArgs = (argv: readonly string[]): VerifyBriefArgs => {
   const [cmd, ...rest] = argv;
-  if (!cmd || cmd === "--help" || cmd === "-h" || cmd === "help") return { cmd: "help" };
+  if (!cmd) throw new Error("a command is needed");
+  if (cmd === "--help" || cmd === "-h" || cmd === "help") return { cmd: "help" };
   const flags = new Map<string, string>();
   const bare = new Set<string>();
   for (let i = 0; i < rest.length; i++) {

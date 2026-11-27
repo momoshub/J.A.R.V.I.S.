@@ -62,7 +62,7 @@ Post one comment `[verify]` on the PR (as the `SELF_PR_REVIEWER` account: `GH_TO
 
 - approve or merge its own patch: if you changed code to make it pass, you are now the writer, push it as a fix and ask for another verifier
 - verify a commit other than the PR head: a push after you started voids the run, re-check the SHA before posting
-- claim `VERDICT: verified` with a brief item neither exercised nor `n/a`: save the comment to a file and run `bun bin/verify-brief.ts check --brief brief.md --comment comment.md`, it must exit 0
+- claim `VERDICT: verified` with a brief item neither exercised nor `n/a`: save the comment to a file and run `bun bin/verify-brief.ts check --brief brief.md --comment comment.md`, it must exit 0 (exactly one `VERDICT:` line: two, a pasted template or a contradiction, is refused)
 - claim verified without evidence in the comment, or on the strength of the writer's own description, CI alone or "looks right"
 - edit the main folder, restart the bot to "see if it works", or run `bin/jarvis-restart.sh`
 - add attribution, a co-author trailer or "Generated with" to anything

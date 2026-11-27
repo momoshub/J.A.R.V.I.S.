@@ -89,6 +89,24 @@ describe("bin/verify-brief.ts", () => {
     expect(run("agent", "--available", "claude,codex").out).toContain("VERIFIER_AGENT='codex'");
   });
 
+  test("no arguments is a usage error, an explicit help is not", () => {
+    const none = run();
+    expect(none.code).toBe(2);
+    expect(none.err).toContain("usage:");
+    expect(run("--help").code).toBe(0);
+    expect(run("help").out).toContain("usage:");
+  });
+
+  test("check refuses a comment with two VERDICT lines", () => {
+    const brief = join(dir, "brief.md");
+    const both = join(dir, "both.md");
+    writeFileSync(brief, "REQUIRED_ITEMS: ticket.1\n");
+    writeFileSync(both, "Exercised: ticket.1\nVERDICT: not verified - x\nVERDICT: verified\n");
+    const r = run("check", "--brief", brief, "--comment", both);
+    expect(r.code).toBe(1);
+    expect(r.out).toContain("conflicting");
+  });
+
   test("usage on a bad argument", () => {
     const r = run("brief", "--pr", "x");
     expect(r.code).toBe(2);
