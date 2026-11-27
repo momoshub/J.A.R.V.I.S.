@@ -114,7 +114,7 @@ no classes.
   later part in; a `KEEP_REPLY` line in the closing reply replaces the turn's single
   text post). The Slack handler then sends no closing reply for that turn unless it
   carries the marker (`domain/selfPost.ts`); the drop is logged with thread and
-  length. The closing reply is not streamed live either: once the turn has a post, the stream
+  length. The footer the closing reply would have carried goes on the turn's last own post instead (`footSelfPost`: read back, `chat.update` with its blocks kept and `jv_footer` last, skipped when one is there; a failure is only logged). The closing reply is not streamed live either: once the turn has a post, the stream
   (`bufferText` in `slack/stream.ts`, fed by the turn's run ticket through `onRunTicket`) stops
   showing text and holds it back until the end-of-turn decision, so nothing is shown only to be
   deleted; text that streamed before the first post stays until that tidy-up. One exception keeps the answer from vanishing: when EVERY post of the turn is a
