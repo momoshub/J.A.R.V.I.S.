@@ -234,7 +234,11 @@ no classes.
   Asia/Ho_Chi_Minh); a prod blocker is asked again every `COORDINATOR_PROD_REPING_MS`
   until the owner acts, quiet hours or not, unless it is both urgent and
   low-risk and inside the owner's role, which the coordinator fixes itself and reports in
-  the digest and one direct line. The coordinator also takes the small approvals
+  the digest and one direct line. The digest and every blocker are written in
+  `COORDINATOR_LANG` (Vietnamese by default), and the digest message carries the grey
+  usage footer: the last tick's line plus the day's total, kept in `coordinator_usage`
+  and counted only for a turn that really ran.
+  The coordinator also takes the small approvals
   off the owner's hands, in code: a non-prod `other` blocker that is provably
   low-risk is approved by the coordinator, and a new bug report is approved by it
   when the owner himself asked for the fix in that very thread (read from the

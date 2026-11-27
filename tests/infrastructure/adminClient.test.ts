@@ -48,6 +48,26 @@ describe("every message the admin client writes is signed", () => {
     expect(signedBy(calls[1]?.[1])).toBe("inner child Jarvis");
   });
 
+  test("a DM and an edit carry the usage in the footer: a FooterUsage through usageFooter, a string as the line itself, none leaves it as it was", async () => {
+    const { calls, admin } = fake();
+    const usage = { model: "claude-sonnet-5-5", inputTokens: 1000, outputTokens: 500, cacheReadTokens: 10_000, cacheWriteTokens: 500, costUsd: 0.25, durationMs: 62_000 };
+    await admin.postDm("U1", "digest", "Aide", undefined, "line · hôm nay 1 lượt");
+    await admin.update("D9", "1.0", "digest", "Aide", "line · hôm nay 1 lượt");
+    await admin.postDm("U1", "digest", "Aide", undefined, usage);
+    await admin.update("D9", "1.0", "digest", "Aide", usage);
+    await admin.postDm("U1", "digest", "Aide");
+    await admin.update("D9", "1.0", "digest", "Aide");
+    expect(calls.map(([, a]) => signedBy(a))).toEqual([
+      "Aide · line · hôm nay 1 lượt",
+      "Aide · line · hôm nay 1 lượt",
+      footerLine("Aide", usageFooter(usage)),
+      footerLine("Aide", usageFooter(usage)),
+      "Aide",
+      "Aide",
+    ]);
+    expect(footerOf(calls[0]![1])).toMatchObject({ type: "context", block_id: FOOTER_BLOCK_ID });
+  });
+
   test("a turn's usage goes into the footer, in the live reply's format", async () => {
     const { calls, admin } = fake();
     const usage = {

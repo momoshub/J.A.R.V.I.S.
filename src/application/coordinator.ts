@@ -26,6 +26,7 @@ import {
   blockerDue,
   blockerText,
   cleanKey,
+  digestFooter,
   digestLine,
   dispatchIdsOf,
   emptyPicture,
@@ -34,6 +35,7 @@ import {
   coordinatorTurnText,
   localDay,
   lapsedWorkerDispatch,
+  wordsOf,
   pictureSize,
   prFindings,
   rearmPlan,
@@ -46,11 +48,13 @@ import {
   type BlockerFacts,
   type BlockerKind,
   type BlockerRoute,
+  type CoordinatorLang,
   type OwnPr,
   type Picture,
   type PictureItem,
   type TicketFacts,
 } from "../domain/coordinator.ts";
+import type { FooterUsage } from "../domain/usageFooter.ts";
 import { watchesWorker } from "../domain/watch.ts";
 import { claimFindings, findingLine, holderLine, type ClaimFacts } from "../domain/writerClaim.ts";
 import { WORKER_TTL_DEFAULT_MS } from "../domain/workerTicket.ts";
@@ -152,7 +156,10 @@ export type CoordinatorDeps = {
   /** Open PRs of the bot's own repo with CI and reviewer state. */
   readonly ownPrs: () => Promise<{ readonly prs: readonly OwnPr[]; readonly problem?: string }>;
   readonly unanswered: (slackUserId: string, since: number, before: number) => readonly EndedThread[];
-  readonly runTurn: (req: CoordinatorTurnRequest) => Promise<{ text: string; ran?: boolean } | undefined | void>;
+  /** `usage` is what the turn cost, when the model reported it: it goes into the digest's footer, and only for a turn that `ran`. */
+  readonly runTurn: (req: CoordinatorTurnRequest) => Promise<{ text: string; ran?: boolean; usage?: FooterUsage } | undefined | void>;
+  /** The language of the digest, of blockers and of what the turn writes. Vietnamese when left out. */
+  readonly lang?: CoordinatorLang;
   /** Minutes east of UTC the owner's day is read in. */
   readonly offsetMinutes: () => number;
   readonly quiet: { readonly startHour: number; readonly endHour: number };
@@ -188,6 +195,7 @@ const ref = (kind: string, id: string | number): string => `${kind}:${id}`;
 
 export const createCoordinator = (deps: CoordinatorDeps): Coordinator => {
   const log = deps.log ?? (() => {});
+  const words = wordsOf(deps.name, deps.lang);
   const staleMs = deps.staleJourneyMs ?? DEFAULT_STALE_JOURNEY_MS;
   const repingMs = deps.repingMs ?? DEFAULT_PROD_REPING_MS;
   let running = false;
@@ -212,19 +220,22 @@ export const createCoordinator = (deps: CoordinatorDeps): Coordinator => {
     for (const day of [dayAt(deps.clock() - DAY_MS), today()]) {
       const lines = deps.repo.lines(day);
       if (lines.length === 0) continue;
-      const text = renderDigest(deps.name, day, lines, deps.offsetMinutes(), deps.repo.pending().length);
-      if (text === rendered.get(day)) continue;
+      const text = renderDigest(deps.name, day, lines, deps.offsetMinutes(), deps.repo.pending().length, deps.lang);
+      // The usage footer is part of what is written: a tick that only cost something still edits the message.
+      const footer = digestFooter(deps.name, deps.repo.usage(day), deps.lang);
+      const written = `${text}\n${footer ?? ""}`;
+      if (written === rendered.get(day)) continue;
       const where = deps.repo.digest(day);
       if (where) {
-        await deps.slack.update(where.channel, where.ts, text, deps.name);
-        rendered.set(day, text);
+        await deps.slack.update(where.channel, where.ts, text, deps.name, footer);
+        rendered.set(day, written);
         continue;
       }
       if (quietNow()) continue;
-      const posted = await deps.slack.postDm(deps.ownerSlackId, text, deps.name);
+      const posted = await deps.slack.postDm(deps.ownerSlackId, text, deps.name, undefined, footer);
       if (posted) {
         deps.repo.setDigest(day, posted.channel, posted.ts);
-        rendered.set(day, text);
+        rendered.set(day, written);
       }
     }
   };
@@ -240,10 +251,10 @@ export const createCoordinator = (deps: CoordinatorDeps): Coordinator => {
   const raise = async (b: CoordinatorBlocker): Promise<void> => {
     const posted = await deps.slack.postDmInteractive(
       deps.ownerSlackId,
-      blockerText(deps.name, b, b.raisedCount),
+      blockerText(deps.name, b, b.raisedCount, deps.lang),
       [
-        { actionId: COORDINATOR_APPROVE_ACTION, label: "Approve", value: String(b.id), style: "primary" },
-        { actionId: COORDINATOR_REJECT_ACTION, label: "Reject", value: String(b.id), style: "danger" },
+        { actionId: COORDINATOR_APPROVE_ACTION, label: words.approve, value: String(b.id), style: "primary" },
+        { actionId: COORDINATOR_REJECT_ACTION, label: words.reject, value: String(b.id), style: "danger" },
       ],
       deps.name,
     );
@@ -256,10 +267,10 @@ export const createCoordinator = (deps: CoordinatorDeps): Coordinator => {
     deps.repo.raised(b.id, deps.clock());
     if (before.channel && before.ts) {
       await deps.slack
-        .settleInteractive(before.channel, before.ts, `*${deps.name}* - blocker #${b.id} asked again below.`, deps.name)
+        .settleInteractive(before.channel, before.ts, words.askedAgain(b.id), deps.name)
         .catch(logAndIgnore("coordinator superseded blocker"));
     }
-    await act(`${b.prod ? "prod " : ""}blocker #${b.id} (${b.kind}) put to you: ${b.text}`);
+    await act(words.blockerPut(b.prod, b.id, b.kind, b.text));
   };
 
   /** A pending blocker the coordinator fixed itself: closed, and the message that asked is settled so nobody presses it. */
@@ -267,10 +278,10 @@ export const createCoordinator = (deps: CoordinatorDeps): Coordinator => {
     if (!deps.repo.close(b.id, deps.clock())) return;
     if (b.noticeChannel && b.noticeTs) {
       await deps.slack
-        .settleInteractive(b.noticeChannel, b.noticeTs, `*${deps.name}* - blocker #${b.id} (${b.kind}): ${b.text}\n_${why}._`, deps.name)
+        .settleInteractive(b.noticeChannel, b.noticeTs, words.closedAsked(b.id, b.kind, b.text, why), deps.name)
         .catch(logAndIgnore("coordinator closed blocker"));
     }
-    await act(`prod blocker #${b.id} closed: ${why}`);
+    await act(words.blockerClosed(b.id, why));
   };
 
   const blocker = async (input: BlockerInput): Promise<string> => {
@@ -283,7 +294,7 @@ export const createCoordinator = (deps: CoordinatorDeps): Coordinator => {
     if (route.route === "self-fix") {
       // The grant `fixed` checks, and the end of any earlier ask: an owner asked about something the coordinator is now fixing would be asked all night.
       deps.repo.mark("selffix", key, now);
-      if (prior?.state === "pending") await closeAsked(prior, "now fixed by me (urgent, low-risk)");
+      if (prior?.state === "pending") await closeAsked(prior, words.nowFixed);
       return `self-fix: prod, urgent and low-risk (reversible, no data write, no schema change, no secret or IAM change), inside the owner's role. Do it, then run \`${deps.prefix} coordinator fixed ${key} "<what you did>"\`.`;
     }
     const b = deps.repo.openBlocker({ key, kind: input.kind, prod: input.facts.prod, text }, now);
@@ -317,11 +328,11 @@ export const createCoordinator = (deps: CoordinatorDeps): Coordinator => {
     const granted = deps.repo.lastMark("selffix", k);
     if (granted === undefined || deps.clock() - granted > SELF_FIX_GRANT_MS) return false;
     const stored = deps.repo.blockerByKey(k);
-    if (stored?.state === "pending") await closeAsked(stored, "fixed by me (urgent, low-risk)");
-    await act(`prod fix by me (urgent, low-risk): ${line}`);
+    if (stored?.state === "pending") await closeAsked(stored, words.fixedByMe);
+    await act(words.prodFix(line));
     // A direct line, quiet hours or not: a prod item was touched and the owner hears it.
     await deps.slack
-      .postDm(deps.ownerSlackId, selfFixDmText(deps.name, k, line), deps.name)
+      .postDm(deps.ownerSlackId, selfFixDmText(deps.name, k, line, deps.lang), deps.name)
       .catch(logAndIgnore("coordinator self-fix DM"));
     return true;
   };
@@ -353,7 +364,7 @@ export const createCoordinator = (deps: CoordinatorDeps): Coordinator => {
       if (!action) continue;
       if (action.kind === "close") {
         deps.journeys.update(j.id, { status: "done", note: `closed by ${deps.name}: it sat at 100% and was never closed` }, now, COORDINATOR_ACTOR);
-        await act(`closed journey #${j.id} "${j.title}": it sat at 100%`);
+        await act(words.closedJourney(j.id, j.title));
       } else if (picture.staleJourneys.length < PICTURE_CAP && fresh("nudge", ref("journey", j.id), now, NUDGE_REPEAT_MS)) {
         picture.staleJourneys.push({
           ref: `journey #${j.id}`,
@@ -371,7 +382,7 @@ export const createCoordinator = (deps: CoordinatorDeps): Coordinator => {
       if (!action) continue;
       if (action.kind === "renew") {
         const r = deps.tickets.renew(t.id, WORKER_TTL_DEFAULT_MS);
-        if (r.ok) await act(`renewed worker ticket ${t.id} for ${t.dispatchId}${action.lapsed ? " (it had lapsed)" : ""}: good for ${ageLine(r.expiresAt - now)} more`);
+        if (r.ok) await act(words.renewedTicket(t.id, t.dispatchId, action.lapsed, ageLine(r.expiresAt - now)));
         else if (picture.replaceTickets.length < PICTURE_CAP && fresh("nudge", ref("ticket", t.id), now, NUDGE_REPEAT_MS)) {
           picture.replaceTickets.push({ ref: `ticket ${t.id}`, line: `${t.dispatchId}: renewal refused (${r.error})` });
         }
@@ -389,7 +400,7 @@ export const createCoordinator = (deps: CoordinatorDeps): Coordinator => {
       if (!d || deadDispatches.has(d) || waiting.some((x) => watchesWorker(x.check, d))) continue;
       if (!doneOnce("rewatch", d, now, DAY_MS)) continue;
       const id = deps.watches.rearm(w, now);
-      await act(`re-armed the lapsed watch on worker ${d} (#${w.id}, now #${id})`);
+      await act(words.rearmedWatch(d, w.id, id));
     }
   };
 
@@ -507,7 +518,7 @@ export const createCoordinator = (deps: CoordinatorDeps): Coordinator => {
           // One made-up thread per local day: a fresh session each morning that reads its state back, the same one through the day.
           threadTs: dayThreadTs(day),
           slackUserId: deps.ownerSlackId,
-          text: coordinatorTurnText(deps.name, day, quietNow(), picture, deps.prefix),
+          text: coordinatorTurnText(deps.name, day, quietNow(), picture, deps.prefix, deps.lang),
           unprompted: true,
           loop: true,
           hold: true,
@@ -519,9 +530,14 @@ export const createCoordinator = (deps: CoordinatorDeps): Coordinator => {
         if (reply?.ran) {
           for (const m of marks) deps.repo.mark(m.kind, m.id, now);
           for (const b of approved) deps.repo.markHandled(b.id, deps.clock());
+          // What the tick cost, for the digest's footer: only a turn that really ran adds anything.
+          if (reply.usage) {
+            deps.repo.addUsage(day, reply.usage);
+            await refreshDigest().catch(logAndIgnore("coordinator digest"));
+          }
         }
         const note = reply?.text.trim();
-        if (note && !/no[_ ]reply/i.test(note)) await act(`note: ${note}`);
+        if (note && !/no[_ ]reply/i.test(note)) await act(words.note(note));
       } catch (e) {
         log(`turn failed: ${e instanceof Error ? e.message : String(e)}`);
       } finally {

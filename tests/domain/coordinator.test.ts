@@ -38,7 +38,9 @@ import {
   coordinatorPressKind,
   DEFAULT_COORDINATOR_NAME,
   isCoordinatorAction,
+  addDayUsage,
   blockerText,
+  digestFooter,
   selfFixDmText,
   settledBlockerText,
 } from "../../src/domain/coordinator.ts";
@@ -354,17 +356,52 @@ describe("parseBlockerArgs", () => {
 
 describe("digest and turn text", () => {
   test("one message per day: header, time-stamped lines on the owner's clock, a waiting count", () => {
-    const text = renderDigest("Aide", "2026-11-27", [{ at: at(9, 5), text: "closed journey #4" }], 420, 2);
+    const text = renderDigest("Aide", "2026-11-27", [{ at: at(9, 5), text: "closed journey #4" }], 420, 2, "en");
     expect(text).toContain("*Aide* - housekeeping digest, 2026-11-27");
     expect(text).toContain("- 09:05 closed journey #4");
     expect(text).toContain("2 blockers waiting on you");
   });
   test("a long day folds its oldest lines into a count", () => {
     const lines = Array.from({ length: 45 }, (_, i) => ({ at: at(8) + i * MINUTE_MS, text: `line ${i}` }));
-    const text = renderDigest("Aide", "2026-11-27", lines, 420, 0);
+    const text = renderDigest("Aide", "2026-11-27", lines, 420, 0, "en");
     expect(text).toContain("5 earlier lines not shown");
     expect(text).toContain("line 44");
     expect(text).not.toContain("line 0\n");
+  });
+  test("the Vietnamese frame: title, folded count and waiting blockers, lines untouched", () => {
+    const lines = Array.from({ length: 41 }, (_, i) => ({ at: at(8) + i * MINUTE_MS, text: `dòng ${i}` }));
+    const text = renderDigest("Aide", "2026-11-27", lines, 420, 1);
+    expect(text).toContain("*Aide* - bản tin dọn dẹp, 2026-11-27");
+    expect(text).toContain("_1 dòng trước đó không hiển thị_");
+    expect(text).toContain("_1 việc vướng đang chờ anh quyết, đã hỏi ở trên_");
+    expect(text).toContain("- 08:40 dòng 40");
+    expect(text).not.toContain("housekeeping");
+    expect(renderDigest("Aide", "d", lines.slice(0, 1), 420, 0)).not.toContain("trước đó");
+  });
+  test("the footer is the last tick's usage line plus the day's total, nothing before a tick reported", () => {
+    const u = { model: "claude-sonnet-5-5", inputTokens: 1000, outputTokens: 500, cacheReadTokens: 10_000, cacheWriteTokens: 500, costUsd: 0.25, durationMs: 62_000 };
+    expect(digestFooter("Aide", undefined)).toBeUndefined();
+    const day = addDayUsage(addDayUsage(undefined, u), { ...u, costUsd: 0.5 });
+    expect(day).toMatchObject({ ticks: 2, costUsd: 0.75, tokens: 24_000 });
+    expect(digestFooter("Aide", day)).toBe("claude-sonnet-5-5 · in 1k · out 500 · cache r 10k w 500 · $0.50 · 1m 2s · hôm nay 2 lượt · $0.75 · 24k token");
+    expect(digestFooter("Aide", day, "en")).toContain("today 2 ticks · $0.75 · 24k tokens");
+    expect(digestFooter("Aide", addDayUsage(undefined, u), "en")).toContain("today 1 tick ·");
+  });
+  test("blocker and fix texts follow the language", () => {
+    const b = { id: 3, kind: "decision" as const, prod: true, text: "chọn cái nào" };
+    expect(blockerText("Aide", b, 1)).toContain("🚨 vướng việc prod #3 (decision), đã hỏi 2 lần");
+    expect(blockerText("Aide", b, 0, "en")).toContain("🚨 prod blocker #3 (decision)");
+    expect(settledBlockerText("Aide", b, "approved", "U1")).toContain("Đã duyệt bởi <@U1>");
+    expect(selfFixDmText("Aide", "k", "xong", "vi")).toContain("em vừa tự sửa");
+  });
+  test("the turn text asks for Vietnamese by default and keeps the style rules, English on request", () => {
+    const vi = coordinatorTurnText("Aide", "d", false, emptyPicture, "//bot");
+    expect(vi).toContain("in Vietnamese");
+    expect(vi).toContain("no capital at the start of a line, no trailing dot, no em dashes");
+    expect(vi).toContain("`//bot coordinator fixed <key>");
+    const en = coordinatorTurnText("Aide", "d", false, emptyPicture, "//bot", "en");
+    expect(en).toContain("in English");
+    expect(en).not.toContain("Vietnamese");
   });
   test("the turn text names the configured name, the rules and only the sections that have items", () => {
     const text = coordinatorTurnText("Aide", "2026-11-27", false, { ...emptyPicture, staleJourneys: [{ ref: "journey #3", line: "quiet 4d" }] }, "//bot");
@@ -389,10 +426,11 @@ describe("the display name comes from config", () => {
   });
   test("every text the coordinator writes carries the name it was given", () => {
     const b = { id: 7, kind: "permission" as const, prod: false, text: "needs a grant" };
-    expect(blockerText("Aide", b, 0)).toStartWith("*Aide* - blocker #7");
-    expect(settledBlockerText("Aide", b, "approved", "U1")).toStartWith("*Aide* - blocker #7");
-    expect(selfFixDmText("Aide", "k", "did it")).toStartWith("*Aide* - fixed a prod item");
-    expect(renderDigest("Coordinator", "2026-11-27", [], 420, 0)).toStartWith("*Coordinator* - housekeeping digest");
+    expect(blockerText("Aide", b, 0, "en")).toStartWith("*Aide* - blocker #7");
+    expect(settledBlockerText("Aide", b, "approved", "U1", "en")).toStartWith("*Aide* - blocker #7");
+    expect(selfFixDmText("Aide", "k", "did it", "en")).toStartWith("*Aide* - fixed a prod item");
+    expect(blockerText("Aide", b, 0)).toStartWith("*Aide* - vướng việc #7");
+    expect(renderDigest("Coordinator", "2026-11-27", [], 420, 0, "en")).toStartWith("*Coordinator* - housekeeping digest");
   });
 });
 

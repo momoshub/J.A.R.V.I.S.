@@ -131,7 +131,7 @@ export type SlackAdminPort = {
    * "updated" stamp). `by` of `UNSIGNED` (null) - for a message that is not in
    * the turn's own thread, like a console edit - leaves the footer off.
    */
-  update: (channel: string, ts: string, text: string, by?: string | null) => Promise<void>;
+  update: (channel: string, ts: string, text: string, by?: string | null, usage?: FooterUsage | string) => Promise<void>;
   /** Delete one of the bot's own messages. */
   remove: (channel: string, ts: string) => Promise<void>;
   /** One message by its ts, top-level or inside a thread. */
@@ -152,8 +152,10 @@ export type SlackAdminPort = {
   /**
    * Open (or reuse) a DM with a user and post there. Returns where it landed,
    * so a message can later be found again - matching a reaction to it, say.
+   * `usage` goes into the footer like `post`'s; a string is a usage line already
+   * written (the coordinator's digest adds the day's total to it).
    */
-  postDm: (userId: string, text: string, by?: string, trigger?: InternalKind) => Promise<PostedRef | undefined>;
+  postDm: (userId: string, text: string, by?: string, trigger?: InternalKind, usage?: FooterUsage | string) => Promise<PostedRef | undefined>;
   /** The id of the DM with a user, opened when needed, posting nothing. */
   openDm?: (userId: string) => Promise<string | undefined>;
   /**

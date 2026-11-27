@@ -119,4 +119,18 @@ describe("the lookups the coordinator reads other tables with", () => {
     t.revoke("bbbbbbbb22", 5);
     expect(t.bound().map((r) => r.id)).toEqual(["aaaaaaaa"]);
   });
+
+  test("usage adds up per day, keeps the last tick whole, and is read back from the database", () => {
+    const db = new Database(":memory:");
+    migrate(db);
+    const u = { model: "m", inputTokens: 10, outputTokens: 5, cacheReadTokens: 100, cacheWriteTokens: 1, costUsd: 0.1, durationMs: 1000 };
+    const r = createCoordinatorRepo(db);
+    expect(r.usage("d")).toBeUndefined();
+    r.addUsage("d", u);
+    r.addUsage("d", { ...u, model: "m2", costUsd: 0.2 });
+    r.addUsage("e", u);
+    expect(createCoordinatorRepo(db).usage("d")).toMatchObject({ ticks: 2, tokens: 232, last: { model: "m2", costUsd: 0.2 } });
+    expect(r.usage("d")!.costUsd).toBeCloseTo(0.3);
+    expect(r.usage("e")).toMatchObject({ ticks: 1, last: u });
+  });
 });

@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 import { createCoordinator, dayThreadTs, rearmWatch, type CoordinatorDeps, type CoordinatorTurnRequest } from "../../src/application/coordinator.ts";
+import type { FooterUsage } from "../../src/domain/usageFooter.ts";
 import { DEFAULT_PROD_REPING_MS, HOUR_MS, DAY_MS, MINUTE_MS, type BlockerFacts, type OwnPr } from "../../src/domain/coordinator.ts";
 import { NO_STUCK_WORK } from "../../src/domain/stuckWork.ts";
 import { createJourneyRepo } from "../../src/infrastructure/db/journeyRepo.ts";
@@ -34,8 +35,8 @@ const setup = (start = NOON, over: Partial<CoordinatorDeps> = {}) => {
   const repo = createCoordinatorRepo(db);
   const journeys = createJourneyRepo(db);
   const clock = { t: start };
-  const posts: { text: string; by?: string }[] = [];
-  const updates: { channel: string; ts: string; text: string; by?: string | null }[] = [];
+  const posts: { text: string; by?: string; usage?: FooterUsage | string }[] = [];
+  const updates: { channel: string; ts: string; text: string; by?: string | null; usage?: FooterUsage | string }[] = [];
   const asked: { text: string; ids: string[]; by?: string }[] = [];
   const settled: { channel: string; ts: string; text: string }[] = [];
   const turns: CoordinatorTurnRequest[] = [];
@@ -48,19 +49,20 @@ const setup = (start = NOON, over: Partial<CoordinatorDeps> = {}) => {
   let scan = NO_STUCK_WORK;
   let unanswered: { channelId: string; threadTs: string; lastAt: number; slackUserId: string }[] = [];
   let n = 0;
-  const flags = { dmOpen: true, turnThrows: false, turnCut: false };
+  const flags: { dmOpen: boolean; turnThrows: boolean; turnCut: boolean; usage?: FooterUsage } = { dmOpen: true, turnThrows: false, turnCut: false };
   const coordinator = createCoordinator({
     name: NAME,
+    lang: "en",
     clock: () => clock.t,
     ownerSlackId: OWNER,
     repo,
     journeys,
     slack: {
-      postDm: async (_u, text, by) => {
-        posts.push({ text, by });
+      postDm: async (_u, text, by, _trigger, usage) => {
+        posts.push({ text, by, usage });
         return { channel: "D1", ts: `p${++n}` };
       },
-      update: async (channel, ts, text, by) => void updates.push({ channel, ts, text, by }),
+      update: async (channel, ts, text, by, usage) => void updates.push({ channel, ts, text, by, usage }),
       postDmInteractive: async (_u, text, actions, by) => {
         asked.push({ text, ids: actions.map((a) => a.actionId), by });
         return { channel: "D1", ts: `b${++n}` };
@@ -83,7 +85,7 @@ const setup = (start = NOON, over: Partial<CoordinatorDeps> = {}) => {
       turns.push(req);
       if (flags.turnThrows) throw new Error("cut for a restart");
       // An ignored or restart-cut turn resolves as nothing, like a silent one.
-      return flags.turnCut ? undefined : { text: "NO_REPLY", ran: true };
+      return flags.turnCut ? undefined : { text: "NO_REPLY", ran: true, ...(flags.usage ? { usage: flags.usage } : {}) };
     },
     offsetMinutes: () => 420,
     quiet: { startHour: 22, endHour: 5 },
@@ -684,5 +686,74 @@ describe("writer claims on the tick", () => {
     const { s, claims } = withClaims();
     take(claims, "bug:28", "ctx_a");
     expect(s.coordinator.status()).toContain("bug:28 (worker ctx_a");
+  });
+});
+
+const usage = (over: Partial<FooterUsage> = {}): FooterUsage => ({
+  model: "claude-sonnet-5-5", inputTokens: 1000, outputTokens: 500, cacheReadTokens: 10_000, cacheWriteTokens: 500, costUsd: 0.25, durationMs: 62_000, ...over,
+});
+
+const oneThread = (s: ReturnType<typeof setup>, id: string, at: number) =>
+  s.set.unanswered([{ channelId: id, threadTs: "1.1", lastAt: at - 5 * HOUR_MS, slackUserId: OWNER }]);
+
+describe("the digest's usage footer and language", () => {
+  test("a tick that really ran puts its usage line and the day's total under the digest, Vietnamese by default", async () => {
+    const s = setup(NOON, { lang: undefined });
+    s.flags.usage = usage();
+    oneThread(s, "C1", NOON);
+    journey(s, "ship it", 100, NOON - 5 * DAY_MS);
+    await s.coordinator.tick();
+    await settle();
+    const edit = s.updates.at(-1) ?? s.posts.at(-1)!;
+    expect(edit.text).toContain(`*${NAME}* - bản tin dọn dẹp`);
+    expect(edit.text).toContain("đã đóng journey");
+    expect(edit.usage).toBe("claude-sonnet-5-5 · in 1k · out 500 · cache r 10k w 500 · $0.25 · 1m 2s · hôm nay 1 lượt · $0.25 · 12k token");
+    expect(s.turns[0]!.text).toContain("in Vietnamese");
+  });
+
+  test("the day's total adds up across ticks and is kept in the repo (so it survives a restart)", async () => {
+    const s = setup();
+    s.flags.usage = usage();
+    oneThread(s, "C1", NOON);
+    journey(s, "ship it", 100, NOON - 5 * DAY_MS);
+    await s.coordinator.tick();
+    await settle();
+    s.clock.t += 2 * HOUR_MS;
+    s.flags.usage = usage({ costUsd: 0.5, model: "claude-opus-5-5" });
+    oneThread(s, "C2", s.clock.t);
+    await s.coordinator.tick();
+    await settle();
+    expect(s.repo.usage("2026-11-27")).toMatchObject({ ticks: 2, costUsd: 0.75, tokens: 24_000, last: { model: "claude-opus-5-5" } });
+    expect(String(s.updates.at(-1)!.usage)).toContain("claude-opus-5-5");
+    expect(String(s.updates.at(-1)!.usage)).toContain("today 2 ticks · $0.75 · 24k tokens");
+  });
+
+  test("a tick that did not run, or ran without reporting usage, adds nothing", async () => {
+    const s = setup();
+    s.flags.turnCut = true;
+    s.flags.usage = usage();
+    oneThread(s, "C1", NOON);
+    journey(s, "ship it", 100, NOON - 5 * DAY_MS);
+    await s.coordinator.tick();
+    await settle();
+    expect(s.repo.usage("2026-11-27")).toBeUndefined();
+    expect(s.posts[0]!.usage).toBeUndefined();
+    s.flags.turnCut = false;
+    s.flags.usage = undefined;
+    s.clock.t += HOUR_MS;
+    oneThread(s, "C2", s.clock.t);
+    await s.coordinator.tick();
+    await settle();
+    expect(s.repo.usage("2026-11-27")).toBeUndefined();
+  });
+
+  test("a blocker is asked in Vietnamese with Vietnamese buttons, and in English when configured", async () => {
+    const vi = setup(NOON, { lang: undefined });
+    await vi.coordinator.blocker({ key: "k", kind: "decision", text: "chọn cái nào?", facts: facts() });
+    expect(vi.asked[0]!.text).toContain("vướng việc #");
+    expect(vi.asked[0]!.text).toContain("Duyệt = ");
+    const en = setup();
+    await en.coordinator.blocker({ key: "k", kind: "decision", text: "which one?", facts: facts() });
+    expect(en.asked[0]!.text).toContain("blocker #");
   });
 });

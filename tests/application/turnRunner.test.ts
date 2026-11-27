@@ -63,4 +63,12 @@ describe("createTurnRunner", () => {
       expect(posted).toHaveLength(0);
     }
   });
+
+  test("a held turn that reports whether it ran also hands back what it cost, and nothing when it was ignored", async () => {
+    const usage = { model: "m", inputTokens: 1, outputTokens: 2, cacheReadTokens: 3, cacheWriteTokens: 4, costUsd: 0.1, durationMs: 5 };
+    const ran = make({ kind: "reply", text: "NO_REPLY", usage });
+    expect(await ran.runTurn({ ...req, text: "x", hold: true, reportRan: true })).toEqual({ text: "", ran: true, usage });
+    const ignored = make({ kind: "ignored" });
+    expect(await ignored.runTurn({ ...req, text: "x", hold: true, reportRan: true })).toEqual({ text: "", ran: false });
+  });
 });
