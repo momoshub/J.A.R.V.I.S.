@@ -63,7 +63,7 @@ describe("bug report repo", () => {
 });
 
 describe("bug report repo: the coordinator's approval", () => {
-  test("decide records who approved, and only Jueki's own approval can be revoked by the owner's Reject", () => {
+  test("decide records who approved, and only the coordinator's own approval can be revoked by the owner's Reject", () => {
     const repo = createBugReportRepo(openDatabase(":memory:"));
     repo.add(base, 100);
     repo.add({ ...base, fingerprint: "other" }, 110);
