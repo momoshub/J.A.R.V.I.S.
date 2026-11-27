@@ -3,8 +3,12 @@
 // Keeps the host's chosen MCP servers out of the Orca worker about to start in a
 // folder (see src/domain/workerMcp.ts for why this is a file and not a flag).
 //
-//   worker-mcp-trim.ts            the worker home: BOT_WORKER_HOME (WORKER_HOME_DIR)
-//   worker-mcp-trim.ts <folder>   one checkout (fanout's own worktrees)
+//   worker-mcp-trim.ts                  the shared worker home: BOT_WORKER_HOME (WORKER_HOME_DIR)
+//   worker-mcp-trim.ts --role <role>    that role's own home, $BOT_WORKER_HOME-<role>: the role's
+//                                       tool rules (src/domain/workerRoles.ts) and the MCP exclusions,
+//                                       the folder to start a writer, reviewer, verifier or
+//                                       investigator in
+//   worker-mcp-trim.ts <folder>         one checkout (fanout's own worktrees); with --role, that role
 //
 // Adds the servers named in BOT_WORKER_MCP_DENY (the bot's WORKER_MCP_DENY, comma
 // separated) to `deniedMcpServers` in <folder>/.claude/settings.local.json and keeps
@@ -30,6 +34,15 @@ import {
   WORKER_MCP_DENY_ENV,
   WORKER_SETTINGS_PATH,
 } from "../src/domain/workerMcp.ts";
+import {
+  applyRoleProfile,
+  isWorkerRole,
+  roleHomeDir,
+  roleMcpDeny,
+  WORKER_ROLE_MCP_DENY_ENV,
+  WORKER_ROLES,
+  type WorkerRole,
+} from "../src/domain/workerRoles.ts";
 
 const git = (dir: string, ...args: string[]): { ok: boolean; out: string } => {
   const proc = Bun.spawnSync({ cmd: ["git", "-C", dir, ...args], stdout: "pipe", stderr: "pipe" });
@@ -92,57 +105,86 @@ const registerWithOrca = (dir: string): string | undefined => {
   return added.ok ? undefined : `orca repo add failed: ${added.err || added.out}`;
 };
 
-/** Writes the exclusions into the folder's settings file. Returns an exit code and what to say. */
-const trimFolder = (dir: string, names: readonly string[]): number => {
-  if (names.length === 0) {
+/**
+ * Writes the exclusions (and, for a role, its tool rules) into the folder's settings file.
+ * Returns an exit code and says what it did.
+ */
+const trimFolder = (dir: string, names: readonly string[], role?: WorkerRole): number => {
+  if (names.length === 0 && !role) {
     console.log("worker-mcp-trim: the host excludes no MCP server from workers, nothing to trim");
     return 0;
   }
   const file = join(dir, WORKER_SETTINGS_PATH);
-  const merged = mergeDeniedServers(existsSync(file) ? readFileSync(file, "utf8") : undefined, names);
+  const before = existsSync(file) ? readFileSync(file, "utf8") : undefined;
+  const merged = mergeDeniedServers(before, names);
   if (!merged.ok) {
     console.error(`worker-mcp-trim: ${file}: ${merged.error}`);
     return 1;
   }
-  if (merged.changed) {
+  const profiled = role ? applyRoleProfile(merged.text, role) : undefined;
+  if (profiled && !profiled.ok) {
+    console.error(`worker-mcp-trim: ${file}: ${profiled.error}`);
+    return 1;
+  }
+  const text = profiled?.ok ? profiled.text : merged.text;
+  const changed = before === undefined || text !== before;
+  if (changed) {
     try {
       mkdirSync(dirname(file), { recursive: true });
-      writeFileSync(file, merged.text);
+      writeFileSync(file, text);
     } catch (e) {
       console.error(`worker-mcp-trim: cannot write ${file}: ${e instanceof Error ? e.message : String(e)}`);
       return 1;
     }
   }
   keepOutOfGit(dir);
-  console.log(
-    merged.changed
-      ? `worker-mcp-trim: ${file}: ${merged.added.length} MCP server${merged.added.length === 1 ? "" : "s"} excluded, start the worker now`
-      : `worker-mcp-trim: ${file}: already excludes all ${names.length}, start the worker now`,
-  );
+  const what = [
+    names.length ? `${names.length} MCP server${names.length === 1 ? "" : "s"} excluded` : "",
+    role ? `${role} tool rules set` : "",
+  ].filter(Boolean).join(", ");
+  const settled = role ? `already up to date (${what})` : `already excludes all ${names.length}`;
+  console.log(`worker-mcp-trim: ${file}: ${changed ? what : settled}, start the worker now`);
   return 0;
 };
 
+const usage = "usage: worker-mcp-trim.ts [--role writer|reviewer|verifier|investigator] [<folder>]";
+
 const main = (): number => {
-  if (process.argv.length > 3) {
-    console.error("usage: worker-mcp-trim.ts [<folder>]");
+  const args = process.argv.slice(2);
+  let role: WorkerRole | undefined;
+  const rest: string[] = [];
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i] ?? "";
+    const value = a === "--role" ? args[++i] : a.startsWith("--role=") ? a.slice("--role=".length) : undefined;
+    if (a === "--role" || a.startsWith("--role=")) {
+      if (!isWorkerRole(value)) {
+        console.error(`worker-mcp-trim: --role must be one of ${WORKER_ROLES.join(", ")}\n${usage}`);
+        return 2;
+      }
+      role = value;
+    } else rest.push(a);
+  }
+  if (rest.length > 1) {
+    console.error(usage);
     return 2;
   }
-  const names = parseDenyList(process.env[WORKER_MCP_DENY_ENV]);
-  const arg = process.argv[2];
+  const all = parseDenyList(process.env[WORKER_MCP_DENY_ENV]);
+  const names = role ? roleMcpDeny(all, process.env[WORKER_ROLE_MCP_DENY_ENV], role) : all;
+  const arg = rest[0];
   if (arg) {
     const dir = resolve(arg);
     if (!existsSync(dir) || !statSync(dir).isDirectory()) {
       console.error(`worker-mcp-trim: ${dir} is not a folder`);
       return 1;
     }
-    return trimFolder(dir, names);
+    return trimFolder(dir, names, role);
   }
   const home = process.env[WORKER_HOME_ENV];
   if (!home) {
     console.error(`worker-mcp-trim: no folder given and ${WORKER_HOME_ENV} is not set`);
     return 2;
   }
-  const dir = resolve(home);
+  const dir = resolve(role ? roleHomeDir(home, role) : home);
   try {
     mkdirSync(dir, { recursive: true });
   } catch (e) {
@@ -150,7 +192,7 @@ const main = (): number => {
     return 1;
   }
   // Trim even when registering fails, so a retry only has the registration left to do.
-  const trimmed = trimFolder(dir, names);
+  const trimmed = trimFolder(dir, names, role);
   const failed = registerWithOrca(dir);
   if (failed) {
     console.error(`worker-mcp-trim: ${dir}: ${failed}`);

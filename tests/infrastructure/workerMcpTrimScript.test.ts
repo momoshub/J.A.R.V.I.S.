@@ -207,5 +207,60 @@ esac
       expect(r.code).toBe(2);
       expect(r.stderr).toContain("BOT_WORKER_HOME");
     });
+
+    describe("--role", () => {
+      const profile = (dir: string) => settingsOf(dir).permissions as { allow: string[]; deny: string[] };
+
+      test("starts a role in its own home next to the shared one, with its tool rules and the host's exclusions", async () => {
+        const home = join(root, "jarvis", "worker-home");
+        const orca = fakeOrca([]);
+        const r = await run(["--role", "reviewer"], "pg-prod", { BOT_WORKER_HOME: home, PATH: orca.path, BOT_WORKER_ROLE_MCP_DENY: "reviewer=ch-ro;writer=other" });
+        expect(r.code).toBe(0);
+        const dir = `${home}-reviewer`;
+        expect(settingsOf(dir).deniedMcpServers).toEqual([{ serverName: "pg-prod" }, { serverName: "ch-ro" }]);
+        expect(profile(dir).deny).toContain("Bash(git push:*)");
+        expect(profile(dir).deny).toContain("Edit");
+        expect(orca.calls()).toContain(`repo add --path ${dir} --kind folder --json`);
+        // the shared home and the other roles are untouched
+        expect(existsSync(home)).toBe(false);
+        expect(existsSync(`${home}-writer`)).toBe(false);
+      });
+
+      test("two roles at once hold different settings, and the writer may edit where the reviewer may not", async () => {
+        const home = join(root, "worker-home");
+        const orca = fakeOrca([]);
+        for (const role of ["reviewer", "writer"]) {
+          expect((await run([`--role=${role}`], undefined, { BOT_WORKER_HOME: home, PATH: orca.path })).code).toBe(0);
+        }
+        expect(profile(`${home}-reviewer`).deny).toContain("Edit");
+        expect(profile(`${home}-writer`).deny).not.toContain("Edit");
+        expect(profile(`${home}-writer`).deny).toContain("Bash(gh pr merge:*)");
+      });
+
+      test("with nothing to exclude the role's rules are still written, and a second run changes nothing", async () => {
+        const home = join(root, "worker-home");
+        const orca = fakeOrca([`${home}-investigator`]);
+        const env = { BOT_WORKER_HOME: home, PATH: orca.path };
+        expect((await run(["--role", "investigator"], undefined, env)).code).toBe(0);
+        const file = join(`${home}-investigator`, ".claude", "settings.local.json");
+        const once = readFileSync(file, "utf8");
+        expect(JSON.parse(once).deniedMcpServers).toEqual([]);
+        const again = await run(["--role", "investigator"], undefined, env);
+        expect(again.stdout).toContain("already up to date");
+        expect(readFileSync(file, "utf8")).toBe(once);
+      });
+
+      test("on a checkout it writes the role's rules into that folder", async () => {
+        const dir = join(root, "plain");
+        mkdirSync(dir);
+        expect((await run(["--role", "writer", dir], undefined)).code).toBe(0);
+        expect(profile(dir).allow).toContain("Edit");
+      });
+
+      test("an unknown or missing role is a usage error", async () => {
+        expect((await run(["--role", "boss"], undefined, { BOT_WORKER_HOME: join(root, "h") })).code).toBe(2);
+        expect((await run(["--role"], undefined, { BOT_WORKER_HOME: join(root, "h") })).code).toBe(2);
+      });
+    });
   });
 });

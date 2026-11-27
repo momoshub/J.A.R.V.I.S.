@@ -114,7 +114,8 @@ Required / notable env (see `.env.example`):
 | `EXECUTER_DB_MCP_SERVERS` | the subset of `DB_MCP_SERVERS` the executer role may query; list only servers whose credential is read-only on the server side. Default empty: executers get none |
 | `WORKER_MCP_DENY` | user-scope MCP servers (names as `claude mcp list` shows them) kept out of the Orca workers the bot starts, comma list. Default empty: every worker loads every server, as before. See "Keeping MCP servers out of workers" |
 | `WHISPER_BIN`, `WHISPER_MODEL_PATH`, `FFMPEG_BIN`, `WHISPER_TIMEOUT_MS` | voice messages are transcribed locally (ffmpeg, then whisper.cpp's `whisper-cli`, language auto-detected). Defaults: `/opt/homebrew/bin/whisper-cli`, `~/.local/share/whisper-models/ggml-large-v3-turbo-q5_0.bin`, `/opt/homebrew/bin/ffmpeg`, 120000 ms per step. A missing binary or model never drops the clip: the turn starts with a note that it could not be transcribed |
-| `WORKER_HOME_DIR` | the one folder every Orca worker starts in (`--worktree path:<it>`); the MCP exclusion is written there and never into a folder you work in. Default `~/.jarvis/worker-home`, created at boot and registered with Orca (as a plain folder) the first time a worker is about to start. See "Keeping MCP servers out of workers" |
+| `WORKER_ROLE_MCP_DENY` | servers kept out of one role's Orca workers on top of `WORKER_MCP_DENY`, `role=names` pairs split by `;` (`reviewer=pg-prod,ch-ro;investigator=pg-prod`; roles `writer`, `reviewer`, `verifier`, `investigator`). Default empty. See "Tools by worker role" |
+| `WORKER_HOME_DIR` | the shared worker home; each role's workers start in `<it>-<role>` (`--worktree path:<it>-<role>`), made next to it; the MCP exclusion and the role's tool rules are written there and never into a folder you work in. Default `~/.jarvis/worker-home`, created at boot and registered with Orca (as a plain folder) the first time a worker is about to start. See "Keeping MCP servers out of workers" |
 | `DASHBOARD_PORT` | dashboard port (local, loopback-only, no auth) |
 | `DASHBOARD_ALLOWED_ORIGINS` | extra browser origins allowed to POST (proxy/tunnel access) |
 | `DATABASE_PATH` | the live sqlite file (default `data/bot.db`). Put it **outside the git checkout**, `~/` works, e.g. `~/.jarvis/data/bot.db` - see [Where the database lives](#where-the-database-lives) |
@@ -436,10 +437,56 @@ Claude sessions there. They start in a dedicated worker home instead,
 `WORKER_HOME_DIR` (default `~/.jarvis/worker-home`). Boot creates it; the helper,
 run with no argument, registers it with Orca as a plain folder when `orca repo
 list` does not know it (`--worktree path:` only takes folders Orca knows), trims
-it, and the prompts then start the worker with `--worktree path:$BOT_WORKER_HOME`.
+it, and the prompts then start the worker with `--worktree path:$BOT_WORKER_HOME-<role>` (see the next section; `worker-mcp-trim.ts` with no `--role` still makes and trims the shared home itself).
 The bot never writes `.claude/settings.local.json` anywhere you work. A worker
 that has to change code cuts its own `git worktree add <absolute path>` from the
 real repository, so its brief uses absolute paths.
+
+### Tools by worker role
+
+Every worker used to start with the same tools. Now a worker has a role, and the
+role decides what its session may run. The mechanism is the one above: a session
+reads `.claude/settings.local.json` of its working directory once, when it starts,
+and a single shared folder cannot hold different settings for workers that run at
+the same time, so each role has a folder of its own, `$BOT_WORKER_HOME-<role>`
+(next to `WORKER_HOME_DIR`). `bin/worker-mcp-trim.ts --role <role>` creates it,
+registers it with Orca and writes into it the host's MCP exclusions
+(`WORKER_MCP_DENY`, plus `WORKER_ROLE_MCP_DENY` for that role) and the role's
+`permissions.allow` / `permissions.deny`. The prompts that start a worker say to
+run it with the role first and to start the worker in that folder.
+
+| Role | Cannot | Can |
+|---|---|---|
+| `writer` | merge by hand (`gh pr merge`, `github-app.sh pr-merge`, a merge through `gh api`) | edit, commit, push its branch, open the PR, land it with `bin/merge-when-green.sh` |
+| `reviewer` | edit, commit, push, merge, open or edit a PR, any github-app action but `comment` | read the PR (`gh pr view` / `diff` / `checks`, `gh api` for reviews and comments), post a review, cut its own `git worktree` to run the checks |
+| `verifier` | the same as the reviewer, and no review | run the change in a worktree of its own, comment its verdict |
+| `investigator` | edit or write a file, commit, push, merge, comment, any write to GitHub | read the repository and GitHub |
+
+Deny rules are enforced by the session before a tool runs. The allow list is the
+surface the role is meant to use: a command in neither asks for approval, and the
+watch reports a worker parked on one. Rules match command prefixes, so a `bash -c`
+wrapper is not caught: this takes away what a role never needs, it is not a
+sandbox, and the credentials a shell can read are a separate boundary. The two
+lists in a role's folder are replaced on every run (a rule dropped from a profile
+is dropped there), other settings in the file stay. Change a role's profile in
+`src/domain/workerRoles.ts`.
+
+A worker ends its report with one fenced block, so the hand-back reads fields
+instead of prose:
+
+````
+```worker-report
+{"role":"reviewer","status":"succeeded","pr":123,"head_sha":"<the head it read>","verdict":"changes","findings":[{"severity":"blocker","summary":"what is wrong","file":"src/x.ts","line":42}],"owner_actions":[],"cost":null}
+```
+````
+
+`status` is `succeeded`, `failed` or `blocked`; `verdict` is `clean`, `changes`,
+`verified`, `failed` or `none` (a writer or investigator); `findings` are
+`blocker` or `nit`; `owner_actions` are steps only the owner can do. The last such
+block wins. `bin/orca-worker-wait.ts` finds it in the worker's record and the
+hand-back names it as the worker's claim: the turn still checks `head_sha` against
+the PR's head and the verdict on the PR itself. The `VERDICT:` line in review and
+verifier comments stays; the review loop and the verifier gate read it there.
 
 - `fanout` gives each worker a checkout of its own instead: the checkout is
   created first without an agent (`orca worktree create`, no `--agent`),
