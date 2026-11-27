@@ -143,6 +143,33 @@ describe("bin/jarvis-release.sh prepare / activate", () => {
     expect(readFileSync(join(root, sha, ".ok"), "utf8").trim()).toBe(sha);
   });
 
+  test("a folder another run is still preparing is not deleted under it; a crashed build is rebuilt", () => {
+    run(["prepare", sha]);
+    writeFileSync(join(root, sha, ".building"), "");
+    writeFileSync(join(root, sha, "marker"), "x");
+    const busy = run(["prepare", sha]);
+    expect(busy.exitCode).toBe(1);
+    expect(busy.stderr.toString()).toContain("being prepared by another run");
+    expect(existsSync(join(root, sha, "marker"))).toBe(true);
+    Bun.spawnSync(["touch", "-t", "200001010000", join(root, sha, ".building")]);
+    expect(run(["prepare", sha]).exitCode).toBe(0);
+    expect(existsSync(join(root, sha, "marker"))).toBe(false);
+    expect(existsSync(join(root, sha, ".building"))).toBe(false);
+  });
+
+  test("prune never touches bin/ (the supervisor and the way back) or the current link, however many releases pile up", () => {
+    expect(run(["install", "--label", "com.acme.bot", "--source", src]).exitCode).toBe(0);
+    Bun.spawnSync(["touch", "-t", "200001010000", join(root, "bin")]); // the oldest entry, as after a few weeks
+    run(["prepare", sha]);
+    run(["activate", sha]);
+    for (let i = 0; i < 8; i++) commitAndActivate(`n${i}`);
+    expect(run(["activate", git("rev-parse", "HEAD")], { RELEASES_KEEP: "2" }).exitCode).toBe(0);
+    expect(existsSync(join(root, "bin", "jarvis-release.sh"))).toBe(true);
+    expect(link("current")).toBe(join(root, git("rev-parse", "HEAD")));
+    const left = Bun.spawnSync(["ls", root]).stdout.toString().split("\n").filter((n) => /^[0-9a-f]{40}$/.test(n));
+    expect(left.length).toBeLessThanOrEqual(3); // current + 2 kept
+  });
+
   test("activate refuses a commit that was never prepared", () => {
     expect(run(["activate", sha]).exitCode).toBe(1);
     expect(link("current")).toBeUndefined();
@@ -240,10 +267,17 @@ describe("bin/jarvis-release.sh launch", () => {
     expect(calls()).toContain(`bun run src/index.ts @${sha}`);
   });
 
-  test("the pid file lets jarvis-restart.sh tell a supervised bot from a bare one", () => {
+  test("the pid file lets jarvis-restart.sh tell a supervised bot from a bare one, and is gone when the supervisor is", () => {
     prepared();
-    run(["launch"]);
-    expect(Number(readFileSync(join(root, "launcher.pid"), "utf8"))).toBeGreaterThan(0);
+    run(["launch"], { BOT_LIFE: "1" });
+    expect(existsSync(join(root, "launcher.pid"))).toBe(false);
+    const child = Bun.spawn(["bash", script, "launch"], {
+      env: { PATH: `${shims}:/usr/bin:/bin`, HOME: dir, JARVIS_RELEASES_DIR: root, JARVIS_SOURCE_REPO: src, BOT_LIFE: "3" },
+    });
+    const deadline = Date.now() + 5000;
+    while (!existsSync(join(root, "launcher.pid")) && Date.now() < deadline) Bun.sleepSync(50);
+    expect(Number(readFileSync(join(root, "launcher.pid"), "utf8"))).toBe(child.pid);
+    child.kill();
   });
 });
 
@@ -288,8 +322,20 @@ describe("bin/jarvis-release.sh rollback", () => {
     expect(res.exitCode).toBe(0);
     expect(link("current")).toBe(join(root, a));
     expect(link("last-good")).toBe(join(root, a));
-    expect(link("previous-good")).toBe(join(root, b));
+    expect(link("previous-good")).toBe(join(root, a));
     expect(calls()).toEqual([]);
+  });
+
+  test("the release rolled back from is marked bad, so a second rollback never goes forward into it", () => {
+    const { a, b } = twoGood();
+    expect(run(["rollback", "--no-restart"]).exitCode).toBe(0);
+    expect(readFileSync(join(root, b, ".bad"), "utf8")).toContain("rolled back by hand");
+    const again = run(["rollback", "--no-restart"]);
+    expect(again.exitCode).toBe(1);
+    expect(again.stderr.toString()).toContain("no earlier known good");
+    expect(link("current")).toBe(join(root, a));
+    expect(link("last-good")).toBe(join(root, a));
+    expect(run(["rollback", b, "--no-restart"]).exitCode).toBe(1); // a .bad release is not a target either
   });
 
   test("an explicit sha goes there, and a release that is not a checked one is refused", () => {

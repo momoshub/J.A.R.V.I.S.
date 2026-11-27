@@ -51,6 +51,17 @@ source_repo() {
 
 link_of() { readlink "$ROOT/$1" 2>/dev/null || true; }
 
+# The release folders, newest first: real 40-hex directories only. Not bin/, not
+# the `current` link (a glob like [0-9a-f]* matches both), nothing a person put there.
+release_dirs() {
+  local n
+  ls -1t "$ROOT" 2>/dev/null | while read -r n; do
+    case "$n" in *[!0-9a-f]*) continue ;; esac
+    [ "${#n}" -eq 40 ] || continue
+    [ -d "$ROOT/$n" ] && [ ! -L "$ROOT/$n" ] && echo "$ROOT/$n"
+  done
+}
+
 # Only a release that was checked through `activate` may run.
 valid_release() { [ -n "${1:-}" ] && [ -f "$1/.ok" ] && [ -f "$1/src/index.ts" ] && [ ! -f "$1/.bad" ]; }
 
@@ -79,12 +90,21 @@ cmd_prepare() {
     say "release $sha failed its health check before ($(cat "$dir/.bad")); push a fix, or remove $dir/.bad to retry it"
     return 1
   fi
-  # A half-built folder is never reused; a finished one is immutable, so rebuilding it would change nothing.
-  if [ -d "$dir" ] && [ ! -f "$dir/.ok" ]; then rm -rf "$dir"; fi
+  # A finished folder is immutable, so it is reused. A folder still marked .building is
+  # another run's (a second restart or --check-only on the same HEAD must not delete the
+  # tree under it); only one older than 30 minutes is a crashed build and is rebuilt.
+  if [ -f "$dir/.building" ]; then
+    if [ -n "$(find "$dir/.building" -mmin +30 2>/dev/null)" ]; then rm -rf "$dir"; else
+      say "release $sha is being prepared by another run; wait for it, or remove $dir/.building if that run died"
+      return 1
+    fi
+  fi
   if [ ! -d "$dir" ]; then
     mkdir -p "$dir" || return 1
+    : > "$dir/.building"
     if ! git -C "$src" archive "$sha" | tar -x -C "$dir"; then rm -rf "$dir"; say "cannot export $sha"; return 1; fi
     if ! (cd "$dir" && bun install --frozen-lockfile >&2); then rm -rf "$dir"; say "bun install failed for $sha"; return 1; fi
+    rm -f "$dir/.building"
   fi
   echo "$dir"
 }
@@ -109,17 +129,17 @@ cmd_activate() {
 prune() {
   local keep=${RELEASES_KEEP:-5} protected d n=0
   protected="$(link_of current) $(link_of last-good) $(link_of previous-good)"
-  # shellcheck disable=SC2045
-  for d in $(ls -1dt "$ROOT"/[0-9a-f]*/ 2>/dev/null); do
-    d=${d%/}
+  while read -r d; do
     case " $protected " in *" $d "*) continue ;; esac
     n=$((n + 1))
     if [ "$n" -gt "$keep" ]; then rm -rf "$d"; fi
-  done
+  done < <(release_dirs)
 }
 
 promote() {
   local target=$1 old
+  # A manual rollback may have moved `current` while the probe ran: it wins.
+  if [ "$(link_of current)" != "$target" ]; then note "not promoting $(basename "$target"): current moved meanwhile"; return; fi
   old=$(link_of last-good)
   if [ -n "$old" ] && [ "$old" != "$target" ]; then set_link previous-good "$old"; fi
   set_link last-good "$target"
@@ -140,6 +160,7 @@ cmd_launch() {
   if [ -z "$target" ]; then target=$src; kind=source; fi
 
   echo $$ > "$ROOT/launcher.pid"
+  trap '[ "$(cat "$ROOT/launcher.pid" 2>/dev/null)" = "$$" ] && rm -f "$ROOT/launcher.pid"' EXIT
   cd "$target" || exit 1
   export JARVIS_SOURCE_REPO=$src JARVIS_RELEASES_DIR=$ROOT JARVIS_RELEASE_SHA=$(basename "$target")
   note "starting $(basename "$target") ($kind)"
@@ -207,7 +228,13 @@ cmd_rollback() {
     say "the checkout is the fallback: git -C $(source_repo) checkout <good sha>, then launchctl kickstart -k gui/$(id -u)/$(cat "$ROOT/label" 2>/dev/null || echo com.example.jarvis)"
     return 1
   fi
-  if [ -n "$good" ] && [ "$good" != "$want" ]; then set_link previous-good "$good"; fi
+  if [ "$want" = "$cur" ] && [ "$want" = "$good" ]; then
+    say "already on $(basename "$want") and there is no earlier known good release"
+    return 1
+  fi
+  # The release left behind is not a fallback: a second rollback must never go forward
+  # again into it (rm its .bad to allow it back).
+  if [ -n "$cur" ] && [ "$cur" != "$want" ] && [ -d "$cur" ]; then echo "rolled back by hand" > "$cur/.bad"; fi
   set_link current "$want"
   set_link last-good "$want"
   note "ROLLBACK by hand: current and last-good are now $(basename "$want") (was $(basename "${cur:-none}"))"
@@ -232,10 +259,10 @@ cmd_status() {
   echo "supervisor:    $alive"
   [ -f "$ROOT/rollback.json" ] && echo "last automatic rollback: $(cat "$ROOT/rollback.json")"
   echo "releases:"
-  ls -1dt "$ROOT"/[0-9a-f]*/ 2>/dev/null | while read -r d; do
-    d=${d%/}
+  release_dirs | while read -r d; do
     flags=""
     [ -f "$d/.ok" ] || flags="$flags unchecked"
+    [ -f "$d/.building" ] && flags="$flags BUILDING"
     [ -f "$d/.bad" ] && flags="$flags BAD($(cat "$d/.bad"))"
     echo "  $(basename "$d")$flags"
   done

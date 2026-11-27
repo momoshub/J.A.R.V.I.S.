@@ -119,6 +119,31 @@ supervisor is the copy, on purpose, so a bad commit cannot change it.
 
 The gateway's plist does not change.
 
+## Things to know
+
+- A web-only merge needs a restart now. The bot serves `web/dist` from its own
+  release folder, which is never edited, so `bun run build:web` in the checkout
+  changes nothing that is served; `jarvis-restart.sh` builds a new release.
+- `rollback` marks the release it leaves `.bad` (reason "rolled back by hand"),
+  so a second `rollback` never goes forward again into it. Remove its `.bad` to
+  allow it back. When `current` already is the only known good release it
+  says so and exits 1.
+- The health gate needs Slack heard (`ok: true`). A Slack incident during a
+  restart can therefore mark a correct release `.bad` (its reason says "did not
+  report healthy"); `prepare` then refuses that sha until `<root>/<sha>/.bad`
+  is removed.
+- `activate` moves `current` before the restart is asked for. If that request
+  fails the restart helper exits 1, and the next restart of any kind starts
+  the new release, still health-gated.
+- With no last-good yet (the first release after the install) an unhealthy
+  release is left running: there is nothing proven to go back to.
+- The suite also runs
+  from a `git archive` export in CI (`release-export` job), so a test that needs
+  the repo's `.git` fails there rather than refusing restarts on the host.
+- A folder another run is still preparing (`.building`) is not deleted by a
+  second `jarvis-restart.sh` or `--check-only`; a crashed build older than 30
+  minutes is rebuilt.
+
 ## Settings
 
 | Variable | Default | |
