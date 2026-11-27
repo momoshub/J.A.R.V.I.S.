@@ -283,10 +283,19 @@ const schema = z
     // the worker folder's .claude/settings.local.json (deniedMcpServers). Empty
     // keeps every server, as before. The bot's own turns are not affected.
     WORKER_MCP_DENY: z.string().optional(),
-    // The one folder every Orca worker starts in (`--worktree path:<it>`), so the
-    // exclusion above is written into a folder only workers use and never into one
-    // a person works in (~/Workspaces). bin/worker-mcp-trim.ts creates it, registers
-    // it with Orca as a plain folder and trims it. Blank = ~/.jarvis/worker-home.
+    // Servers kept out of one role's workers on top of WORKER_MCP_DENY, as
+    // `reviewer=pg-prod,ch-ro;investigator=pg-prod` (roles: writer, reviewer,
+    // verifier, investigator). Each role starts in its own folder
+    // ($BOT_WORKER_HOME-<role>) whose settings also carry the role's tool rules
+    // (a reviewer or investigator cannot edit, push or merge, a writer cannot merge
+    // by hand), written by the same bin/worker-mcp-trim.ts --role <role>.
+    WORKER_ROLE_MCP_DENY: z.string().optional(),
+    // The shared worker home. Each role's Orca workers start in <it>-<role>
+    // (`--worktree path:<it>-<role>`), a folder next to it, so the exclusion above and
+    // the role's tool rules are written into folders only workers use and never into
+    // one a person works in (~/Workspaces). bin/worker-mcp-trim.ts --role <role>
+    // creates it, registers it with Orca as a plain folder and writes it; with no
+    // --role it does the same for <it> itself. Blank = ~/.jarvis/worker-home.
     WORKER_HOME_DIR: z.string().optional(),
     // Voice messages (an audio clip with no text) are transcribed locally before
     // their turn: ffmpeg converts to 16 kHz mono wav, whisper.cpp's whisper-cli
@@ -394,7 +403,9 @@ export type AppConfig = {
   executerDbMcpServers: string[];
   /** User-scope MCP servers kept out of Orca workers; empty keeps every server. */
   workerMcpDeny: string[];
-  /** Absolute folder every Orca worker starts in. */
+  /** Raw `WORKER_ROLE_MCP_DENY`: per-role server exclusions, read by the trim helper. */
+  workerRoleMcpDeny: string;
+  /** Absolute shared worker home; each role's workers start in `<it>-<role>` (`roleHomeDir`). */
   workerHomeDir: string;
   /** whisper.cpp CLI, the ggml model and ffmpeg for voice messages, and the limit on each step. */
   whisperBin: string;
@@ -505,6 +516,7 @@ export const loadConfig = (source: Record<string, string | undefined> = process.
     turnEnvPassthrough: parseList(env.TURN_ENV_PASSTHROUGH),
     executerDbMcpServers: parseList(env.EXECUTER_DB_MCP_SERVERS),
     workerMcpDeny: parseDenyList(env.WORKER_MCP_DENY),
+    workerRoleMcpDeny: env.WORKER_ROLE_MCP_DENY?.trim() ?? "",
     workerHomeDir: expandHome(env.WORKER_HOME_DIR?.trim() || join(homedir(), ".jarvis", "worker-home")),
     whisperBin: expandHome(env.WHISPER_BIN?.trim() || "/opt/homebrew/bin/whisper-cli"),
     whisperModelPath: expandHome(env.WHISPER_MODEL_PATH?.trim() || join(homedir(), ".local", "share", "whisper-models", "ggml-large-v3-turbo-q5_0.bin")),
