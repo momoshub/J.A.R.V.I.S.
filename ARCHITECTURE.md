@@ -234,7 +234,10 @@ no classes.
   Asia/Ho_Chi_Minh); a prod blocker is asked again every `COORDINATOR_PROD_REPING_MS`
   until the owner acts, quiet hours or not, unless it is both urgent and
   low-risk and inside the owner's role, which the coordinator fixes itself and reports in
-  the digest and one direct line. See "The coordinator sweeps" in CLAUDE.md.
+  the digest and one direct line. The digest and every blocker are written in
+  `COORDINATOR_LANG` (Vietnamese by default), and the digest message carries the grey
+  usage footer: the last tick's line plus the day's total, kept in `coordinator_usage`
+  and counted only for a turn that really ran. See "The coordinator sweeps" in CLAUDE.md.
 - **Followed threads: debounce and gate.** An untagged message in a thread the bot
   follows (the `asked` and `own-thread` routes; tagged messages, DMs, one-on-one
   threads and command lines skip all of this) is not a turn yet. `app.ts` hands it

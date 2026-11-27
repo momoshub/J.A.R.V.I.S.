@@ -1591,7 +1591,8 @@ const migrateReviewRounds = (db: Database): void => {
 /**
  * The coordinator's own state (domain/coordinator.ts): the day's digest lines and
  * dedupe marks (`coordinator_actions`), the one message the digest is edited on
- * (`coordinator_digest`) and the walls it raised to the owner
+ * (`coordinator_digest`), what the day's ticks cost (`coordinator_usage`, one row per
+ * local day) and the walls it raised to the owner
  * (`coordinator_blockers`, one row per key, so the same non-prod one is never
  * put twice).
  *
@@ -1704,6 +1705,13 @@ const migrateCoordinator = (db: Database): void => {
         day     TEXT PRIMARY KEY,
         channel TEXT NOT NULL,
         ts      TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS coordinator_usage (
+        day    TEXT PRIMARY KEY,
+        ticks  INTEGER NOT NULL DEFAULT 0,
+        cost   REAL NOT NULL DEFAULT 0,
+        tokens INTEGER NOT NULL DEFAULT 0,
+        last   TEXT NOT NULL DEFAULT ''
       );
       CREATE TABLE IF NOT EXISTS coordinator_blockers (
         id             INTEGER PRIMARY KEY AUTOINCREMENT,

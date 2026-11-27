@@ -14,6 +14,7 @@
  */
 import { ciStatusOf, type RollupEntry } from "./ciGate.ts";
 import { cleanLine } from "./journey.ts";
+import { compactTokens, usageFooter, type FooterUsage } from "./usageFooter.ts";
 import { humanDuration, watchesWorker } from "./watch.ts";
 import { WORKER_LIFETIME_MAX_MS } from "./workerTicket.ts";
 
@@ -49,6 +50,95 @@ export const TICKET_RENEW_WINDOW_MS = 45 * MINUTE_MS;
 /** How many lines one digest message shows; older ones fold into a count. */
 export const DIGEST_MAX_LINES = 40;
 export const MAX_LINE = 200;
+
+// ---------------------------------------------------------------- language
+
+/** The language of everything the coordinator writes to the owner: the digest, a blocker, and the lines its turn files. */
+export const COORDINATOR_LANGS = ["vi", "en"] as const;
+export type CoordinatorLang = (typeof COORDINATOR_LANGS)[number];
+/** The owner talks to the bot in Vietnamese. */
+export const DEFAULT_LANG: CoordinatorLang = "vi";
+
+/** The fixed words of the coordinator's own lines (the ones code writes, not its turn), per language. */
+export type Words = {
+  readonly digestTitle: (day: string) => string;
+  readonly earlierNotShown: (n: number) => string;
+  readonly blockersWaiting: (n: number) => string;
+  readonly usageToday: (ticks: number, costUsd: number, tokens: number) => string;
+  readonly blockerHead: (prod: boolean, id: number, kind: string, repeat: number) => string;
+  readonly blockerProdHint: string;
+  readonly blockerHint: string;
+  readonly approve: string;
+  readonly reject: string;
+  readonly settled: (id: number, kind: string, text: string, verdict: "approved" | "rejected", by: string) => string;
+  readonly closedAsked: (id: number, kind: string, text: string, why: string) => string;
+  readonly askedAgain: (id: number) => string;
+  readonly selfFixDm: (key: string, line: string) => string;
+  readonly closedJourney: (id: number, title: string) => string;
+  readonly renewedTicket: (id: string, dispatchId: string, lapsed: boolean, left: string) => string;
+  readonly rearmedWatch: (dispatchId: string, oldId: number, newId: number) => string;
+  readonly blockerPut: (prod: boolean, id: number, kind: string, text: string) => string;
+  readonly blockerClosed: (id: number, why: string) => string;
+  readonly nowFixed: string;
+  readonly fixedByMe: string;
+  readonly prodFix: (line: string) => string;
+  readonly note: (text: string) => string;
+};
+
+const WORDS: Readonly<Record<CoordinatorLang, (name: string) => Words>> = {
+  en: (name) => ({
+    digestTitle: (day) => `*${name}* - housekeeping digest, ${day}`,
+    earlierNotShown: (n) => `_${n} earlier line${n === 1 ? "" : "s"} not shown_`,
+    blockersWaiting: (n) => `_${n} blocker${n === 1 ? "" : "s"} waiting on you, asked above_`,
+    usageToday: (ticks, costUsd, tokens) => `today ${ticks} tick${ticks === 1 ? "" : "s"} · $${costUsd.toFixed(2)} · ${compactTokens(tokens)} tokens`,
+    blockerHead: (prod, id, kind, repeat) =>
+      `*${name}* - ${prod ? "🚨 prod blocker" : "blocker"} #${id} (${kind})${repeat > 0 ? `, asked ${repeat + 1} times` : ""}`,
+    blockerProdHint: "_Prod: I keep asking until you act. Approve = go ahead as you; Reject = leave it._",
+    blockerHint: "_Approve = go ahead as you; Reject = leave it. I ask this once._",
+    approve: "Approve",
+    reject: "Reject",
+    settled: (id, kind, text, verdict, by) => `*${name}* - blocker #${id} (${kind}): ${text}\n_${verdict === "approved" ? "Approved" : "Rejected"} by <@${by}>._`,
+    closedAsked: (id, kind, text, why) => `*${name}* - blocker #${id} (${kind}): ${text}\n_${why}._`,
+    askedAgain: (id) => `*${name}* - blocker #${id} asked again below.`,
+    selfFixDm: (key, line) => `*${name}* - fixed a prod item myself (urgent and low-risk, inside your role): ${line} (\`${key}\`)`,
+    closedJourney: (id, title) => `closed journey #${id} "${title}": it sat at 100%`,
+    renewedTicket: (id, dispatchId, lapsed, left) => `renewed worker ticket ${id} for ${dispatchId}${lapsed ? " (it had lapsed)" : ""}: good for ${left} more`,
+    rearmedWatch: (d, oldId, newId) => `re-armed the lapsed watch on worker ${d} (#${oldId}, now #${newId})`,
+    blockerPut: (prod, id, kind, text) => `${prod ? "prod " : ""}blocker #${id} (${kind}) put to you: ${text}`,
+    blockerClosed: (id, why) => `prod blocker #${id} closed: ${why}`,
+    nowFixed: "now fixed by me (urgent, low-risk)",
+    fixedByMe: "fixed by me (urgent, low-risk)",
+    prodFix: (line) => `prod fix by me (urgent, low-risk): ${line}`,
+    note: (text) => `note: ${text}`,
+  }),
+  vi: (name) => ({
+    digestTitle: (day) => `*${name}* - bản tin dọn dẹp, ${day}`,
+    earlierNotShown: (n) => `_${n} dòng trước đó không hiển thị_`,
+    blockersWaiting: (n) => `_${n} việc vướng đang chờ anh quyết, đã hỏi ở trên_`,
+    usageToday: (ticks, costUsd, tokens) => `hôm nay ${ticks} lượt · $${costUsd.toFixed(2)} · ${compactTokens(tokens)} token`,
+    blockerHead: (prod, id, kind, repeat) =>
+      `*${name}* - ${prod ? "🚨 vướng việc prod" : "vướng việc"} #${id} (${kind})${repeat > 0 ? `, đã hỏi ${repeat + 1} lần` : ""}`,
+    blockerProdHint: "_Prod: em hỏi tiếp cho tới khi anh xử lý. Duyệt = cứ làm theo quyền của anh; Từ chối = để đó._",
+    blockerHint: "_Duyệt = cứ làm theo quyền của anh; Từ chối = để đó. Em chỉ hỏi một lần._",
+    approve: "Duyệt",
+    reject: "Từ chối",
+    settled: (id, kind, text, verdict, by) => `*${name}* - việc vướng #${id} (${kind}): ${text}\n_${verdict === "approved" ? "Đã duyệt" : "Đã từ chối"} bởi <@${by}>._`,
+    closedAsked: (id, kind, text, why) => `*${name}* - việc vướng #${id} (${kind}): ${text}\n_${why}._`,
+    askedAgain: (id) => `*${name}* - việc vướng #${id} đã hỏi lại ở tin dưới.`,
+    selfFixDm: (key, line) => `*${name}* - em vừa tự sửa một việc prod (gấp và rủi ro thấp, trong quyền của anh): ${line} (\`${key}\`)`,
+    closedJourney: (id, title) => `đã đóng journey #${id} "${title}": đã 100% mà chưa ai đóng`,
+    renewedTicket: (id, dispatchId, lapsed, left) => `đã gia hạn ticket worker ${id} cho ${dispatchId}${lapsed ? " (đã hết hạn)" : ""}: dùng được thêm ${left}`,
+    rearmedWatch: (d, oldId, newId) => `đã bật lại watch hết hạn trên worker ${d} (#${oldId}, nay là #${newId})`,
+    blockerPut: (prod, id, kind, text) => `đã hỏi anh việc vướng${prod ? " prod" : ""} #${id} (${kind}): ${text}`,
+    blockerClosed: (id, why) => `việc vướng prod #${id} đã đóng: ${why}`,
+    nowFixed: "em đã tự sửa xong (gấp, rủi ro thấp)",
+    fixedByMe: "em đã tự sửa (gấp, rủi ro thấp)",
+    prodFix: (line) => `em tự sửa việc prod (gấp, rủi ro thấp): ${line}`,
+    note: (text) => `ghi chú: ${text}`,
+  }),
+};
+
+export const wordsOf = (name: string, lang: CoordinatorLang = DEFAULT_LANG): Words => WORDS[lang](name);
 
 // ---------------------------------------------------------------- time
 
@@ -463,24 +553,26 @@ export const cleanKey = (v: string): string =>
     .replace(/^-+|-+$/g, "")
     .slice(0, 80);
 
-export const blockerText = (name: string, b: { id: number; kind: BlockerKind; prod: boolean; text: string }, repeat: number): string =>
-  [
-    `*${name}* - ${b.prod ? "🚨 prod blocker" : "blocker"} #${b.id} (${b.kind})${repeat > 0 ? `, asked ${repeat + 1} times` : ""}`,
-    b.text,
-    b.prod
-      ? "_Prod: I keep asking until you act. Approve = go ahead as you; Reject = leave it._"
-      : "_Approve = go ahead as you; Reject = leave it. I ask this once._",
-  ].join("\n");
+export const blockerText = (
+  name: string,
+  b: { id: number; kind: BlockerKind; prod: boolean; text: string },
+  repeat: number,
+  lang: CoordinatorLang = DEFAULT_LANG,
+): string => {
+  const w = wordsOf(name, lang);
+  return [w.blockerHead(b.prod, b.id, b.kind, repeat), b.text, b.prod ? w.blockerProdHint : w.blockerHint].join("\n");
+};
 
 export const settledBlockerText = (
   name: string,
   b: { id: number; kind: BlockerKind; prod: boolean; text: string },
   verdict: "approved" | "rejected",
   by: string,
-): string => `*${name}* - blocker #${b.id} (${b.kind}): ${b.text}\n_${verdict === "approved" ? "Approved" : "Rejected"} by <@${by}>._`;
+  lang: CoordinatorLang = DEFAULT_LANG,
+): string => wordsOf(name, lang).settled(b.id, b.kind, b.text, verdict, by);
 
-export const selfFixDmText = (name: string, key: string, line: string): string =>
-  `*${name}* - fixed a prod item myself (urgent and low-risk, inside your role): ${cleanLine(line, MAX_LINE)} (\`${key}\`)`;
+export const selfFixDmText = (name: string, key: string, line: string, lang: CoordinatorLang = DEFAULT_LANG): string =>
+  wordsOf(name, lang).selfFixDm(key, cleanLine(line, MAX_LINE));
 
 // ---------------------------------------------------------------- digest
 
@@ -489,15 +581,44 @@ export type DigestLine = { readonly at: number; readonly text: string };
 /** One digest line is a short sentence of plain text. */
 export const digestLine = (text: string): string => cleanLine(text, MAX_LINE);
 
+/** What the ticks of one local day cost: the last one in full, the day's running total. */
+export type DayUsage = {
+  readonly ticks: number;
+  readonly costUsd: number;
+  /** Input, output and cache tokens added up. */
+  readonly tokens: number;
+  readonly last: FooterUsage;
+};
+
+/** The digest's context footer: the last tick's usage line, then the day's total. Undefined when no tick has reported. */
+export const digestFooter = (name: string, u: DayUsage | undefined, lang: CoordinatorLang = DEFAULT_LANG): string | undefined =>
+  u ? `${usageFooter(u.last)} · ${wordsOf(name, lang).usageToday(u.ticks, u.costUsd, u.tokens)}` : undefined;
+
+/** Adds one tick's usage to the day's total (the first tick starts it). */
+export const addDayUsage = (prev: DayUsage | undefined, u: FooterUsage): DayUsage => ({
+  ticks: (prev?.ticks ?? 0) + 1,
+  costUsd: (prev?.costUsd ?? 0) + u.costUsd,
+  tokens: (prev?.tokens ?? 0) + u.inputTokens + u.outputTokens + u.cacheReadTokens + u.cacheWriteTokens,
+  last: u,
+});
+
 /** The whole day's message, edited in place through the day. */
-export const renderDigest = (name: string, day: string, lines: readonly DigestLine[], offsetMin: number, blockers: number): string => {
+export const renderDigest = (
+  name: string,
+  day: string,
+  lines: readonly DigestLine[],
+  offsetMin: number,
+  blockers: number,
+  lang: CoordinatorLang = DEFAULT_LANG,
+): string => {
+  const w = wordsOf(name, lang);
   const shown = lines.slice(-DIGEST_MAX_LINES);
   const folded = lines.length - shown.length;
   return [
-    `*${name}* - housekeeping digest, ${day}`,
-    ...(folded > 0 ? [`_${folded} earlier line${folded === 1 ? "" : "s"} not shown_`] : []),
+    w.digestTitle(day),
+    ...(folded > 0 ? [w.earlierNotShown(folded)] : []),
     ...shown.map((l) => `- ${localClock(l.at, offsetMin)} ${l.text}`),
-    ...(blockers > 0 ? [`_${blockers} blocker${blockers === 1 ? "" : "s"} waiting on you, asked above_`] : []),
+    ...(blockers > 0 ? [w.blockersWaiting(blockers)] : []),
   ].join("\n");
 };
 
@@ -542,7 +663,7 @@ const section = (title: string, items: readonly PictureItem[]): string[] =>
  * The text of one coordinator turn. It starts cold (a fresh session per day), so
  * everything it needs is here or in the journeys, never in carried context.
  */
-export const coordinatorTurnText = (name: string, day: string, quiet: boolean, p: Picture, prefix: string): string =>
+export const coordinatorTurnText = (name: string, day: string, quiet: boolean, p: Picture, prefix: string, lang: CoordinatorLang = DEFAULT_LANG): string =>
   [
     `[coordinator ${day}] You are ${name}, the owner's housekeeping coordinator. This is a scheduled tick, nobody typed it, and you live only in the owner's DM. Your state is the journeys, watches, Orca runs, open PRs and threads, never memory: read them back (\`${prefix} journey list\`, \`${prefix} journey show <id>\`) before you act.`,
     "",
@@ -559,6 +680,9 @@ export const coordinatorTurnText = (name: string, day: string, quiet: boolean, p
     `- You never grant yourself anything beyond the owner's role and never write to prod. A blocker that needs a grant beyond the role, a prod write, a decision only the owner can make, or the same fix failing twice goes through \`${prefix} coordinator blocker <key> --kind <permission|prod-write|decision|repeat-failure|other> "<what, in one or two sentences>"\` and nowhere else: code puts it to the owner once (prod ones again and again). Add \`--prod\` when it touches prod, then state the facts it asks for.`,
     `- A prod item that is urgent and low-risk is the one thing code lets you fix yourself: \`coordinator blocker\` answers \`self-fix\` only then. After you fix it run \`${prefix} coordinator fixed <key> "<what you did>"\`.`,
     `- Every action you take is one short line: \`${prefix} coordinator act "<what you did>"\`. That is the digest; do not post anywhere yourself, and do not post in this thread.`,
+    lang === "vi"
+      ? `- Language: the owner talks to you in Vietnamese, so write the text of every \`coordinator act\`, \`coordinator blocker\` and \`coordinator fixed\` call, and any closing note, in Vietnamese (call the owner "anh", yourself "em"). Same style as ever: no capital at the start of a line, no trailing dot, no em dashes. Keep ids, keys, commands and PR numbers as they are.`
+      : `- Language: write the text of every \`coordinator act\`, \`coordinator blocker\` and \`coordinator fixed\` call, and any closing note, in English. Same style as ever: no capital at the start of a line, no trailing dot, no em dashes.`,
     quiet
       ? "- It is quiet hours: do not message anyone, comment on GitHub or ping a person. Work that pings waits for morning."
       : "- Ping people sparingly: one chase per PR, no repeats.",

@@ -10,7 +10,7 @@
  * An approval is not acted on here: it is stored, and the next tick hands it to
  * the turn (`approvedUnhandled`).
  */
-import { coordinatorPressKind, settledBlockerText } from "../domain/coordinator.ts";
+import { coordinatorPressKind, settledBlockerText, type CoordinatorLang } from "../domain/coordinator.ts";
 import type { CoordinatorBlocker, CoordinatorRepo } from "../infrastructure/db/coordinatorRepo.ts";
 import { logAndIgnore } from "./ignoredError.ts";
 import type { Clock } from "./ports.ts";
@@ -23,6 +23,8 @@ export type CoordinatorApprovalDeps = {
   ownerSlackId: string;
   /** The display name the settled message is signed with (`COORDINATOR_NAME`). */
   name: string;
+  /** The language the blocker was asked in, so its settled text matches. Vietnamese when left out. */
+  lang?: CoordinatorLang;
   /** Called once an approval is stored, to run the tick soon instead of at the next interval. */
   onApproved?: () => void;
 };
@@ -51,7 +53,7 @@ export const decideCoordinatorPress = async (
   const verdict = pressed === "approve" ? "approved" : "rejected";
   if (!deps.repo.decide(b.id, verdict, deps.clock())) return { kind: "decided", id: b.id, state: b.state };
   await deps.slack
-    ?.settleInteractive(b.noticeChannel, b.noticeTs, settledBlockerText(deps.name, b, verdict, press.slackUserId), deps.name)
+    ?.settleInteractive(b.noticeChannel, b.noticeTs, settledBlockerText(deps.name, b, verdict, press.slackUserId, deps.lang), deps.name)
     .catch(logAndIgnore("coordinator blocker settle"));
   if (verdict === "approved") deps.onApproved?.();
   return { kind: verdict, id: b.id };

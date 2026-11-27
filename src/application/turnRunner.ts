@@ -5,6 +5,7 @@
  * checks - and posts what comes back, signed with the cost and with what
  * started it (`trigger`, named by the sender; never guessed from the text).
  */
+import type { FooterUsage } from "../domain/usageFooter.ts";
 import type { InternalKind } from "../domain/internalMessages.ts";
 import type { WatchGrant } from "../domain/writeTargets.ts";
 import { isSilenceNote } from "../domain/silence.ts";
@@ -25,8 +26,8 @@ export type TurnRequest = {
   loop?: boolean;
   hold?: boolean;
   /**
-   * With `hold`: answer `{ text, ran }` always, where `ran` says the turn really ran (a reply, a silent NO_REPLY
-   * included) and not that it was ignored or cut for a restart, which `hold` alone reports as nothing, like a silence.
+   * With `hold`: answer `{ text, ran, usage }` always, where `ran` says the turn really ran (a reply, a silent NO_REPLY
+   * included) and not that it was ignored or cut for a restart, which `hold` alone reports as nothing, like a silence, and `usage` is what the turn cost when the model reported it.
    */
   reportRan?: boolean;
   /** What the bot's own sender is, for the reply's footer. */
@@ -66,7 +67,12 @@ export const createTurnRunner =
     // A loop's fire: the runner posts it (with its header and its own
     // `triggered by loop`) or not at all.
     if (hold && reportRan) {
-      return { text: result.kind === "ignored" ? "" : (loopReplyOf(result.text)?.text ?? ""), ran: result.kind !== "ignored" };
+      const usage: FooterUsage | undefined = result.kind === "reply" ? result.usage : undefined;
+      return {
+        text: result.kind === "ignored" ? "" : (loopReplyOf(result.text)?.text ?? ""),
+        ran: result.kind !== "ignored",
+        ...(usage ? { usage } : {}),
+      };
     }
     if (hold) return result.kind === "ignored" ? undefined : loopReplyOf(result.text);
     if (result.kind !== "ignored" && result.text.trim() && !isSilenceNote(result.text)) {
