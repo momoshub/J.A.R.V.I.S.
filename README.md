@@ -1746,6 +1746,18 @@ Each case is a past user message written without private content (no Slack ids, 
 
 The report gives the totals (candidate wins, base wins, ties), a row per case, and what each version did in the judge's words for every pair that was not a tie. A handful of pairs is a signal, not a measurement: read the contrasts, and rerun with a higher `--runs` before a close call. Paste the report in the PR body of every docs, prompt-text or skill change (the `jarvis-source` skill step follows this PR: the skill lives in the DB). Add a case in `docs/probe-cases/` when a voice or behaviour rule keeps slipping.
 
+## Briefing a verifier
+
+A verifier briefed from the PR description exercises what the writer says it fixed. `bin/verify-brief.ts` builds the brief from the diff's paths instead, so it does not depend on the writer:
+
+```bash
+bun bin/verify-brief.ts brief --pr 123 --out brief.md            # or --base origin/main --head <sha>; --no-gh skips past review blockers
+bun bin/verify-brief.ts agent --model sonnet                      # VERIFIER_AGENT / VERIFIER_MODEL_ARGS / VERIFIER_NOTE
+bun bin/verify-brief.ts check --brief brief.md --comment verify.md  # exit 1 when the [verify] comment leaves a required item out
+```
+
+The brief lists the boundaries the changed paths cross (tickets, roles, commands, Slack, merge gates, scripts, databases, env, prompts, watches, web) with adversarial and escalation cases to try beyond the happy path, the policy paragraphs that govern them, the regression history of the same files (fix, bug and revert merges, the tests they touched, past `[review round]` blockers) and the contracts (tests, system-model tests, command fixtures, `.env.example`). The verifier's `[verify]` comment names the items it exercised (`Exercised: ticket.1, command.2`, `n/a <id>: <reason>`). `agent` starts the verifier on another model family (`codex`, then `antigravity`) when its CLI is on the host, and on `claude` with a note when none is. See `.claude/skills/verify/SKILL.md`.
+
 ## Testing
 
 ```bash

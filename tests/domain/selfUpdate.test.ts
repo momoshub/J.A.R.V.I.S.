@@ -72,6 +72,19 @@ describe("selfUpdateRules is the whole procedure, from the codebase", () => {
     expect(rules).toContain("only the reviewer runs on opus");
   });
 
+  test("the verifier brief is built by a script from sources the writer did not write, on another model family when there is one", () => {
+    expect(rules).toContain("bun bin/verify-brief.ts brief --pr <pr>");
+    expect(rules).toContain("never from the PR description");
+    expect(rules).toContain("at least one adversarial or escalation case per boundary");
+    expect(rules).toContain("`Exercised: <ids>`");
+    expect(rules).toContain("bun bin/verify-brief.ts check --brief");
+    expect(rules).toContain("bun bin/verify-brief.ts agent");
+    expect(rules).toContain("$VERIFIER_AGENT $VERIFIER_MODEL_ARGS");
+    // an Agent tool verifier has no Orca agent to pick, but still gets the brief
+    expect(agentRules).toContain("bun bin/verify-brief.ts brief --pr <pr>");
+    expect(agentRules).not.toContain("VERIFIER_AGENT");
+  });
+
   test("after the merge: watch the e2e, fix or revert, pull, restart and watch the restart", () => {
     expect(rules).toContain("gh run list -w e2e -c <merge sha>");
     expect(rules).toContain("git revert -m 1 <merge sha>");

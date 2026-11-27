@@ -7,6 +7,15 @@ description: Verify a Jarvis PR as a separate verifier - fast gate, per-change-t
 
 The session that wrote a PR never declares it done. A separate verifier (a fresh session or Orca worker, never the writer, never a fork of it) proves the change works and posts evidence on the PR. "Tests pass" is the gate, not the proof.
 
+## The brief does not come from the PR
+
+The writer's description says what the writer believes it fixed; a verifier that starts there only exercises that. The brief you are given is built by `bin/verify-brief.ts brief --pr <pr>` from the diff's paths: the boundaries they cross (ticket, access, command, slack, pipeline, script, db, env, prompt, watch, web, runtime) each with numbered adversarial cases (`ticket.1`, `command.2`, ...), the policy text of `SECURITY.md` / `ARCHITECTURE.md` / `AGENTS.md`, the regression history of those files (fix, bug and revert merges and the tests they added), past `[review round]` blockers and the contracts (tests, system-model tests, help, env). If you were handed no such file, build it yourself in your worktree (`bun bin/verify-brief.ts brief --pr <pr> --out brief.md`; `--no-gh` when gh is unreachable, and say so).
+
+- Read the brief and attack it first. Read the PR body only afterwards, as one more claim to falsify.
+- Per boundary try at least one adversarial or escalation case, not only the happy path: a role below the gate, a ticket for another repo, a stale head, a hostile argument, a second run, old data. A case that cannot apply is `n/a <id>: <reason>`, never skipped silently.
+- Policy items you exercise are the ids in the brief's `REQUIRED_ITEMS:` line; the `[verify]` comment lists them (see Evidence).
+- On a different model family than the writer (the verifier is started on codex or another non-Claude agent when the host has one, see `bin/verify-brief.ts agent`) the same procedure applies. On the shared family, say so in the comment.
+
 ## Setup
 
 - Verify the PR head, nothing else: `gh pr view <pr> --json headRefOid` and check it out in your own worktree (`git fetch`, `git worktree add .claude/worktrees/<name> <headRefOid>`). Never check out or edit in the main checkout (the folder the bot runs from), never touch `data/*.db`.
@@ -44,6 +53,7 @@ Post one comment `[verify]` on the PR (as the `SELF_PR_REVIEWER` account: `GH_TO
 - the head SHA you verified (`git rev-parse HEAD` in your worktree equals the PR's `headRefOid`)
 - the exact commands run and their trimmed output (typecheck, scoped and full `bun test` counts)
 - the behaviour proof for the change type above: command output, thread permalink, log line, screenshot, exit codes
+- `Exercised: <ids>`: every item id of the brief you tried, each with one line of what you did and what came out (`n/a <id>: <reason>` for one that does not apply), and `Model: <agent/model you ran on>` (say "same family as the writer" when it is)
 - what you could not verify and why
 - a verdict line: `VERDICT: verified` or `VERDICT: not verified - <what is missing or broken>`
 
@@ -51,6 +61,7 @@ Post one comment `[verify]` on the PR (as the `SELF_PR_REVIEWER` account: `GH_TO
 
 - approve or merge its own patch: if you changed code to make it pass, you are now the writer, push it as a fix and ask for another verifier
 - verify a commit other than the PR head: a push after you started voids the run, re-check the SHA before posting
+- claim `VERDICT: verified` with a brief item neither exercised nor `n/a`: save the comment to a file and run `bun bin/verify-brief.ts check --brief brief.md --comment comment.md`, it must exit 0
 - claim verified without evidence in the comment, or on the strength of the writer's own description, CI alone or "looks right"
 - edit the main folder, restart the bot to "see if it works", or run `bin/jarvis-restart.sh`
 - add attribution, a co-author trailer or "Generated with" to anything

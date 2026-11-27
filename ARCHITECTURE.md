@@ -447,6 +447,7 @@ Concrete implementations of the seams and the transports.
 
 ## Key decisions
 
+- **Verifier brief.** A verifier runs a runtime-code PR on the PR head, but its brief is not the PR description: `bin/verify-brief.ts` (pure half `domain/verifyBrief.ts`) assembles it from the diff's paths - the trust boundaries crossed with numbered adversarial cases, the policy docs' matching paragraphs, the regression history of those files and the contracts they touch - and checks that the `[verify]` comment names every required item. It picks another model family for the verifier (`codex`) when the host has one. A convention step like the rest of the verifier, not a platform gate.
 - **Functional throughout.** Repos are factory functions closing over the db
   handle and returning a bag of functions. No classes anywhere.
 - **Ports and adapters.** Use cases depend on `LlmPort`/`Clock`, so tests inject
