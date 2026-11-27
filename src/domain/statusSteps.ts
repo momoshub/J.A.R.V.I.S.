@@ -68,12 +68,20 @@ const clip = (text: string, max: number): string => {
  * PEM private keys and chat webhook URLs. It is a net, not a proof: a bare secret value printed alone cannot be
  * recognised, which is why `outputHidden` drops the result of a step that fetches one.
  */
-const SECRET_KEY =
-  /(["']?)([\w.-]*(?:token|secret|passw(?:or)?d|pwd|api[_-]?key|apikey|credential|ticket|private[_-]?key|access[_-]?key|session[_-]?id|cookie)[\w.-]*)\1(\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,&;}]+)/gi;
+const SECRET_KEY_WORDS = "token|secret|passw(?:or)?d|pwd|api[_-]?key|apikey|credential|ticket|private[_-]?key|access[_-]?key|session[_-]?id|cookie";
+/**
+ * Linear on a long word run: a key starts at a quote, or where no word/`.`/`-` char precedes it (a start in the middle of a run
+ * only finds what the run's own start finds), and the name is taken whole by a lookahead + backreference, which JS never
+ * backtracks into (`[\w.-]*kw[\w.-]*` would rescan the run for every start and every keyword in it).
+ */
+const SECRET_KEY = new RegExp(
+  `(["']|(?<![\\w.-]))(?=[\\w.-]*?(?:${SECRET_KEY_WORDS}))(?=([\\w.-]+))\\2\\1(\\s*[:=]\\s*)("[^"]*"|'[^']*'|[^\\s,&;}]+)`,
+  "gi",
+);
 const SECRET_FLAG = /(\s--?(?:password|passwd|pwd|token|secret|api-?key|auth)(?:=|\s+))("[^"]*"|'[^']*'|\S+)/gi;
 const SECRET_FORMS: readonly [RegExp, string][] = [
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, "[redacted]"],
-  [/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+(?::[^\s/@]*)?@/gi, "$1[redacted]@"],
+  [/(?<=\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+(?::[^\s/@]*)?@/gi, "[redacted]@"],
   [/(\bcurl\b[^|;&\n]*?\s(?:-u|--user)(?:=|\s*))("[^"]*"|'[^']*'|\S+)/gi, "$1[redacted]"],
   [/(\b(?:mysql|mariadb|mysqldump|mysqladmin)\b[^|;&\n]*?\s-p)(?=\S)("[^"]*"|'[^']*'|\S+)/gi, "$1[redacted]"],
   [/(\bAuthorization\s*:\s*)(?:(?:Basic|Bearer|Token)\s+)?\S+/gi, "$1[redacted]"],
@@ -93,7 +101,7 @@ export const scrubStatusText = (text: string): string => {
 const SECRET_FETCH =
   /(?:^|[;&|(]\s*)(?:op\s+(?:read|item|inject|document)|security\s+(?:find|dump)[\w-]*|printenv|env|set|export\s+-p|vault\s+(?:read|kv)|aws\s+(?:secretsmanager|ssm\s+get-parameter)|gcloud\s+secrets|kubectl\s+get\s+secret|pass\s+show|gpg\s+(?:-d|--decrypt)|age\s+-d)(?:\s|$)|\.env\b|\.pem\b|\.p12\b|\.netrc|id_(?:rsa|ed25519|ecdsa)|credentials|secrets?\b|keychain|\.aws\/|\.ssh\/|\/proc\/\S*environ/i;
 /** The same words `SECRET_KEY` looks for: a command that names one (`jq .slack_bot_token`, `select … key='openai_key'`) prints its value bare. */
-const SECRET_WORD = /token|secret|passw(?:or)?d|pwd|api[_-]?key|apikey|credential|private[_-]?key|access[_-]?key|cookie|\w+_key\b/i;
+const SECRET_WORD = /token|secret|passw(?:or)?d|pwd|api[_-]?key|apikey|credential|private[_-]?key|access[_-]?key|cookie|\w_key\b/i;
 const outputHidden = (step: StatusStep): boolean => !!step.command && (SECRET_FETCH.test(step.command) || SECRET_WORD.test(step.command));
 
 /** A short clipped line of a tool result: the first lines that say something, scrubbed. */

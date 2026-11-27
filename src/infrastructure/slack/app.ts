@@ -101,7 +101,7 @@ import type { ToolPolicy } from "../../domain/toolPolicy.ts";
 import { unfollowOnReaction } from "../../application/followReaction.ts";
 import { collapsedBlocks } from "../../domain/collapseSteps.ts";
 import { usageFooter } from "../../domain/usageFooter.ts";
-import { footerLine, signedText, SIGNATURES, withFooter } from "../../domain/messageFooter.ts";
+import { footerLine, footerUpdate, signedText, SIGNATURES, withFooter } from "../../domain/messageFooter.ts";
 import { isSilenceNote } from "../../domain/silence.ts";
 import { closingReply, hasKeepMarker, replaceableSelfPost, stripKeepMarker } from "../../domain/selfPost.ts";
 import type { SelfPosts } from "../../application/selfPosts.ts";
@@ -231,6 +231,10 @@ export type SlackClient = {
   chatStream: (args: Record<string, unknown>) => Streamer;
   /** Optional so a test fake need not have it; the real client always does. */
   apiCall?: (method: string, args: Record<string, unknown>) => Promise<unknown>;
+  /** Optional so a test fake need not have it; the real client always does. Without it a self-post cannot get its footer. */
+  conversations?: {
+    replies: (a: Record<string, unknown>) => Promise<{ messages?: { ts?: string; text?: string; blocks?: Record<string, unknown>[] }[] }>;
+  };
   chat: {
     update: (a: Record<string, unknown>) => Promise<unknown>;
     /** Optional so a test fake need not have it; the real client always does. Without it a turn shows no status message. */
@@ -667,11 +671,20 @@ export const createHandler =
       // A turn that closed with NO_REPLY is dropped too, even when its stream already shows some narration.
       const posted = result.kind === "reply" && result.turn ? (deps.selfPosts?.posts(result.turn) ?? []) : [];
       const closing = closingReply(result.text, posted);
+      // The reply goes into the turn's own thread, so it is signed.
+      const footer = footerLine(
+        (result.kind === "reply" ? result.by : undefined) ?? SIGNATURES.jarvis,
+        stream?.usage ? usageFooter(stream.usage) : undefined,
+        result.kind === "reply" ? result.trigger : undefined,
+      );
       if (closing.kind === "drop" || isSilenceNote(result.text)) {
         if (closing.kind === "drop" && posted.length > 0 && !isQuiet(result.text)) {
           log(`closing reply dropped, the turn posted its own answer channel=${msg.channelId} thread=${msg.threadTs} length=${result.text.length}`);
         }
         discardStatus = true;
+        // The footer would have gone on the closing reply: with the reply dropped, the turn's last own post carries it.
+        const last = closing.kind === "drop" ? posted.at(-1) : undefined;
+        if (last) await footSelfPost(msg, last.ts, footer, log);
         return dropQuiet(msg, parts, log);
       }
       if (closing.implicit) {
@@ -679,12 +692,6 @@ export const createHandler =
       }
       const replyText = closing.text;
       const fail = (e: unknown) => log(`collapse failed: ${e instanceof Error ? e.message : String(e)}`);
-      // The reply goes into the turn's own thread, so it is signed.
-      const footer = footerLine(
-        (result.kind === "reply" ? result.by : undefined) ?? SIGNATURES.jarvis,
-        stream?.usage ? usageFooter(stream.usage) : undefined,
-        result.kind === "reply" ? result.trigger : undefined,
-      );
       // Every text the tidy-up writes goes through here, so the KEEP_REPLY marker never reaches Slack
       // whichever path (single message, merged or split rollover, dead stream) rebuilt it.
       const tidy = (raw: string, withTail: boolean, asWords = false) => {
@@ -884,6 +891,29 @@ export const idleSession = async (
 
 /** Nothing a reader would count as a reply: no words, or a note about not replying. */
 const isQuiet = (text: string): boolean => !text.trim() || isSilenceNote(text);
+
+/**
+ * Put the turn's footer under a message the turn posted itself, when its closing reply (which would have carried
+ * it) was dropped. The message is read back for its blocks, so the update keeps them. Nothing here may break the
+ * turn: a missing client method, a message that is gone, a footer already there or a refused update is logged and left.
+ */
+const footSelfPost = async (msg: Incoming, ts: string, line: string, log: (m: string) => void): Promise<void> => {
+  const where = `channel=${msg.channelId} thread=${msg.threadTs} ts=${ts}`;
+  try {
+    const replies = msg.client.conversations?.replies;
+    if (!replies) return log(`footer for the turn's own post skipped, no way to read it ${where}`);
+    const res = await replies({ channel: msg.channelId, ts: msg.threadTs, latest: ts, oldest: ts, inclusive: true, limit: 10 });
+    // `replies` starts at the thread's parent whatever the bounds, so the post is matched by its exact ts, never `messages[0]`
+    const post = res.messages?.find((m) => m.ts === ts);
+    if (!post) return log(`footer for the turn's own post skipped, message not found ${where}`);
+    const update = footerUpdate(post, line);
+    if (!update) return log(`footer for the turn's own post skipped, already there or nothing to build on ${where}`);
+    await msg.client.chat.update({ channel: msg.channelId, ts, ...update });
+    log(`footer added to the turn's own post ${where}`);
+  } catch (e) {
+    log(`footer for the turn's own post failed: ${e instanceof Error ? e.message : String(e)} ${where}`);
+  }
+};
 
 /** Delete stream messages that ended up saying nothing. */
 const dropQuiet = async (msg: Incoming, parts: readonly { ts: string }[], log: (m: string) => void): Promise<void> => {
