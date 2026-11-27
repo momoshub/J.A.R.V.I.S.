@@ -239,8 +239,9 @@ const schema = z
     MERGE_GATE: z.enum(["on", "off"]).default("off"),
     // Checks that must be green on the head sha (comma list).
     MERGE_GATE_REQUIRED_CHECKS: z.string().default(DEFAULT_REQUIRED_CHECKS.join(",")),
-    // Accounts whose `[review round N]` / `[verify]` words count (comma list);
-    // empty: anyone except the PR's author and the app itself.
+    // Accounts whose `[review round N]` / `[verify]` words count (comma list).
+    // Empty: nobody's do, so no runtime PR merges (the repo is public: "anyone
+    // but the author" would let any GitHub user vouch).
     MERGE_GATE_ATTESTERS: z.string().default(""),
 
     // Slack bot ids (comma separated) whose messages are answered as the person

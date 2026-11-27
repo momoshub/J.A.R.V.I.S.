@@ -313,7 +313,7 @@ no classes.
   conflicts with its base, which GitHub never runs CI on). The merge is decided by the bot, not the script: the
   script asks the `merge-gate` action (`domain/mergeGate.ts` rules, `application/mergeGate.ts` GitHub reads and the single merge call, behind `MERGE_GATE=on`),
   which merges with the app's own credential only when the head is the named sha, the required checks (`checks`, `gitleaks`) are green on it and,
-  for runtime code, the latest `[review round N]` review ends `VERDICT: clean` and a `[verify]` comment ends `VERDICT: verified` naming the sha, written by an account other than the PR's author and the app.
+  for runtime code, the latest `[review round N]` review ends `VERDICT: clean` and a `[verify]` comment ends `VERDICT: verified` naming the sha, written by an account named in `MERGE_GATE_ATTESTERS` (never the PR's author or the app; an empty list means no runtime PR merges), with a raw `pr-merge` refused while the gate is on.
   The writer's worker ticket names `merge-gate` (never a raw `pr-merge`); a reviewer's or verifier's never does. Who holds what: the writer holds a ticket
   and a one-shot push credential, the reviewer and verifier a non-admin login that can only post reviews and comments, the app's private key and the merge live in the bot alone
   (the owner's by-hand steps to finish this are in the README, "Who merges"). When it touches runtime code

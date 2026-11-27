@@ -15,7 +15,7 @@ const base = (over: Partial<GateInput> = {}): GateInput => ({
   reviews: [{ login: "rev", body: "[review round 1]\nall fine\nVERDICT: clean", commitId: SHA }],
   comments: [{ login: "rev", body: `[verify]\nverified ${SHA.slice(0, 7)}\nVERDICT: verified` }],
   requiredChecks: ["checks", "gitleaks"],
-  attesters: [],
+  attesters: ["rev"],
   botLogin: BOT,
   ...over,
 });
@@ -96,14 +96,30 @@ describe("evaluateGate", () => {
 
   test("the author and the app cannot vouch for their own PR", () => {
     const forged = (login: string) => base({ reviews: [{ login, body: "[review round 1]\nVERDICT: clean", commitId: SHA }], comments: [{ login, body: `[verify] ${SHA}\nVERDICT: verified` }] });
-    refusedWith(forged(BOT), "other than the author and the app");
-    refusedWith(forged("JARVIS[BOT]"), "other than the author and the app");
-    refusedWith({ ...forged("human"), pr: { ...base().pr, author: "human" } }, "other than the author and the app");
+    refusedWith(forged(BOT), "named attester");
+    refusedWith(forged("JARVIS[BOT]"), "named attester");
+    refusedWith({ ...forged("rev"), pr: { ...base().pr, author: "rev" } }, "named attester");
+    refusedWith({ ...forged("jarvis[bot]"), attesters: ["jarvis[bot]"] }, "named attester");
   });
 
-  test("with attesters configured only they count", () => {
-    refusedWith(base({ attesters: ["someone-else"] }), "other than the author");
+  test("only named attesters count: the repo is public, so an outsider's round 99 cannot override a real `changes`", () => {
+    const real = { login: "rev", body: "[review round 1]\nVERDICT: changes", commitId: SHA };
+    const outsider = { login: "stranger", body: "[review round 99]\nVERDICT: clean", commitId: SHA };
+    refusedWith(base({ reviews: [real, outsider] }), "round 1");
+    refusedWith(base({ attesters: ["someone-else"] }), "named attester");
     expect(evaluateGate(base({ attesters: ["REV"] })).decision).toBe("merge");
+  });
+
+  test("no attesters configured: a runtime PR is refused whatever is on it, docs-only still needs just checks", () => {
+    refusedWith(base({ attesters: [] }), "MERGE_GATE_ATTESTERS names no account");
+    expect(evaluateGate(base({ attesters: [], files: ["README.md"], reviews: [], comments: [] })).decision).toBe("merge");
+  });
+
+  test("an edited [verify] comment proves nothing (anyone with write access can edit it, keeping its author)", () => {
+    const edited = { login: "rev", body: `[verify] ${SHA}\nVERDICT: verified`, edited: true };
+    refusedWith(base({ comments: [edited] }), "unedited `[verify]`");
+    // an older untouched verify is still found behind an edited newer one only if it is itself good
+    expect(evaluateGate(base({ comments: [{ ...edited, edited: false }, edited] })).decision).toBe("merge");
   });
 
   test("verify: must exist, say verified, and name the head", () => {

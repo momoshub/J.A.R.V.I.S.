@@ -4,14 +4,14 @@ import { runMergeGate, type MergeGateConfig } from "../../src/application/mergeG
 import type { AllowedUser } from "../../src/domain/types.ts";
 
 const SHA = "0123456789abcdef0123456789abcdef01234567";
-const config: MergeGateConfig = { enabled: true, requiredChecks: ["checks", "gitleaks"], attesters: [], botLogin: "jarvis[bot]" };
+const config: MergeGateConfig = { enabled: true, requiredChecks: ["checks", "gitleaks"], attesters: ["rev"], botLogin: "jarvis[bot]" };
 
 type World = {
   pull?: Record<string, unknown>;
-  files?: string[];
+  files?: ({ filename: string; previous_filename?: string } | string)[];
   checks?: { name: string; status: string; conclusion: string | null }[];
   reviews?: { user: { login: string }; body: string; commit_id: string }[];
-  comments?: { user: { login: string }; body: string }[];
+  comments?: { user: { login: string }; body: string; created_at?: string; updated_at?: string }[];
   mergeFails?: Error;
 };
 
@@ -26,7 +26,7 @@ const github = (w: World = {}) => {
       if (w.mergeFails) throw w.mergeFails;
       return { merged: true, sha: "merge-commit" };
     }
-    if (/\/pulls\/9\/files/.test(path)) return slice((w.files ?? ["src/a.ts"]).map((filename) => ({ filename })));
+    if (/\/pulls\/9\/files/.test(path)) return slice((w.files ?? ["src/a.ts"]).map((f) => (typeof f === "string" ? { filename: f } : f)));
     if (/\/check-runs/.test(path)) {
       const runs = w.checks ?? [
         { name: "checks", status: "completed", conclusion: "success" },
@@ -84,6 +84,18 @@ describe("runMergeGate", () => {
     expect(await runMergeGate(config, g.request, "o/r", 9, SHA)).toMatchObject({ decision: "merged", runtime: false });
   });
 
+  test("a rename out of runtime code into docs is still runtime (the old path counts)", async () => {
+    const g = github({ files: [{ filename: "docs/old-test.md", previous_filename: "tests/x.test.ts" }], reviews: [], comments: [] });
+    const out = await runMergeGate(config, g.request, "o/r", 9, SHA);
+    expect(out).toMatchObject({ decision: "refused" });
+    expect(g.calls.some((c) => c.startsWith("PUT"))).toBe(false);
+  });
+
+  test("a [verify] comment edited after it was posted does not count", async () => {
+    const g = github({ comments: [{ user: { login: "rev" }, body: `[verify] ${SHA}\nVERDICT: verified`, created_at: "t1", updated_at: "t2" }] });
+    expect(await runMergeGate(config, g.request, "o/r", 9, SHA)).toMatchObject({ decision: "refused" });
+  });
+
   test("lists are read page by page (more than 100 files)", async () => {
     const g = github({ files: [...Array.from({ length: 100 }, (_, i) => `docs/${i}.md`), "src/late.ts"], reviews: [], comments: [] });
     // the 101st file is runtime, so with no review the gate refuses: it saw page 2
@@ -98,17 +110,17 @@ describe("runMergeGate", () => {
 });
 
 describe("merge-gate action", () => {
-  const setup = (opts: { worker?: { actions: string[] }; mergeGate?: boolean; world?: World } = {}) => {
+  const setup = (opts: { worker?: { actions: string[] }; mergeGate?: boolean; world?: World; role?: string } = {}) => {
     const g = github(opts.world);
     const audit: { ok: boolean; args: string; result: string }[] = [];
     const deps: GithubActionDeps = {
       clock: () => 1,
       resolve: () => ({ actor: "U1", channel: "C1" }),
-      resolveWorker: (_t, call) =>
-        opts.worker?.actions.includes(call.action)
+      resolveWorker: (t, call) =>
+        t !== "jvwk_dead" && (opts.worker?.actions.includes(call.action) || call.action === "ticket-renew")
           ? { ok: true, actor: "U1", channel: "C1", dispatchId: "ctx_w", id: "wk1", push: false }
           : { ok: false, reason: "action" as const, message: `this worker ticket does not allow ${call.action}`, actor: "U1", channel: "C1" },
-      users: { get: () => ({ slackId: "U1", role: "owner", name: "o" }) as unknown as AllowedUser },
+      users: { get: () => ({ slackId: "U1", role: opts.role ?? "owner", name: "o" }) as unknown as AllowedUser },
       github: {
         installationOfRepo: async () => 7,
         installationToken: async () => "tok",
@@ -119,7 +131,7 @@ describe("merge-gate action", () => {
       audit: { add: (e) => void audit.push({ ok: e.ok, args: e.args, result: e.result }) },
       allowedOwners: ["o"],
       slug: "jarvis",
-      ...(opts.mergeGate === false ? {} : { mergeGate: { enabled: true, requiredChecks: ["checks", "gitleaks"], attesters: [] } }),
+      ...(opts.mergeGate === false ? {} : { mergeGate: { enabled: true, requiredChecks: ["checks", "gitleaks"], attesters: ["rev"] } }),
     };
     return { actions: createGithubActions(deps), g, audit };
   };
@@ -154,6 +166,37 @@ describe("merge-gate action", () => {
     const { actions, g } = setup({ worker: { actions: ["merge-gate"] }, mergeGate: false });
     expect((await actions.run({ ticket: "jvwk_x", ...ask })).github).toMatchObject({ decision: "disabled" });
     expect(g.calls).toEqual([]);
+  });
+
+  test("gate off: a writer ticket minted WITHOUT merge-gate (every one before this change) still gets `disabled`, so the script falls back instead of locking out", async () => {
+    const { actions, g, audit } = setup({ worker: { actions: ["pr-create", "comment"] }, mergeGate: false });
+    expect((await actions.run({ ticket: "jvwk_x", ...ask })).github).toMatchObject({ decision: "disabled" });
+    expect(g.calls).toEqual([]);
+    expect(audit.at(-1)).toMatchObject({ ok: true, result: "merge-gate disabled" });
+  });
+
+  test("gate off: an executer turn (no github:merge-gate grant) also gets `disabled`", async () => {
+    const { actions } = setup({ role: "executer", mergeGate: false });
+    expect((await actions.run({ ticket: "good", ...ask })).github).toMatchObject({ decision: "disabled" });
+  });
+
+  test("gate off still refuses a ticket that is not live: the answer is not handed to anyone", async () => {
+    const { actions } = setup({ mergeGate: false });
+    await expect(actions.run({ ticket: "jvwk_dead", ...ask })).rejects.toThrow();
+  });
+
+  test("gate ON: a ticket without merge-gate is still refused (the opt-in is the point)", async () => {
+    const { actions } = setup({ worker: { actions: ["pr-create"] } });
+    await expect(actions.run({ ticket: "jvwk_x", ...ask })).rejects.toThrow("does not allow merge-gate");
+  });
+
+  test("gate ON: a raw pr-merge is refused for everyone, even the owner's own turn ticket; gate OFF: unchanged", async () => {
+    const on = setup();
+    await expect(on.actions.run({ ticket: "good", action: "pr-merge", repo: "o/r", number: 9 })).rejects.toThrow("only through merge-gate");
+    expect(on.g.calls).toEqual([]);
+    const off = setup({ mergeGate: false });
+    await expect(off.actions.run({ ticket: "good", action: "pr-merge", repo: "o/r", number: 9 })).resolves.toBeDefined();
+    expect(off.g.calls.some((c) => c.startsWith("PUT"))).toBe(true);
   });
 
   test("a short or missing sha is refused", async () => {

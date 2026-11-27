@@ -24,7 +24,7 @@ describe("selfUpdateRules is the whole procedure, from the codebase", () => {
   test("the writer is an Orca worker with its own ticket, the session only orchestrates", () => {
     expect(rules).toContain("who writes it: an Orca worker, never the session itself");
     expect(rules).toContain("cheap jobs (a test fixture, a few edits) are done inline");
-    expect(rules).toContain("`worker-ticket <owner/repo> pending` before `worker-start`");
+    expect(rules).toContain("`worker-ticket <owner/repo> pending merge-gate` before `worker-start`");
     expect(rules).toContain("worker-ticket bind <id> <dispatchId>");
     expect(rules).toContain("never read, print or copy the file");
     expect(rules).toContain("without one the writer gets stuck at the PR step");

@@ -70,10 +70,11 @@ export const runMergeGate = async (
   const input: GateInput = {
     sha,
     pr: prState,
-    files: files.map((f) => text(obj(f).filename)),
+    // A rename shows its new path as `filename`: the old one counts too, or moving code into docs/ would look docs-only.
+    files: files.flatMap((f) => [text(obj(f).filename), text(obj(f).previous_filename)].filter(Boolean)),
     checks: checks.map((c) => ({ name: text(obj(c).name), status: text(obj(c).status), conclusion: typeof obj(c).conclusion === "string" ? (obj(c).conclusion as string) : null })),
     reviews: reviews.map((r) => ({ login: login(obj(r).user), body: text(obj(r).body), commitId: text(obj(r).commit_id) })),
-    comments: comments.map((c) => ({ login: login(obj(c).user), body: text(obj(c).body) })),
+    comments: comments.map((c) => ({ login: login(obj(c).user), body: text(obj(c).body), edited: text(obj(c).updated_at) !== text(obj(c).created_at) })),
     requiredChecks: config.requiredChecks,
     attesters: config.attesters,
     botLogin: config.botLogin,

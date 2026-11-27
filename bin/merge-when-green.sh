@@ -38,7 +38,10 @@
 # merged (exit 0), pending (poll again), conflict (exit 4), refused (the reasons,
 # exit 1) or disabled (the bot's MERGE_GATE is off): only `disabled`, or no ticket
 # at all, runs the old path below with the human `gh` login. Remove that login
-# from the host and the old path has nothing to merge with.
+# from the host and the old path has nothing to merge with. MERGE_GATE_REQUIRED=1
+# (set it in the writer's environment once the bot's gate is on) closes the
+# fallback: no ticket, or a gate that is off, is then an error (exit 1), never
+# the human path.
 #
 # The default timeout stays under the 10 minute ceiling of a foreground tool
 # call; give that call a timeout to match. Exit codes: 0 merged, 1 red CI, a refused
@@ -136,7 +139,14 @@ why=""
 if [ -n "${JARVIS_RUN_TICKET:-}${JARVIS_RUN_TICKET_FILE:-}" ]; then
   gate
   rc=$?
+  if [ "$rc" -eq 10 ] && [ "${MERGE_GATE_REQUIRED:-}" = 1 ]; then
+    echo "MERGE_GATE_REQUIRED=1: the bot's merge gate is off, so there is no merge path - not merging" >&2
+    exit 1
+  fi
   [ "$rc" -eq 10 ] || exit "$rc"
+elif [ "${MERGE_GATE_REQUIRED:-}" = 1 ]; then
+  echo "MERGE_GATE_REQUIRED=1 and this shell holds no ticket (JARVIS_RUN_TICKET_FILE): the human-token path is closed - not merging" >&2
+  exit 1
 fi
 
 deadline=$(( $(date +%s) + TIMEOUT ))

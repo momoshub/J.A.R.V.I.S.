@@ -107,7 +107,7 @@ Required / notable env (see `.env.example`):
 | `GITHUB_APP_LABEL` | label that calls it on an issue/PR (default `jarvis`) |
 | `MERGE_GATE` | `on`: the bot merges the PR itself, with the app's credential, once the gate holds (see [Who merges](#who-merges-one-principal-per-job)); `off` (default) keeps `bin/merge-when-green.sh` on the human token |
 | `MERGE_GATE_REQUIRED_CHECKS` | checks that must be green on the head sha, comma list (default `checks,gitleaks`) |
-| `MERGE_GATE_ATTESTERS` | accounts whose `[review round N]` / `[verify]` words count, comma list (default empty: anyone but the PR's author and the app) |
+| `MERGE_GATE_ATTESTERS` | accounts whose `[review round N]` / `[verify]` words count, comma list; required for runtime code (default empty: nobody's count, so no runtime PR merges; the repo is public and "anyone but the author" would let any GitHub user vouch) |
 | `SELF_PR_AUTHOR` / `SELF_PR_REVIEWER` | gh logins for the bot's own PRs: the author opens the PR and answers reviews, the reviewer posts its reviews (request changes or approve) and merges. Both or neither, and not the same login (otherwise: one account) |
 | `ACCEPTED_BOT_IDS` | Slack bot ids, comma list, whose messages are answered as the person they post for. A bot that posts with a person's user token carries both a `bot_id` and that person's `user`; with its id listed the message is handled as that user speaking, authorized through the normal access check (exactly that person's role, never more). A bot message without a `user` is still ignored, and after 3 accepted-bot turns in a row in one thread with no person writing, the bot stops answering bots there until a person does. The turn's context marks such a message `via bot` next to the person. Default empty: every bot message is ignored |
 | `REVIEW_ROUNDS_MAX` | review rounds a PR is followed for, the review that was asked for included (default `5`; `0` turns following off). See [Review rounds](#review-rounds) |
@@ -1392,20 +1392,23 @@ is refused by GitHub) only when **all** of this holds on that exact sha:
 - the PR is open, not a draft, and mergeable (a conflict answers `conflict`: exit 4);
 - every required check (`MERGE_GATE_REQUIRED_CHECKS`, default `checks` and `gitleaks`) is green and no other check is red; one not yet reported or still running answers `pending` (exit 3, run it again);
 - for a PR that touches runtime code (anything that is not `*.md`, `docs/`, `web/`, `.claude/skills/`, `data/prompt-guides/`, `.env.example`; `.github/`, `bin/`, `tests/` and prompt text in `.ts` count as runtime): the latest `[review round N]` review was written on this head and ends `VERDICT: clean`, and the latest `[verify]` comment ends `VERDICT: verified` and names the head sha;
-- those review and verify words come from an account that is neither the PR's author nor the app itself (`<slug>[bot]`), and, if `MERGE_GATE_ATTESTERS` is set, one of those accounts. The writer can comment as the app, so its own `VERDICT: clean` counts for nothing.
+- those review and verify words come from an account named in `MERGE_GATE_ATTESTERS` that is neither the PR's author nor the app itself (`<slug>[bot]`); with the list empty a runtime PR is refused. The writer can comment as the app and the repo is public, so neither its own nor a stranger's `VERDICT: clean` counts. A `[verify]` comment edited after it was posted is ignored (anyone with write access can edit another's comment), and a renamed file counts under both its old and new path, so moving code into `docs/` is still runtime.
 
 Anything else answers `refused` with every reason (exit 1). Exit codes of the
 script are unchanged: 0 merged, 1 refused or red, 2 usage, 3 not finished yet,
-4 conflict. A worker ticket never carries `pr-merge`; `merge-gate` is the one
+4 conflict. With `MERGE_GATE=on` a raw `pr-merge` is refused for every ticket, the owner's included, so the gate cannot be walked around through the other action; with it off `pr-merge` is unchanged. A worker ticket never carries `pr-merge`; `merge-gate` is the one
 merge it may ask for, only when named on the mint (`worker-ticket <owner/repo>
 pending merge-gate`), on the **writer's** ticket. A reviewer or verifier is
 started without one, so it cannot merge, and a ticket without it is refused.
 
-`MERGE_GATE=off` (the default) makes the bot answer `disabled`, and the script
-then falls back to the old human-token path with a warning, so nothing breaks
-before the host is ready. So does a shell with no ticket at all (a person at a
-terminal). That fallback is only as strong as the human token is out of reach:
-once it is gone from the host the fallback has nothing to merge with.
+`MERGE_GATE=off` (the default) makes the bot answer `disabled` to any live ticket
+of the repo, whether or not it names `merge-gate` (so a writer minted before this
+change is not locked out), and the script then falls back to the old human-token
+path with a warning, so nothing breaks before the host is ready. So does a shell
+with no ticket at all (a person at a terminal). That fallback is only as strong as
+the human token is out of reach: once it is gone from the host the fallback has
+nothing to merge with, and `MERGE_GATE_REQUIRED=1` in the writer's environment
+closes it outright (no ticket, or a gate that is off, is an error, never the human path).
 
 **What the owner still does by hand to finish the wall** (none of it can be done
 by the bot or a worker, by design):
@@ -1443,7 +1446,10 @@ by the bot or a worker, by design):
    why `MERGE_GATE_ATTESTERS` can pin the accounts that count, but a forged
    `VERDICT: clean` needs one of them; a separate reviewer **host** or a second
    GitHub App for reviews would close that last gap, and is not built here.
-5. **Turn it on.** Set `MERGE_GATE=on` in the bot's `.env` and restart Jarvis when
+5. **Name the attesters and turn it on.** Set `MERGE_GATE_ATTESTERS` to the
+   reviewer's and verifier's GitHub logins (ideally two accounts that are not the
+   one the writer pushes with), `MERGE_GATE=on` in the bot's `.env`, and
+   `MERGE_GATE_REQUIRED=1` in the environment the writers run in; restart Jarvis when
    idle. Check with a docs-only PR: `bin/merge-when-green.sh <n>` from its
    worktree should print `merged by the bot`. From then on the script never
    uses the human path when the bot answers.

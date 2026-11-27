@@ -12,8 +12,11 @@
  * that touches runtime code the latest `[review round N]` review of the head
  * ends `VERDICT: clean` and the latest `[verify]` comment ends
  * `VERDICT: verified` and names the sha. Review and verify words only count
- * from an account that is neither the PR's author nor the app itself: the
- * writer can comment as the app, so its own `VERDICT: clean` is worth nothing.
+ * from an account named in `attesters` (`MERGE_GATE_ATTESTERS`) that is neither
+ * the PR's author nor the app itself: the writer can comment as the app, and the
+ * repo is public, so anyone-but-the-author would let any GitHub user vouch. A
+ * `[verify]` comment edited after it was posted is ignored, and a rename out of a
+ * runtime path counts as touching it.
  */
 
 /** A PR whose every file matches one of these needs no reviewer and no verifier (the self-fix guide's "review by risk"). */
@@ -43,7 +46,8 @@ export type GatePr = {
 };
 export type GateCheck = { name: string; status: string; conclusion: string | null };
 export type GateReview = { login: string; body: string; commitId: string };
-export type GateComment = { login: string; body: string };
+/** `edited`: the comment's `updated_at` is not its `created_at`. Anyone with write access can edit another's issue comment, keeping its author, so an edited `[verify]` proves nothing. */
+export type GateComment = { login: string; body: string; edited?: boolean };
 
 export type GateInput = {
   /** The sha the caller built and tested: the merge is pinned to it. */
@@ -54,7 +58,7 @@ export type GateInput = {
   reviews: readonly GateReview[];
   comments: readonly GateComment[];
   requiredChecks: readonly string[];
-  /** Accounts whose review / verify words count; empty = anybody but the PR author and the app. */
+  /** Accounts whose review / verify words count. Empty: nobody's do, so a runtime PR is refused: the repo is public, "anyone but the author" would let any GitHub user vouch. */
   attesters: readonly string[];
   /** The app's own login (`<slug>[bot]`). */
   botLogin: string;
@@ -83,7 +87,7 @@ export const namesSha = (body: string, sha: string): boolean =>
 const counts = (login: string, input: GateInput): boolean => {
   const l = lc(login);
   if (!l || l === lc(input.pr.author) || l === lc(input.botLogin)) return false;
-  return input.attesters.length === 0 || input.attesters.some((a) => lc(a) === l);
+  return input.attesters.some((a) => lc(a) === l);
 };
 
 /** The latest `[review round N]` review (highest N, the later one on a tie) from an account that counts. */
@@ -100,15 +104,15 @@ const latestReview = (input: GateInput): { round: number; review: GateReview } |
 
 const reviewProblem = (input: GateInput): string | undefined => {
   const latest = latestReview(input);
-  if (!latest) return "no `[review round N]` review from an account other than the author and the app";
+  if (!latest) return "no `[review round N]` review from a named attester (MERGE_GATE_ATTESTERS; never the PR author or the app)";
   if (lc(latest.review.commitId) !== lc(input.sha)) return `the latest review (round ${latest.round}) was written on ${latest.review.commitId.slice(0, 7) || "an unknown commit"}, not the head ${input.sha.slice(0, 7)}`;
   if (!/^VERDICT:\s*clean\s*$/i.test(lastLine(latest.review.body))) return `the latest review (round ${latest.round}) does not end \`VERDICT: clean\``;
   return undefined;
 };
 
 const verifyProblem = (input: GateInput): string | undefined => {
-  const latest = [...input.comments].reverse().find((c) => /^\s*\[verify\]/.test(c.body) && counts(c.login, input));
-  if (!latest) return "no `[verify]` comment from an account other than the author and the app";
+  const latest = [...input.comments].reverse().find((c) => /^\s*\[verify\]/.test(c.body) && !c.edited && counts(c.login, input));
+  if (!latest) return "no unedited `[verify]` comment from a named attester (MERGE_GATE_ATTESTERS; never the PR author or the app)";
   if (!/^VERDICT:\s*verified\s*$/i.test(lastLine(latest.body))) return "the latest `[verify]` comment does not end `VERDICT: verified`";
   if (!namesSha(latest.body, input.sha)) return `the latest \`[verify]\` comment does not name the head ${input.sha.slice(0, 7)}`;
   return undefined;
@@ -134,7 +138,8 @@ export const evaluateGate = (input: GateInput): GateDecision => {
 
   const runtime = touchesRuntime(input.files);
   if (input.files.length === 0) refused.push("the PR changes no files");
-  if (runtime) {
+  if (runtime && input.attesters.length === 0) refused.push("MERGE_GATE_ATTESTERS names no account, so nobody's review or verify counts for runtime code");
+  else if (runtime) {
     const r = reviewProblem(input);
     if (r) refused.push(r);
     const v = verifyProblem(input);

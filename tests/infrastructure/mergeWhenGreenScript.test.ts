@@ -342,6 +342,23 @@ describe("merge-when-green.sh with a ticket (the bot decides)", () => {
     expect(r.merged).toContain(`pr merge 42 --merge --match-head-commit ${FULL_SHA}`);
   });
 
+  test("MERGE_GATE_REQUIRED=1: a gate that is off is an error, never the human path", async () => {
+    const dir = fakeBot([reply({ decision: "disabled", reasons: ["off"], sha: FULL_SHA })]);
+    const gh = fakeGh([{ checks: [ci("pass"), guardian], head: FULL_SHA }]);
+    const r = await run(gh, ["42"], { ...gateEnv(dir), MERGE_GATE_REQUIRED: "1", PATH: `${gh}:${process.env.PATH}` });
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("no merge path");
+    expect(r.merged).toBeNull();
+  });
+
+  test("MERGE_GATE_REQUIRED=1 with no ticket: the human path is closed", async () => {
+    const dir = fakeGh([{ checks: [ci("pass"), guardian] }]);
+    const r = await run(dir, ["42"], { MERGE_GATE_REQUIRED: "1" });
+    expect(r.code).toBe(1);
+    expect(r.stderr).toContain("holds no ticket");
+    expect(r.merged).toBeNull();
+  });
+
   test("a short sha is refused before asking the bot", async () => {
     const dir = fakeBot([reply({ decision: "merged", sha: SHA })]);
     const r = await run(dir, ["42"], { ...gateEnv(dir), MERGE_HEAD_SHA: SHA });
