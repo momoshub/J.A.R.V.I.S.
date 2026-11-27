@@ -13,13 +13,10 @@ import { footerBlock, footerLine, SIGNATURES } from "../../domain/messageFooter.
  */
 const RECENT_LIMIT = 50;
 
-/**
- * The notice plus its signature footer: unstamped for the scheduled post,
- * stamped `editedMs` for an edit.
- */
-const blocks = (msg: AlarmMessage, editedMs?: number): KnownBlock[] => [
+/** The notice plus its signature footer. */
+const blocks = (msg: AlarmMessage): KnownBlock[] => [
   ...msg.blocks.map((b) => ({ ...b, text: { ...b.text } })),
-  footerBlock(footerLine(SIGNATURES.offlineAlarm, editedMs)) as KnownBlock,
+  footerBlock(footerLine(SIGNATURES.offlineAlarm)) as KnownBlock,
 ];
 
 /**
@@ -27,7 +24,7 @@ const blocks = (msg: AlarmMessage, editedMs?: number): KnownBlock[] => [
  * stalled on a half-open socket would hold every later tick for minutes, past the
  * point a cancel still lands, and the alarm fired while online.
  */
-export const createOfflineAlarmSlack = (client: WebClient, clock: () => number = Date.now): OfflineAlarmSlack => {
+export const createOfflineAlarmSlack = (client: WebClient): OfflineAlarmSlack => {
   let botUserId: string | undefined;
   const me = async (): Promise<string> => {
     if (botUserId) return botUserId;
@@ -69,7 +66,7 @@ export const createOfflineAlarmSlack = (client: WebClient, clock: () => number =
       );
     },
     update: async (channel, ts, msg) => {
-      await client.chat.update({ channel, ts, text: msg.text, blocks: blocks(msg, clock()) });
+      await client.chat.update({ channel, ts, text: msg.text, blocks: blocks(msg) });
     },
   };
 };

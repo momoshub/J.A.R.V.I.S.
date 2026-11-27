@@ -127,10 +127,11 @@ export type SlackAdminPort = {
   /**
    * Edit one of the bot's own messages. Every post and edit below carries the
    * signature footer (domain/messageFooter.ts): `by` names who wrote it, plain
-   * Jarvis when left out. Only an edit (`update`, `settleInteractive`) adds the
-   * footer's "updated" time, the moment of the call; a first post has none.
+   * Jarvis when left out, and an edit rebuilds the footer as it was (no
+   * "updated" stamp). `by` of `UNSIGNED` (null) - for a message that is not in
+   * the turn's own thread, like a console edit - leaves the footer off.
    */
-  update: (channel: string, ts: string, text: string, by?: string) => Promise<void>;
+  update: (channel: string, ts: string, text: string, by?: string | null) => Promise<void>;
   /** Delete one of the bot's own messages. */
   remove: (channel: string, ts: string) => Promise<void>;
   /** One message by its ts, top-level or inside a thread. */
@@ -141,11 +142,13 @@ export type SlackAdminPort = {
   unbroadcast?: (channel: string, ts: string) => Promise<void>;
   /**
    * Post a message, optionally into a thread. Returns where it landed when the
-   * transport knows, so a temporary notice can be taken down again. `usage`,
+   * transport knows, so a temporary notice can be taken down again. `by` of
+   * `UNSIGNED` (null) posts with no footer: the message is not in the turn's own
+   * thread (the `post` command, a console post). `usage`,
    * when a turn reported it, goes into the footer as the same usage line a
    * live-streamed reply carries (domain/usageFooter.ts).
    */
-  post: (channel: string, text: string, threadTs?: string, by?: string, usage?: FooterUsage, trigger?: InternalKind) => Promise<PostedRef | void>;
+  post: (channel: string, text: string, threadTs?: string, by?: string | null, usage?: FooterUsage, trigger?: InternalKind) => Promise<PostedRef | void>;
   /**
    * Open (or reuse) a DM with a user and post there. Returns where it landed,
    * so a message can later be found again - matching a reaction to it, say.

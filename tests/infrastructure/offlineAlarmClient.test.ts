@@ -28,7 +28,7 @@ describe("offline alarm Slack client", () => {
     await expect(s.recent("C1")).rejects.toThrow(/no user id/);
   });
 
-  test("a notice is signed with no stamp when Slack posts it; its edit is stamped now", async () => {
+  test("a notice is signed when Slack posts it, and its edit keeps the signature with no updated stamp", async () => {
     const calls: Record<string, unknown>[] = [];
     const c = {
       ...client("U", []),
@@ -37,13 +37,13 @@ describe("offline alarm Slack client", () => {
         update: async (a: Record<string, unknown>) => void calls.push(a),
       },
     } as unknown as WebClient;
-    const s = createOfflineAlarmSlack(c, () => 1_794_200_000_000);
+    const s = createOfflineAlarmSlack(c);
     await s.schedule("C1", 1_794_123_692, offlineNotice(1_794_123_000_000));
     await s.update("C1", "1.1", onlineNotice(1_794_123_000_000, 1_794_200_000_000));
     const footers = calls.map((a) => (a.blocks as { block_id?: string; elements?: { text: string }[] }[]).at(-1));
     expect(footers.map((f) => f?.block_id)).toEqual([FOOTER_BLOCK_ID, FOOTER_BLOCK_ID]);
     expect(footers[0]?.elements?.[0]?.text).toBe("offline alarm");
-    expect(footers[1]?.elements?.[0]?.text).toStartWith("offline alarm · updated <!date^1794200000^");
+    expect(footers[1]?.elements?.[0]?.text).toBe("offline alarm");
     // the notice's own block is still first, so it is still found by its id
     expect((calls[0]?.blocks as { block_id?: string }[])[0]?.block_id).toStartWith("jv-offline:");
   });

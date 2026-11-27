@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { dispatchCommand } from "../../src/application/commands.ts";
 import { createThreadBriefRepo } from "../../src/infrastructure/db/threadBriefRepo.ts";
+import { UNSIGNED } from "../../src/domain/messageFooter.ts";
 import type { SlackAdminPort } from "../../src/application/slackAdmin.ts";
 import { OWNER, db, actor, slackCalls, build } from "./commandsFixture.ts";
 
@@ -27,12 +28,13 @@ describe("post command", () => {
     expect(unread[0]).toMatchObject({ fromChannel: "D0SRC", fromThread: HERE.threadTs, author: OWNER });
   });
 
-  test("the footer never names the requester: `by` is undefined even when the actor has a display name", async () => {
+  test("a post into another channel or thread carries no footer: `by` is UNSIGNED, the requester is never named", async () => {
     const deps = build();
-    const bys: (string | undefined)[] = [];
+    const bys: (string | null | undefined)[] = [];
     deps.slack = { ...deps.slack!, post: async (channel, _text, _threadTs, by) => (bys.push(by), { channel, ts: "1800000000.000100" }) };
     await dispatchCommand(deps, actor({ displayName: "Kai" }), "D0SRC", "post C0TEST00002 hi", HERE);
-    expect(bys).toEqual([undefined]);
+    await dispatchCommand(deps, actor(), "D0SRC", `post <${LINK}?thread_ts=1787000000.000100&cid=C0TEST00001> hi`, HERE);
+    expect(bys).toEqual([UNSIGNED, UNSIGNED]);
   });
 
   test("a thread link posts into that thread and briefs it", async () => {

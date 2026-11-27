@@ -602,7 +602,7 @@ describe("createHandler streaming truth table", () => {
     expect(updates[0]?.reply_broadcast).toBeUndefined();
   });
 
-  test("a streamed reply is signed Jarvis, with no stamp on its first send, even with nothing to collapse", async () => {
+  test("a streamed reply in its own thread is signed Jarvis, with no stamp, even with nothing to collapse", async () => {
     const { handle, msg, updates } = build({
       llm: streamingLlm("hello there", [{ type: "text", delta: "hello there" }]),
       streamUpdates: true,
@@ -1498,12 +1498,12 @@ describe("Block Kit the brain built", () => {
     expect(order).toEqual(["update", "turn"]);
     expect(updates[0]).toMatchObject({ channel: "C1", ts: "200.2", text: "Which?" });
     const blocks = updates[0]?.blocks as { type: string; elements?: { text?: string }[] }[];
-    // the settled note, then the signature footer restamped by the edit
-    expect(blocks.map((b) => b.type)).toEqual(["section", "actions", "context", "context"]);
+    // the settled note; the edit adds no footer and no "updated" stamp to a message the model posted itself
+    expect(blocks.map((b) => b.type)).toEqual(["section", "actions", "context"]);
     expect(JSON.stringify(blocks[1])).toContain("jv:settled:a");
     expect(blocks[2]?.elements?.[0]?.text).toContain("<@U2> chose *Option A*");
-    expect(blocks[3]).toMatchObject({ block_id: FOOTER_BLOCK_ID });
-    expect(blocks[3]?.elements?.[0]?.text).toContain("Jarvis · updated <!date^");
+    expect(JSON.stringify(blocks)).not.toContain(FOOTER_BLOCK_ID);
+    expect(JSON.stringify(blocks)).not.toContain("updated");
   });
 
   const team = [
@@ -1580,7 +1580,7 @@ describe("Block Kit the brain built", () => {
         channel: "C1",
         ts: "200.2",
         text: "Team",
-        blocks: [{ type: "actions", block_id: "team~", elements: [boxes] }, expect.objectContaining({ block_id: FOOTER_BLOCK_ID })],
+        blocks: [{ type: "actions", block_id: "team~", elements: [boxes] }],
       },
     ]);
     expect(r.turns).toHaveLength(0);

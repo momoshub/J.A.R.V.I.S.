@@ -304,6 +304,15 @@ describe("Slack proxy notes what a turn posts into its own thread", () => {
     expect((await proxy.call({ ticket: other, method: "chat.postMessage", params: { channel: "C0OTHER0002", text: "hi" } })).status).toBe(403);
   });
 
+  test("an owner's write into another channel or thread is forwarded as the turn wrote it: no footer, no sign line added", async () => {
+    const { proxy, tickets, seen } = setup(() => Response.json({ ok: true, ts: "1.1" }));
+    const ticket = tickets.issue({ channel: "C1", threadTs: "1.1", turn: "run-1", owner: true });
+    await proxy.call({ ticket, method: "chat.postMessage", params: { channel: "C0OTHER0002", thread_ts: "9.9", text: "hi" } });
+    await proxy.call({ ticket, method: "chat.postMessage", params: { channel: "C0OTHER0002", text: "hello" } });
+    expect(seen.map((s) => String(s.init.body))).toEqual(["channel=C0OTHER0002&thread_ts=9.9&text=hi", "channel=C0OTHER0002&text=hello"]);
+    for (const s of seen) expect(String(s.init.body)).not.toMatch(/blocks|jv_footer/);
+  });
+
   test("two processes of one turn share the record; another turn in the thread does not", async () => {
     let n = 0;
     const { proxy, tickets, selfPosts } = withLog(() => Response.json({ ok: true, ts: `5.${++n}` }));
