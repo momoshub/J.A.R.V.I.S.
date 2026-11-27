@@ -3,11 +3,9 @@
  *
  * Tool steps used to be cards inside the streamed answer, which shared its
  * character budget and could never be taken away. They now live in one
- * message of their own: a short `context` header line, then one Slack `plan`
- * block per step (titled with the step, one `task_card` inside carrying its
- * status; Slack collapses a plan, so one plan for all steps would hide the tool
- * names), rewritten as the turn goes, then deleted - or collapsed to its
- * failures - when the turn ends.
+ * message of their own: one Slack `plan` block with a `task_card` per step
+ * (Slack draws the progress look), rewritten as the turn goes, then deleted -
+ * or collapsed to its failures - when the turn ends.
  *
  * Pure: the throttling, posting and deleting are in infrastructure/slack/statusMessage.ts.
  */
@@ -30,9 +28,9 @@ export const STATUS_FINISHED_SHOWN = 5;
 export const STATUS_RUNNING_SHOWN = 8;
 /** Longest a task card title may be (plain text; no mrkdwn, so nothing to escape). */
 export const STATUS_TITLE_CHARS = 200;
-/** Plan blocks (one per step) the message may carry; with the header it stays well under Slack's 50 blocks. */
+/** Tasks one plan block may carry. Slack's cap is not documented in the typings, so stay well under any plausible one. */
 export const STATUS_TASKS_MAX = 20;
-/** The label of a running turn: the header line, the placeholder's plan and the notification text. */
+/** The running label of the status message. Slack allows ONE plan block per message, so every step stays a card under it. */
 export const STATUS_LABEL = "Burning token…";
 
 const clip = (text: string, max: number): string => {
@@ -64,24 +62,20 @@ const taskIds = (steps: readonly StatusStep[]): string[] => {
 
 export type StatusView = { readonly text: string; readonly blocks: Block[] };
 
-/** One plan block per step: the plan is titled with the step so its name stays visible, the task card inside carries the status. */
-const plans = (steps: readonly StatusStep[]): Block[] => {
+const plan = (title: string, steps: readonly StatusStep[]): Block => {
   const ids = taskIds(steps);
-  return steps.map((s, i) => {
-    const title = taskTitle(s);
-    return { type: "plan", title, tasks: [{ type: "task_card", task_id: ids[i], title, status: s.state }] };
-  });
+  return {
+    type: "plan",
+    title,
+    tasks: steps.map((s, i) => ({ type: "task_card", task_id: ids[i], title: taskTitle(s), status: s.state })),
+  };
 };
-
-/** The one line above the plans. Plain mrkdwn-free text, so nothing needs escaping. */
-const header = (text: string): Block => ({ type: "context", elements: [{ type: "mrkdwn", text }] });
 
 const stepsLabel = (n: number): string => `${n} step${n === 1 ? "" : "s"}`;
 
 /**
- * The running message: a header line (label, step count, `(showing K)` when
- * capped), then one plan per step: every step in progress (up to a cap) and
- * the latest finished ones, oldest first.
+ * The running message: every step in progress (up to a cap) and the latest
+ * finished ones, oldest first, with the hidden count in the plan's title.
  * `thinking` is the placeholder a silent turn shows (one running task), gone with the first step.
  */
 export const renderStatus = (steps: readonly StatusStep[], thinking?: string): StatusView => {
@@ -89,13 +83,7 @@ export const renderStatus = (steps: readonly StatusStep[], thinking?: string): S
     const label = thinking?.trim() || STATUS_LABEL;
     return {
       text: `🔧 ${STATUS_LABEL}`,
-      blocks: [
-        {
-          type: "plan",
-          title: STATUS_LABEL,
-          tasks: [{ type: "task_card", task_id: "thinking", title: clip(label, STATUS_TITLE_CHARS), status: "in_progress" }],
-        },
-      ],
+      blocks: [plan(STATUS_LABEL, [{ id: "thinking", title: clip(label, STATUS_TITLE_CHARS), state: "in_progress" }])],
     };
   }
   const running = steps.filter((s) => s.state === "in_progress");
@@ -104,15 +92,15 @@ export const renderStatus = (steps: readonly StatusStep[], thinking?: string): S
   const keepRunning = new Set(running.slice(-STATUS_RUNNING_SHOWN));
   const shown = steps.filter((s) => keepFinished.has(s) || keepRunning.has(s)).slice(-STATUS_TASKS_MAX);
   const label = `${STATUS_LABEL} ${stepsLabel(steps.length)}`;
-  const line = shown.length < steps.length ? `${label} (showing ${shown.length})` : label;
-  return { text: `🔧 ${label}`, blocks: [header(line), ...plans(shown)] };
+  const title = shown.length < steps.length ? `${label} (showing ${shown.length})` : label;
+  return { text: `🔧 ${label}`, blocks: [plan(title, shown)] };
 };
 
 /**
  * The message left behind when the turn ended, or undefined when it should be
  * deleted. A turn whose steps all worked leaves nothing: the answer is what
- * matters. One where a step failed keeps "N steps, M failed" as the header and
- * the failures as one error plan each, because those are the part somebody may have to act on.
+ * matters. One where a step failed keeps "N steps" as the plan's title and the
+ * failures as error cards, because those are the part somebody may have to act on.
  */
 export const finalStatus = (steps: readonly StatusStep[]): StatusView | undefined => {
   const finished: FinishedStep[] = steps.map((s) => ({ title: s.title, failed: s.state === "error" }));
@@ -123,6 +111,6 @@ export const finalStatus = (steps: readonly StatusStep[]): StatusView | undefine
   const failed = steps.filter((s) => s.state === "error" && s.title.trim());
   const kept = failed.slice(0, STATUS_TASKS_MAX);
   const more = failed.length - kept.length;
-  const line = more > 0 ? `${collapsed.summary} (…and ${more} more failed)` : collapsed.summary;
-  return { text: collapsed.summary, blocks: [header(line), ...plans(kept)] };
+  const title = more > 0 ? `${collapsed.summary} (…and ${more} more failed)` : collapsed.summary;
+  return { text: collapsed.summary, blocks: [plan(title, kept)] };
 };
