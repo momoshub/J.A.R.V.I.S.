@@ -28,9 +28,9 @@ export const STATUS_FINISHED_SHOWN = 5;
 export const STATUS_RUNNING_SHOWN = 8;
 /** Longest a task card title may be (plain text; no mrkdwn, so nothing to escape). */
 export const STATUS_TITLE_CHARS = 200;
-/** Tasks one plan block may carry. Slack's cap is not documented in the typings, so stay well under any plausible one. */
+/** Task cards one status message may carry (plus its header), well under Slack's 50 blocks. */
 export const STATUS_TASKS_MAX = 20;
-/** The running label of the status message. Slack allows ONE plan block per message, so every step stays a card under it. */
+/** The running label of the status message, shown in its header line. */
 export const STATUS_LABEL = "Burning token…";
 
 const clip = (text: string, max: number): string => {
@@ -62,20 +62,23 @@ const taskIds = (steps: readonly StatusStep[]): string[] => {
 
 export type StatusView = { readonly text: string; readonly blocks: Block[] };
 
-const plan = (title: string, steps: readonly StatusStep[]): Block => {
+/**
+ * A plain-text header line, then one top-level `task_card` per step. No `plan` block: Slack folds a
+ * plan, which hid the tool names, and refuses more than one per message.
+ */
+const cards = (title: string, steps: readonly StatusStep[]): Block[] => {
   const ids = taskIds(steps);
-  return {
-    type: "plan",
-    title,
-    tasks: steps.map((s, i) => ({ type: "task_card", task_id: ids[i], title: taskTitle(s), status: s.state })),
-  };
+  return [
+    { type: "context", elements: [{ type: "plain_text", text: clip(title, STATUS_TITLE_CHARS) }] },
+    ...steps.map((s, i) => ({ type: "task_card", task_id: ids[i], title: taskTitle(s), status: s.state })),
+  ];
 };
 
 const stepsLabel = (n: number): string => `${n} step${n === 1 ? "" : "s"}`;
 
 /**
  * The running message: every step in progress (up to a cap) and the latest
- * finished ones, oldest first, with the hidden count in the plan's title.
+ * finished ones, oldest first, with the hidden count in the header line.
  * `thinking` is the placeholder a silent turn shows (one running task), gone with the first step.
  */
 export const renderStatus = (steps: readonly StatusStep[], thinking?: string): StatusView => {
@@ -83,7 +86,7 @@ export const renderStatus = (steps: readonly StatusStep[], thinking?: string): S
     const label = thinking?.trim() || STATUS_LABEL;
     return {
       text: `🔧 ${STATUS_LABEL}`,
-      blocks: [plan(STATUS_LABEL, [{ id: "thinking", title: clip(label, STATUS_TITLE_CHARS), state: "in_progress" }])],
+      blocks: cards(STATUS_LABEL, [{ id: "thinking", title: clip(label, STATUS_TITLE_CHARS), state: "in_progress" }]),
     };
   }
   const running = steps.filter((s) => s.state === "in_progress");
@@ -93,13 +96,13 @@ export const renderStatus = (steps: readonly StatusStep[], thinking?: string): S
   const shown = steps.filter((s) => keepFinished.has(s) || keepRunning.has(s)).slice(-STATUS_TASKS_MAX);
   const label = `${STATUS_LABEL} ${stepsLabel(steps.length)}`;
   const title = shown.length < steps.length ? `${label} (showing ${shown.length})` : label;
-  return { text: `🔧 ${label}`, blocks: [plan(title, shown)] };
+  return { text: `🔧 ${label}`, blocks: cards(title, shown) };
 };
 
 /**
  * The message left behind when the turn ended, or undefined when it should be
  * deleted. A turn whose steps all worked leaves nothing: the answer is what
- * matters. One where a step failed keeps "N steps" as the plan's title and the
+ * matters. One where a step failed keeps "N steps" as the header line and the
  * failures as error cards, because those are the part somebody may have to act on.
  */
 export const finalStatus = (steps: readonly StatusStep[]): StatusView | undefined => {
@@ -112,5 +115,5 @@ export const finalStatus = (steps: readonly StatusStep[]): StatusView | undefine
   const kept = failed.slice(0, STATUS_TASKS_MAX);
   const more = failed.length - kept.length;
   const title = more > 0 ? `${collapsed.summary} (…and ${more} more failed)` : collapsed.summary;
-  return { text: collapsed.summary, blocks: [plan(title, kept)] };
+  return { text: collapsed.summary, blocks: cards(title, kept) };
 };

@@ -20,7 +20,12 @@ const step = (id: string, state: StatusStep["state"] = "complete", title = `Step
 
 type Task = { type: string; task_id: string; title: string; status: string };
 type Plan = { type: string; title: string; tasks: Task[] };
-const planOf = (view: { blocks: unknown[] } | undefined): Plan => (view?.blocks[0] ?? {}) as Plan;
+type Header = { type: string; elements: { type: string; text: string }[] };
+/** The header line and the task cards after it, read back as one titled list. */
+const planOf = (view: { blocks: unknown[] } | undefined): Plan => {
+  const [head, ...rest] = (view?.blocks ?? []) as [Header, ...Task[]];
+  return { type: head?.type === "context" && rest.every((b) => b.type === "task_card") ? "cards" : "?", title: head?.elements[0]?.text ?? "", tasks: rest };
+};
 const tasksOf = (steps: readonly StatusStep[], thinking?: string): Task[] => planOf(renderStatus(steps, thinking)).tasks;
 
 describe("a task card title", () => {
@@ -41,11 +46,11 @@ describe("a task card title", () => {
 });
 
 describe("the running message", () => {
-  test("one plan block, a task card per step in order with its status", () => {
+  test("a header line, then a task card per step in order with its status", () => {
     const view = renderStatus([step("a"), step("b", "in_progress"), step("c", "error")]);
-    expect(view.blocks).toHaveLength(1);
+    expect(view.blocks).toHaveLength(4);
     const plan = planOf(view);
-    expect(plan.type).toBe("plan");
+    expect(plan.type).toBe("cards");
     expect(plan.title).toBe("Burning token… 3 steps");
     expect(plan.tasks.map((t) => [t.type, t.task_id, t.title, t.status])).toEqual([
       ["task_card", "a", "Step a", "complete"],
@@ -112,7 +117,7 @@ describe("what is left when the turn ends", () => {
     const view = finalStatus([step("a"), step("b", "error", "Run: gh pr view"), step("c")]);
     expect(view?.text).toBe("🔧 3 steps, 1 failed");
     const plan = planOf(view);
-    expect(plan.type).toBe("plan");
+    expect(plan.type).toBe("cards");
     expect(plan.title).toBe("🔧 3 steps, 1 failed");
     expect(plan.tasks.map((t) => [t.task_id, t.title, t.status])).toEqual([["b", "Run: gh pr view", "error"]]);
   });
@@ -134,18 +139,19 @@ describe("what is left when the turn ends", () => {
   });
 });
 
-// Slack refuses a message with more than one plan block ("Cannot have more than 1 plan block", invalid_blocks).
-describe("one plan block per message", () => {
+// Slack folds a plan block (hiding the tool names) and refuses more than one per message ("Cannot have more than 1 plan block").
+describe("no plan block at all", () => {
   const steps = Array.from({ length: 30 }, (_, i) => ({
     id: `s${i}`,
     title: `run: step ${i}`,
     state: i % 3 === 0 ? ("error" as const) : i % 3 === 1 ? ("complete" as const) : ("in_progress" as const),
   }));
   const plans = (blocks: readonly { type: string }[]) => blocks.filter((b) => b.type === "plan").length;
-  test("thinking, running and the collapsed view each carry exactly one", () => {
-    expect(plans(renderStatus([]).blocks)).toBe(1);
-    expect(plans(renderStatus(steps).blocks)).toBe(1);
-    expect(plans(finalStatus(steps)?.blocks ?? [])).toBe(1);
+  test("thinking, running and the collapsed view carry none, and stay under Slack's 50 blocks", () => {
+    for (const v of [renderStatus([]), renderStatus(steps), finalStatus(steps)]) {
+      expect(plans(v?.blocks ?? [])).toBe(0);
+      expect((v?.blocks ?? []).length).toBeLessThanOrEqual(STATUS_TASKS_MAX + 1);
+    }
   });
   test("the running label is the preset", () => {
     expect(renderStatus([]).text).toBe(`🔧 ${STATUS_LABEL}`);

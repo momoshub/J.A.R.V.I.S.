@@ -10,8 +10,8 @@ const fake = (opts: { failures?: (call: number, op: string) => unknown } = {}) =
   const t0 = Date.now();
   let n = 0;
   const textOf = (v: StatusView): string => {
-    const plan = v.blocks[0] as unknown as { title: string; tasks: { status: string; title: string }[] };
-    return [plan.title, ...plan.tasks.map((t) => `${t.status}: ${t.title}`)].join("\n");
+    const [head, ...cards] = v.blocks as unknown as [{ elements: { text: string }[] }, ...{ status: string; title: string }[]];
+    return [head.elements[0]?.text ?? "", ...cards.map((t) => `${t.status}: ${t.title}`)].join("\n");
   };
   const hit = (op: Call["op"], ts: string | undefined, text: string): void => {
     const failure = opts.failures?.(++n, op);
