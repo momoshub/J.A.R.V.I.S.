@@ -113,6 +113,7 @@ import { createAnthropicLlm } from "./infrastructure/llm/anthropic.ts";
 import { createClaudeCliLlm, type ClaudeCliConfig } from "./infrastructure/llm/claudeCli.ts";
 import { WebClient } from "@slack/web-api";
 import { createSlackApp } from "./infrastructure/slack/app.ts";
+import { createWhisperTranscriber } from "./infrastructure/system/whisper.ts";
 import { createInboxReceiver, tidyInterrupted } from "./infrastructure/slack/inboxReceiver.ts";
 import { drainNotice, waitsForRestart } from "./domain/drainNotice.ts";
 import { interruptedNotice } from "./domain/inbox.ts";
@@ -1181,6 +1182,13 @@ const main = async () => {
         : undefined,
       botToken: config.slackBotToken,
       appToken: config.slackAppToken,
+      transcribe: createWhisperTranscriber({
+        whisperBin: config.whisperBin,
+        modelPath: config.whisperModelPath,
+        ffmpegBin: config.ffmpegBin,
+        timeoutMs: config.whisperTimeoutMs,
+        botToken: config.slackBotToken,
+      }),
       streamUpdates: config.slackStreamUpdates,
       botName: profile().name,
       thinkingLabel: () => profile().thinkingLabel,

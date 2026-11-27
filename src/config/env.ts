@@ -265,6 +265,16 @@ const schema = z
     // a person works in (~/Workspaces). bin/worker-mcp-trim.ts creates it, registers
     // it with Orca as a plain folder and trims it. Blank = ~/.jarvis/worker-home.
     WORKER_HOME_DIR: z.string().optional(),
+    // Voice messages (an audio clip with no text) are transcribed locally before
+    // their turn: ffmpeg converts to 16 kHz mono wav, whisper.cpp's whisper-cli
+    // transcribes it with the language auto-detected. Blank = the defaults below
+    // (Homebrew paths, model in ~/.local/share/whisper-models). A missing binary
+    // or model, a failure or a timeout never drops the clip: the turn starts with
+    // a note that the audio could not be transcribed.
+    WHISPER_BIN: z.string().optional(),
+    WHISPER_MODEL_PATH: z.string().optional(),
+    FFMPEG_BIN: z.string().optional(),
+    WHISPER_TIMEOUT_MS: z.coerce.number().int().positive().default(120_000),
     // Secret-shaped variable names (`*_TOKEN`, `*_SECRET`, `*_API_KEY`...) an agent turn may still
     // inherit. Every other credential-shaped variable is withheld from the spawned CLI, so a
     // prompt-injected turn has nothing to read out of its environment; Slack goes through a
@@ -362,6 +372,11 @@ export type AppConfig = {
   workerMcpDeny: string[];
   /** Absolute folder every Orca worker starts in. */
   workerHomeDir: string;
+  /** whisper.cpp CLI, the ggml model and ffmpeg for voice messages, and the limit on each step. */
+  whisperBin: string;
+  whisperModelPath: string;
+  ffmpegBin: string;
+  whisperTimeoutMs: number;
 };
 
 /** A short human label for the active model, shown on the dashboard. */
@@ -460,5 +475,9 @@ export const loadConfig = (source: Record<string, string | undefined> = process.
     executerDbMcpServers: parseList(env.EXECUTER_DB_MCP_SERVERS),
     workerMcpDeny: parseDenyList(env.WORKER_MCP_DENY),
     workerHomeDir: expandHome(env.WORKER_HOME_DIR?.trim() || join(homedir(), ".jarvis", "worker-home")),
+    whisperBin: expandHome(env.WHISPER_BIN?.trim() || "/opt/homebrew/bin/whisper-cli"),
+    whisperModelPath: expandHome(env.WHISPER_MODEL_PATH?.trim() || join(homedir(), ".local", "share", "whisper-models", "ggml-large-v3-turbo-q5_0.bin")),
+    ffmpegBin: expandHome(env.FFMPEG_BIN?.trim() || "/opt/homebrew/bin/ffmpeg"),
+    whisperTimeoutMs: env.WHISPER_TIMEOUT_MS,
   };
 };

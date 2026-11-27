@@ -22,6 +22,14 @@ describe("mentionsBot", () => {
   });
 });
 
+describe("voice messages in a thread", () => {
+  const voice = { subtype: "file_share", text: "", files: [{ subtype: "slack_audio", mimetype: "audio/mp4" }] };
+  test("a reply that is only an audio clip is a follow candidate, a text-less image is still empty", () => {
+    expect(followSkipReason(reply(voice), BOT)).toBeUndefined();
+    expect(followSkipReason(reply({ ...voice, files: [{ mimetype: "image/png" }] }), BOT)).toBe("empty");
+  });
+});
+
 describe("couldFollowThread", () => {
   test("a plain reply in a channel thread qualifies", () => {
     expect(couldFollowThread(reply(), BOT)).toBe(true);
