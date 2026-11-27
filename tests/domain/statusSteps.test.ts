@@ -293,6 +293,53 @@ describe("card content", () => {
     expect(all).toContain("[redacted]");
   });
 
+  // values built at run time: secret shapes must not sit in the repo as literals (the secret scan flags them)
+  const j = (...p: string[]): string => p.join("");
+  const leaks = (command: string, output: string, ...bad: string[]): void => {
+    const [t] = tasksOf([{ ...rich(), command, output, detail: "d" }]);
+    const all = JSON.stringify(t);
+    for (const b of bad) expect(all).not.toContain(b);
+  };
+
+  test("wider scrub: keys in any case, JSON keys, flags, URL userinfo, query tokens", () => {
+    const pw = j("hunter", "2pass");
+    const tok = j("ya29.", "A0ARrdaM-abcdef");
+    leaks(`curl -u kai:${j("S3cret", "Pass")} https://user:${pw}@api.example.com/x?access_token=${tok}`, `{"access_token":"${tok}"}`, pw, tok, j("S3cret", "Pass"));
+    leaks(`TOKEN=${j("abc", "123secret")} gh api /user --password=${pw}`, `password: ${pw}`, j("abc", "123secret"), pw);
+    leaks("cat config", `DATABASE_URL=postgres://admin:${pw}@db.internal/app`, pw);
+  });
+
+  test("wider scrub: JWTs, fine-grained PATs, live keys, PEM keys, webhooks", () => {
+    const jwt = j("eyJ", "hbGciOiJIUzI1NiJ9.", "eyJzdWIiOiIxMjM0NTY3ODkwIn0.", "abc123def");
+    const pat = j("github", "_pat_11ABCDEFG0abcdefghijklmn_opqrstuvwxyz0123");
+    const live = j("rk", "_live_51Habcdefghijkl");
+    const pem = j("-----BEGIN ", "RSA PRIVATE KEY-----\nMIIBOgIBAAJBAK\n-----END RSA PRIVATE KEY-----");
+    const hook = j("https://hooks.slack", ".com/services/T000/B000/", "XXXXXXXXXXXX");
+    leaks(`curl ${hook}`, `${jwt} ${pat} ${live} ${pem}`, jwt, pat, live, "MIIBOgIBAAJBAK", "XXXXXXXXXXXX");
+  });
+
+  test("the output of a step that fetches a secret is not shown at all, the log line still is", () => {
+    const val = j("rk", "_live_51Hsecretvalue1");
+    for (const command of ["op read op://Private/stripe/credential", "security find-generic-password -s x -w", "printenv STRIPE", "cat .env", "cat ~/.ssh/id_rsa", "cd x && env"]) {
+      const [t] = tasksOf([{ ...rich(), command, output: val }]);
+      expect(JSON.stringify(t)).not.toContain("secretvalue1");
+      expect(textOf(t?.output)).toBe("log line 650");
+    }
+    // an ordinary command keeps its output
+    expect(textOf(tasksOf([{ ...rich(), command: "ls", output: "a.ts" }])[0]?.output)).toBe("a.ts\nlog line 650");
+  });
+
+  test("sources: no userinfo, no query or fragment, no webhook, capped length", () => {
+    const [t] = tasksOf([
+      {
+        ...rich(),
+        detail: `see https://user:pw@x.test/a and https://ok.test/p/1?access_token=zzzzzzzzzz#frag ${j("https://hooks.slack", ".com/services/T0/B0/XXXX")} https://long.test/${"a".repeat(400)}`,
+        command: "true",
+      },
+    ]);
+    expect(t?.sources).toEqual([{ type: "url", url: "https://ok.test/p/1", text: "https://ok.test/p/1" }]);
+  });
+
   test("sources: urls from the command or description, deduped, max three, type url", () => {
     const [t] = tasksOf([
       {

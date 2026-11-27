@@ -61,13 +61,36 @@ const clip = (text: string, max: number): string => {
 };
 
 /**
- * Nothing credential-shaped, no machine path, no `SOME_TOKEN=value` assignment
- * reaches Slack: the same scrub the tool log and the step titles use, plus the
- * env-style assignments a command line carries.
+ * Nothing credential-shaped, no machine path, no `NAME_TOKEN=value` assignment reaches Slack: the same
+ * scrub the tool log and the step titles use (`redactSecrets`, `redactPaths`), plus what a command line
+ * and a tool result carry that no token shape matches: `secret-ish-key=value` / `"key": "value"` / `--password x`
+ * in any case, `user:pass@` in a URL, `Authorization:` values, JWTs, fine-grained PATs and `sk_live_`-style keys,
+ * PEM private keys and chat webhook URLs. It is a net, not a proof: a bare secret value printed alone cannot be
+ * recognised, which is why `outputHidden` drops the result of a step that fetches one.
  */
-const ASSIGNMENT = /\b([A-Z][A-Z0-9_]*(?:TOKEN|SECRET|KEY|PASSWORD|PASSWD|PASS|CREDENTIALS?|TICKET)(?:_FILE)?)=("[^"]*"|'[^']*'|\S+)/g;
-export const scrubStatusText = (text: string): string =>
-  redactPaths(redactSecrets(text.replace(ASSIGNMENT, "$1=[redacted]")));
+const SECRET_KEY =
+  /(["']?)([\w.-]*(?:token|secret|passw(?:or)?d|pwd|api[_-]?key|apikey|credential|ticket|private[_-]?key|access[_-]?key|session[_-]?id|cookie)[\w.-]*)\1(\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,&;}]+)/gi;
+const SECRET_FLAG = /(\s--?(?:password|passwd|pwd|token|secret|api-?key|auth|user|u|p)(?:=|\s+))("[^"]*"|'[^']*'|\S+)/gi;
+const SECRET_FORMS: readonly [RegExp, string][] = [
+  [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/g, "[redacted]"],
+  [/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/@:]+(?::[^\s/@]*)?@/gi, "$1[redacted]@"],
+  [/(\bAuthorization\s*:\s*)(?:(?:Basic|Bearer|Token)\s+)?\S+/gi, "$1[redacted]"],
+  [/\beyJ[\w-]{8,}\.[\w-]{8,}\.[\w-]*/g, "[redacted]"],
+  [/\bgithub_pat_\w{20,}/g, "[redacted]"],
+  [/\b(?:sk|rk|pk)_(?:live|test)_\w{8,}/g, "[redacted]"],
+  [/\bsk-[A-Za-z0-9_-]{16,}/g, "[redacted]"],
+  [/https:\/\/(?:hooks\.slack\.com\/(?:services|workflows|triggers)|(?:discord(?:app)?\.com)\/api\/webhooks)\/\S+/gi, "[redacted webhook]"],
+];
+export const scrubStatusText = (text: string): string => {
+  const forms = SECRET_FORMS.reduce((out, [re, to]) => out.replace(re, to), text);
+  const keyed = forms.replace(SECRET_KEY, "$1$2$1$3[redacted]").replace(SECRET_FLAG, "$1[redacted]");
+  return redactPaths(redactSecrets(keyed));
+};
+
+/** A command (or a read path) that fetches or prints a credential: its result is never shown. */
+const SECRET_FETCH =
+  /(?:^|[;&|(]\s*)(?:op\s+(?:read|item|inject|document)|security\s+(?:find|dump)[\w-]*|printenv|env|set|export\s+-p|vault\s+(?:read|kv)|aws\s+(?:secretsmanager|ssm\s+get-parameter)|gcloud\s+secrets|kubectl\s+get\s+secret|pass\s+show|gpg\s+(?:-d|--decrypt)|age\s+-d)(?:\s|$)|\.env\b|\.pem\b|\.p12\b|\.netrc|id_(?:rsa|ed25519|ecdsa)|credentials|secrets?\b|keychain|\.aws\/|\.ssh\/|\/proc\/\S*environ/i;
+const outputHidden = (step: StatusStep): boolean => !!step.command && SECRET_FETCH.test(step.command);
 
 /** A short clipped line of a tool result: the first lines that say something, scrubbed. */
 const outputLine = (output: string): string => {
@@ -79,16 +102,36 @@ const outputLine = (output: string): string => {
 };
 
 const URL_RE = /https?:\/\/[^\s<>"'`)\]]+/g;
+/** Longest source url: Slack's own limit is far above it, and 3 per card across 20 cards must stay small. */
+const SOURCE_URL_CHARS = 300;
+
+/** A link safe to show: no userinfo, no query, no fragment, no webhook; undefined when it is none of that. */
+const safeUrl = (raw: string): string | undefined => {
+  try {
+    const u = new URL(raw.replace(/[.,;:]+$/, ""));
+    if (u.protocol !== "http:" && u.protocol !== "https:") return undefined;
+    if (u.username || u.password) return undefined;
+    const clean = scrubStatusText(`${u.origin}${u.pathname}`);
+    if (clean.includes("[redacted") || clean.length > SOURCE_URL_CHARS) return undefined;
+    return clean;
+  } catch {
+    return undefined;
+  }
+};
 
 const sourcesOf = (step: StatusStep): { type: "url"; url: string; text: string }[] => {
   const given = (step.sources ?? []).map((s) => ({ url: s.url, text: s.text }));
   const found = [step.command, step.detail].flatMap((t) => (t ? (scrubStatusText(t).match(URL_RE) ?? []) : [])).map((url) => ({ url, text: undefined }));
   const seen = new Set<string>();
-  return [...given, ...found]
-    .map((s) => ({ ...s, url: s.url.replace(/[.,;:]+$/, "") }))
-    .filter((s) => /^https?:\/\/\S+$/.test(s.url) && s.url.length <= 2000 && !seen.has(s.url) && !!seen.add(s.url))
-    .slice(0, STATUS_SOURCES_MAX)
-    .map((s) => ({ type: "url" as const, url: s.url, text: clip(s.text ?? s.url, 100) }));
+  const out: { type: "url"; url: string; text: string }[] = [];
+  for (const s of [...given, ...found]) {
+    const url = safeUrl(s.url);
+    if (!url || seen.has(url)) continue;
+    seen.add(url);
+    out.push({ type: "url", url, text: clip(s.text ? scrubStatusText(s.text) : url, 100) });
+    if (out.length === STATUS_SOURCES_MAX) break;
+  }
+  return out;
 };
 
 const richText = (elements: readonly object[]): object => ({
@@ -110,7 +153,7 @@ const detailsOf = (step: StatusStep): object | undefined => {
 
 /** `output`: the clipped result or error line, then the log line it points at. */
 const outputOf = (step: StatusStep): object | undefined => {
-  const result = step.output ? outputLine(step.output) : "";
+  const result = step.output && !outputHidden(step) ? outputLine(step.output) : "";
   const ref = step.logLine ? `log line ${step.logLine}` : "";
   const text = [result, ref].filter(Boolean).join("\n");
   return text ? richText([{ type: "text", text }]) : undefined;
@@ -141,7 +184,7 @@ const taskIds = (steps: readonly StatusStep[]): string[] => {
 export type StatusView = { readonly text: string; readonly blocks: Block[] };
 
 /**
- * The header card first, then one top-level `task_card` per step. No `context` line and no `plan`
+ * The header card first, then one top-level `task_card` per step, then the count as a `context` line. No `plan`
  * block: Slack folds a plan, which hid the tool names, and refuses more than one per message.
  */
 const card = (taskId: string, title: string, status: StepState, step?: StatusStep): Block => {

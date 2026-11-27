@@ -354,13 +354,13 @@ const stepTarget = (name: string, input: Record<string, unknown>): string | unde
  * Turn a tool_use name + accumulated input JSON into a card: a title in the
  * shape `<Name>: <emoji> <what>` that says the step in plain English, and
  * `details` that says where the full record is (`log at: <file> - line <n>`,
- * the per-thread trace, when the sink reported one). The command, path or query
- * behind a step is never shown.
+ * the per-thread trace, when the sink reported one). The title never carries the command; the status card
+ * shows it (and `target`, `detail`) after `scrubStatusText` - see domain/statusSteps.ts.
  *
  * Names: Run (Bash), Agent (background, the default), FAgent (foreground), WAgent (an Orca worker or
  * a Workflow agent), Memory, Skill, MCP, and Tool for every other built-in.
  *
- * `command` carries the Bash command in full: it is never shown, but consumers
+ * `command` carries the Bash command in full: never in the title, but consumers
  * that match on what ran (the review command's progress lines, the stream's
  * grouping and hidden-action check) need the whole thing - a `gh pr review` can
  * sit past 200 chars, after a heredoc body.
@@ -1003,7 +1003,7 @@ export const createClaudeCliLlm = (config: ClaudeCliConfig = {}): LlmPort => {
             // subagent's own step. Closing it anyway drew a bare "tool" card.
             const card = cardById.get(c.tool_use_id);
             if (!card) continue;
-            // Kept short: the status card clips and scrubs it again, the full output is in the tool log.
+            // Kept short: the status card clips and scrubs it again (the full output is in the tool log when a trace sink is wired).
             const output = toolOutput(c.content).trim().slice(0, 2000);
             emit({
               type: "tool",
