@@ -123,8 +123,11 @@ export const ticketAction = (
   windowMs: number = TICKET_RENEW_WINDOW_MS,
 ): TicketAction | undefined => {
   if (!t.dispatchId || !liveDispatch) return undefined;
-  if (now >= t.boundAt + WORKER_LIFETIME_MAX_MS) return { kind: "replace" };
+  const lifetimeEnd = t.boundAt + WORKER_LIFETIME_MAX_MS;
+  if (now >= lifetimeEnd) return { kind: "replace" };
   if (t.expiresAt - now > windowMs) return undefined;
+  // Already at the end of its life and about to lapse: a renewal would move nothing, only a new ticket helps.
+  if (t.expiresAt >= lifetimeEnd) return { kind: "replace" };
   return { kind: "renew", lapsed: t.expiresAt <= now };
 };
 
@@ -143,6 +146,39 @@ export const lapsedWorkerDispatch = (w: LapsedWatch, dispatchIds: readonly strin
 /** `ctx_...` ids a `watch worker` check names. */
 export const dispatchIdsOf = (check: string): string[] =>
   check.includes("orca-worker-wait") ? [...check.matchAll(/'(ctx_[A-Za-z0-9_-]+)'/g)].map((m) => m[1] ?? "") : [];
+
+/** A re-armed worker watch runs this long before it needs arming again. */
+export const REARM_DEADLINE_MS = 12 * HOUR_MS;
+/** One fired watch sets at most this many children that inherit its grant (the rule of `watch` in a fired turn). */
+export const MAX_GRANT_CHILDREN = 5;
+/** A chain with less than this left carries no grant any more. */
+const CHAIN_END_MARGIN_MS = MINUTE_MS;
+/** The longest one watch, and so one re-arm chain counted from its first watch, may last. */
+export const CHAIN_MAX_MS = 30 * DAY_MS;
+
+export type RearmPlan = {
+  /** When the new watch runs out. */
+  readonly deadlineAt: number;
+  /** Carry the write grant over (never wider than the lapsed watch's, never past the chain's 30 days). */
+  readonly grant: boolean;
+};
+
+/**
+ * How a lapsed `watch worker` is armed again. The grant it carries is the one a fired turn's re-arm
+ * would inherit, under the same limits: counted from the FIRST watch of the chain (`rootCreatedAt`),
+ * 30 days in all, and at most `MAX_GRANT_CHILDREN` waiting children per parent. Past either, the new
+ * watch is plain: it still follows the worker, it just writes nowhere beyond its own thread.
+ */
+export const rearmPlan = (
+  w: { readonly writeTargets: readonly unknown[]; readonly createdBy: string },
+  now: number,
+  rootCreatedAt: number,
+  waitingChildren: number,
+): RearmPlan => {
+  const chainEnd = rootCreatedAt + CHAIN_MAX_MS;
+  const grant = !!w.createdBy && w.writeTargets.length > 0 && chainEnd - now > CHAIN_END_MARGIN_MS && waitingChildren < MAX_GRANT_CHILDREN;
+  return { grant, deadlineAt: grant ? Math.min(now + REARM_DEADLINE_MS, chainEnd) : now + REARM_DEADLINE_MS };
+};
 
 // ---------------------------------------------------------------- pull requests
 
@@ -261,7 +297,10 @@ export const mayFixProdItself = (f: BlockerFacts): boolean =>
   f.prod && isUrgent(f) && isLowRisk(f) && !f.beyondRole && !f.ownerDecision;
 
 export type BlockerRow = {
-  readonly state: "pending" | "approved" | "rejected";
+  /** `fixed`: Jueki fixed it itself under the prod rule; a later recurrence of the key is a new blocker. */
+  readonly state: "pending" | "approved" | "rejected" | "fixed";
+  /** Stored as prod. A non-prod row raised again as prod is asked at once under the prod rule, however recently it was asked as non-prod. */
+  readonly prod: boolean;
   /** When it was last put to the owner; 0 when never. */
   readonly lastRaisedAt: number;
 };
@@ -282,14 +321,16 @@ export type BlockerRoute =
  */
 export const routeBlocker = (
   f: BlockerFacts,
-  prior: BlockerRow | undefined,
+  stored: BlockerRow | undefined,
   now: number,
   opts: { readonly quiet: boolean; readonly repingMs?: number },
 ): BlockerRoute => {
-  if (prior && prior.state !== "pending") return { route: "hold", why: "decided" };
+  // Fixed by Jueki: the wall is gone, a new one under the same key starts from nothing.
+  const prior = stored?.state === "fixed" ? undefined : stored;
+  if (prior && (prior.state === "approved" || prior.state === "rejected")) return { route: "hold", why: "decided" };
   if (f.prod) {
     if (mayFixProdItself(f)) return { route: "self-fix" };
-    if (prior && now - prior.lastRaisedAt < (opts.repingMs ?? DEFAULT_PROD_REPING_MS)) return { route: "hold", why: "not-due" };
+    if (prior?.prod && now - prior.lastRaisedAt < (opts.repingMs ?? DEFAULT_PROD_REPING_MS)) return { route: "hold", why: "not-due" };
     return { route: "raise", repeat: true };
   }
   if (prior && prior.lastRaisedAt > 0) return { route: "hold", why: "already-raised" };

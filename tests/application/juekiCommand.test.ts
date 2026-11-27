@@ -11,7 +11,7 @@ const setup = () => {
     tick: async () => {},
     blocker: async (i) => (blockers.push(i), "raised"),
     act: async (l) => void calls.push(`act:${l}`),
-    fixed: async (k, l) => void calls.push(`fixed:${k}:${l}`),
+    fixed: async (k, l) => (calls.push(`fixed:${k}:${l}`), k !== "not-granted"),
     status: () => "status text",
   };
   const deps: CommandDeps = {
@@ -34,6 +34,13 @@ describe("jueki command", () => {
     expect(await run(deps, 'jueki blocker pg-full --kind prod-write --prod --incident --reversible "disk is filling"')).toBe("raised");
     expect(blockers[0]).toMatchObject({ key: "pg-full", kind: "prod-write", text: "disk is filling" });
     expect(blockers[0]!.facts).toMatchObject({ prod: true, incident: true, reversible: true, dataWrite: false });
+  });
+
+  test("fixed without a granted self-fix says so and reports nothing as done", async () => {
+    const { deps } = setup();
+    const out = await run(deps, 'jueki fixed not-granted "did a thing"');
+    expect(out).toContain("No self-fix was granted");
+    expect(out).toContain("Nothing was posted");
   });
 
   test("a bad blocker line says what is wrong and raises nothing", async () => {

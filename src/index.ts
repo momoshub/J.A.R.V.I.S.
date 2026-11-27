@@ -166,10 +166,9 @@ import { createBackgroundAgents, defaultRunner } from "./infrastructure/llm/back
 import { recordedOwners, recordPrThread } from "./domain/stuckWork.ts";
 import { createStuckWorkProbe } from "./infrastructure/system/stuckWorkProbe.ts";
 import { createStuckSweeper } from "./application/stuckSweeper.ts";
-import { createJueki } from "./application/jueki.ts";
+import { createJueki, rearmWatch } from "./application/jueki.ts";
 import { createJuekiRepo } from "./infrastructure/db/juekiRepo.ts";
 import { createJuekiPrProbe } from "./infrastructure/system/juekiPrProbe.ts";
-import { DEFAULT_DEADLINE_MS, MAX_DEADLINE_MS } from "./domain/watch.ts";
 import { createIdleReaper } from "./application/idleReaper.ts";
 import { createStalePromiseSweep } from "./application/stalePromiseSweep.ts";
 import { classifyMessage, classifySystem, parsePromiseVerdict } from "./domain/stalePromise.ts";
@@ -745,24 +744,7 @@ const main = async () => {
     watches: {
       waiting: () => watches.waiting(1000),
       lapsedSince: (since) => watches.lapsedSince(since),
-      rearm: (w, now) =>
-        watches.add(
-          {
-            channelId: w.channelId,
-            threadTs: w.threadTs,
-            slackUserId: w.slackUserId,
-            note: w.note,
-            check: w.check,
-            everyMs: w.everyMs,
-            // A re-armed watch never outlives the 30 days one chain is allowed (counted from the first watch).
-            deadlineAt: Math.max(now + DEFAULT_DEADLINE_MS, Math.min(now + 12 * 60 * 60_000, w.createdAt + MAX_DEADLINE_MS)),
-            createdAt: now,
-            ...(w.createdBy && w.writeTargets.length > 0 && now - w.createdAt < MAX_DEADLINE_MS
-              ? { createdBy: w.createdBy, writeTargets: w.writeTargets, parentWatchId: w.id }
-              : {}),
-          },
-          now,
-        ).id,
+      rearm: (w, now) => rearmWatch(watches, w, now),
     },
     scan: stuckWorkProbe.scan,
     ownPrs: juekiPrProbe.scan,

@@ -21,6 +21,10 @@ import {
   parseBlockerArgs,
   parseOwnPrs,
   prFindings,
+  rearmPlan,
+  MAX_GRANT_CHILDREN,
+  CHAIN_MAX_MS,
+  REARM_DEADLINE_MS,
   renderDigest,
   routeBlocker,
   ticketAction,
@@ -121,6 +125,36 @@ describe("ticketAction", () => {
   });
 });
 
+describe("ticketAction at the end of its life", () => {
+  const NOW = 100 * HOUR_MS;
+  test("a ticket whose expiry is already capped at its 24h life and about to lapse is replaced, not renewed again and again", () => {
+    const boundAt = NOW - 23.5 * HOUR_MS;
+    const capped = { id: "aaaaaaaa", dispatchId: "ctx_w1", boundAt, expiresAt: boundAt + WORKER_LIFETIME_MAX_MS };
+    expect(ticketAction(capped, NOW, true)).toEqual({ kind: "replace" });
+    // Not capped yet (renewal can still move it): renewed.
+    expect(ticketAction({ ...capped, expiresAt: NOW + 20 * MINUTE_MS }, NOW, true)).toEqual({ kind: "renew", lapsed: false });
+  });
+});
+
+describe("rearmPlan", () => {
+  const NOW = 100 * DAY_MS;
+  const grant = { createdBy: "U1", writeTargets: [{ channel: "C9" }] };
+  test("a plain watch is armed again for the re-arm span, no grant", () => {
+    expect(rearmPlan({ createdBy: "", writeTargets: [] }, NOW, NOW - 40 * DAY_MS, 0)).toEqual({ grant: false, deadlineAt: NOW + REARM_DEADLINE_MS });
+  });
+  test("a grant is carried inside the chain, and the deadline never passes the chain's end", () => {
+    expect(rearmPlan(grant, NOW, NOW - DAY_MS, 0)).toEqual({ grant: true, deadlineAt: NOW + REARM_DEADLINE_MS });
+    const root = NOW - CHAIN_MAX_MS + 3 * HOUR_MS;
+    expect(rearmPlan(grant, NOW, root, 0)).toEqual({ grant: true, deadlineAt: root + CHAIN_MAX_MS });
+  });
+  test("past the 30 days counted from the FIRST watch, or with the children cap reached, the grant is dropped", () => {
+    expect(rearmPlan(grant, NOW, NOW - CHAIN_MAX_MS, 0)).toEqual({ grant: false, deadlineAt: NOW + REARM_DEADLINE_MS });
+    expect(rearmPlan(grant, NOW, NOW - CHAIN_MAX_MS + 30_000, 0).grant).toBe(false);
+    expect(rearmPlan(grant, NOW, NOW - DAY_MS, MAX_GRANT_CHILDREN).grant).toBe(false);
+    expect(rearmPlan(grant, NOW, NOW - DAY_MS, MAX_GRANT_CHILDREN - 1).grant).toBe(true);
+  });
+});
+
 describe("lapsed watches", () => {
   const check = "bun /x/bin/orca-worker-wait.ts 'ctx_abc123' --every 30";
   test("the dispatch of a lapsed worker watch", () => {
@@ -213,26 +247,37 @@ describe("routeBlocker", () => {
 
   test("non-prod: raised once, never twice, even when asked again later", () => {
     expect(routeBlocker(facts(), undefined, NOW, open)).toEqual({ route: "raise", repeat: false });
-    expect(routeBlocker(facts(), { state: "pending", lastRaisedAt: NOW - DAY_MS }, NOW, open)).toEqual({ route: "hold", why: "already-raised" });
+    expect(routeBlocker(facts(), { state: "pending", prod: false, lastRaisedAt: NOW - DAY_MS }, NOW, open)).toEqual({ route: "hold", why: "already-raised" });
   });
 
   test("non-prod waits out quiet hours, then is raised", () => {
     expect(routeBlocker(facts(), undefined, NOW, { quiet: true })).toEqual({ route: "hold", why: "quiet-hours" });
-    expect(routeBlocker(facts(), { state: "pending", lastRaisedAt: 0 }, NOW, open)).toEqual({ route: "raise", repeat: false });
+    expect(routeBlocker(facts(), { state: "pending", prod: false, lastRaisedAt: 0 }, NOW, open)).toEqual({ route: "raise", repeat: false });
+  });
+
+  test("a non-prod blocker raised again as prod is asked at once under the prod rule, however recently it was asked", () => {
+    const prior = { state: "pending" as const, prod: false, lastRaisedAt: NOW - MINUTE_MS };
+    expect(routeBlocker(facts({ prod: true }), prior, NOW, { quiet: true })).toEqual({ route: "raise", repeat: true });
+    expect(routeBlocker(facts({ prod: true }), { ...prior, prod: true }, NOW, { quiet: true })).toEqual({ route: "hold", why: "not-due" });
+  });
+
+  test("a blocker Jueki fixed itself is gone: the same key, raised again, starts from nothing", () => {
+    expect(routeBlocker(facts(), { state: "fixed", prod: false, lastRaisedAt: NOW - HOUR_MS }, NOW, open)).toEqual({ route: "raise", repeat: false });
+    expect(routeBlocker(facts({ prod: true }), { state: "fixed", prod: true, lastRaisedAt: NOW - 1 }, NOW, open)).toEqual({ route: "raise", repeat: true });
   });
 
   test("a decided blocker is never raised again, prod or not", () => {
-    expect(routeBlocker(facts(), { state: "rejected", lastRaisedAt: 1 }, NOW, open)).toEqual({ route: "hold", why: "decided" });
-    expect(routeBlocker(facts({ prod: true }), { state: "approved", lastRaisedAt: 1 }, NOW, open)).toEqual({ route: "hold", why: "decided" });
+    expect(routeBlocker(facts(), { state: "rejected", prod: false, lastRaisedAt: 1 }, NOW, open)).toEqual({ route: "hold", why: "decided" });
+    expect(routeBlocker(facts({ prod: true }), { state: "approved", prod: true, lastRaisedAt: 1 }, NOW, open)).toEqual({ route: "hold", why: "decided" });
   });
 
   test("prod: always raised, repeated, and quiet hours do not hold it", () => {
     const prod = facts({ prod: true });
     expect(routeBlocker(prod, undefined, NOW, { quiet: true })).toEqual({ route: "raise", repeat: true });
-    const prior = { state: "pending" as const, lastRaisedAt: NOW - DEFAULT_PROD_REPING_MS };
+    const prior = { state: "pending" as const, prod: true, lastRaisedAt: NOW - DEFAULT_PROD_REPING_MS };
     expect(routeBlocker(prod, prior, NOW, { quiet: true })).toEqual({ route: "raise", repeat: true });
     expect(routeBlocker(prod, { ...prior, lastRaisedAt: NOW - DEFAULT_PROD_REPING_MS + 1 }, NOW, open)).toEqual({ route: "hold", why: "not-due" });
-    expect(routeBlocker(prod, { state: "pending", lastRaisedAt: NOW - 10 * MINUTE_MS }, NOW, { quiet: false, repingMs: 5 * MINUTE_MS })).toEqual({ route: "raise", repeat: true });
+    expect(routeBlocker(prod, { state: "pending", prod: true, lastRaisedAt: NOW - 10 * MINUTE_MS }, NOW, { quiet: false, repingMs: 5 * MINUTE_MS })).toEqual({ route: "raise", repeat: true });
   });
 
   test("prod, urgent and low-risk: Jueki fixes it itself, quiet hours or not", () => {

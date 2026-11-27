@@ -36,6 +36,7 @@ import {
   lapsedWorkerDispatch,
   pictureSize,
   prFindings,
+  rearmPlan,
   renderDigest,
   routeBlocker,
   selfFixDmText,
@@ -57,11 +58,42 @@ import type { StuckWork } from "../domain/stuckWork.ts";
 import type { JourneyRepo } from "../infrastructure/db/journeyRepo.ts";
 import type { JuekiBlocker, JuekiRepo } from "../infrastructure/db/juekiRepo.ts";
 import type { EndedThread } from "../infrastructure/db/messageRepo.ts";
-import type { Watch } from "../infrastructure/db/watchRepo.ts";
+import type { Watch, WatchRepo } from "../infrastructure/db/watchRepo.ts";
 import { SIGNATURES } from "../domain/messageFooter.ts";
 import { logAndIgnore } from "./ignoredError.ts";
 import type { Clock } from "./ports.ts";
 import type { SlackAdminPort } from "./slackAdmin.ts";
+
+/**
+ * A lapsed `watch worker`, armed again (the wiring `index.ts` hands to the tick). The new watch is the
+ * same job on the same thread; its write grant, if the lapsed one held one, is carried over only inside
+ * the limits a fired turn's re-arm has (`rearmPlan`: 30 days counted from the FIRST watch of the chain,
+ * walked back through `parentWatchId`, and a bounded number of children), otherwise it is plain.
+ */
+export const rearmWatch = (
+  watches: Pick<WatchRepo, "get" | "waiting" | "add">,
+  w: Watch,
+  now: number,
+): number => {
+  let root = w;
+  for (let hops = 0; root.parentWatchId && hops < 100; hops++) root = watches.get(root.parentWatchId) ?? root;
+  const children = watches.waiting(500).filter((x) => x.parentWatchId === w.id).length;
+  const plan = rearmPlan(w, now, root.createdAt, children);
+  return watches.add(
+    {
+      channelId: w.channelId,
+      threadTs: w.threadTs,
+      slackUserId: w.slackUserId,
+      note: w.note,
+      check: w.check,
+      everyMs: w.everyMs,
+      deadlineAt: plan.deadlineAt,
+      createdAt: now,
+      ...(plan.grant ? { createdBy: w.createdBy, writeTargets: w.writeTargets, parentWatchId: w.id } : {}),
+    },
+    now,
+  ).id;
+};
 
 /** The actor Jueki's own journey and ticket changes are filed under. */
 export const JUEKI_ACTOR = "jueki";
@@ -72,6 +104,8 @@ export const UNANSWERED_AFTER_MS = 2 * HOUR_MS;
 export const UNANSWERED_WINDOW_MS = 3 * DAY_MS;
 /** A dead worker is put to the turn again after this long. */
 export const WORKER_REPEAT_MS = 6 * HOUR_MS;
+/** A `jueki fixed` is accepted this long after the `blocker` that answered `self-fix`. */
+export const SELF_FIX_GRANT_MS = 6 * HOUR_MS;
 /** Threads and PRs handed to one turn, so a backlog is worked down, not dumped. */
 const PICTURE_CAP = 6;
 
@@ -136,8 +170,8 @@ export type Jueki = {
   blocker: (input: BlockerInput) => Promise<string>;
   /** A line in today's digest. */
   act: (line: string) => Promise<void>;
-  /** A prod item fixed under the self-fix rule: the digest line and one direct DM line. */
-  fixed: (key: string, line: string) => Promise<void>;
+  /** A prod item fixed under the self-fix rule: the digest line and one direct DM line. False (nothing posted) when no self-fix was granted for that key. */
+  fixed: (key: string, line: string) => Promise<boolean>;
   /** What Jueki holds right now, for `jueki status`. */
   status: () => string;
 };
@@ -220,6 +254,17 @@ export const createJueki = (deps: JuekiDeps): Jueki => {
     await act(`${b.prod ? "prod " : ""}blocker #${b.id} (${b.kind}) put to you: ${b.text}`);
   };
 
+  /** A pending blocker Jueki fixed itself: closed, and the message that asked is settled so nobody presses it. */
+  const closeAsked = async (b: JuekiBlocker, why: string): Promise<void> => {
+    if (!deps.repo.close(b.id, deps.clock())) return;
+    if (b.noticeChannel && b.noticeTs) {
+      await deps.slack
+        .settleInteractive(b.noticeChannel, b.noticeTs, `*${JUEKI_NAME}* - blocker #${b.id} (${b.kind}): ${b.text}\n_${why}._`, SIGNATURES.jueki)
+        .catch(logAndIgnore("jueki closed blocker"));
+    }
+    await act(`prod blocker #${b.id} closed: ${why}`);
+  };
+
   const blocker = async (input: BlockerInput): Promise<string> => {
     const key = cleanKey(input.key);
     const text = digestLine(input.text);
@@ -228,6 +273,9 @@ export const createJueki = (deps: JuekiDeps): Jueki => {
     const prior = deps.repo.blockerByKey(key);
     const route: BlockerRoute = routeBlocker(input.facts, prior, now, { quiet: quietNow(), repingMs });
     if (route.route === "self-fix") {
+      // The grant `fixed` checks, and the end of any earlier ask: an owner asked about something Jueki is now fixing would be asked all night.
+      deps.repo.mark("selffix", key, now);
+      if (prior?.state === "pending") await closeAsked(prior, "now fixed by me (urgent, low-risk)");
       return `self-fix: prod, urgent and low-risk (reversible, no data write, no schema change, no secret or IAM change), inside the owner's role. Do it, then run \`${deps.prefix} jueki fixed ${key} "<what you did>"\`.`;
     }
     const b = deps.repo.openBlocker({ key, kind: input.kind, prod: input.facts.prod, text }, now);
@@ -246,13 +294,19 @@ export const createJueki = (deps: JuekiDeps): Jueki => {
     return `held: ${why[route.why]}`;
   };
 
-  const fixed = async (key: string, line: string): Promise<void> => {
+  const fixed = async (key: string, line: string): Promise<boolean> => {
     const k = cleanKey(key);
+    // Only a self-fix `blocker` granted (in the last hours) can be reported: this line is not a way to post as Jueki about anything.
+    const granted = deps.repo.lastMark("selffix", k);
+    if (granted === undefined || deps.clock() - granted > SELF_FIX_GRANT_MS) return false;
+    const stored = deps.repo.blockerByKey(k);
+    if (stored?.state === "pending") await closeAsked(stored, "fixed by me (urgent, low-risk)");
     await act(`prod fix by me (urgent, low-risk): ${line}`);
     // A direct line, quiet hours or not: a prod item was touched and the owner hears it.
     await deps.slack
       .postDm(deps.ownerSlackId, selfFixDmText(k, line), SIGNATURES.jueki)
       .catch(logAndIgnore("jueki self-fix DM"));
+    return true;
   };
 
   // ------------------------------------------------------------ the tick
@@ -398,15 +452,12 @@ export const createJueki = (deps: JuekiDeps): Jueki => {
       approvedBlockers: picture.approvedBlockers,
     };
     // Judgment waits for morning when it may message people. Nothing is marked while it waits, so the same items are in the next tick's picture.
-    if (pictureSize(handed) > 0 && !quietNow() && !turnRunning) {
-      for (const m of toMark) deps.repo.mark(m.kind, m.id, now);
-      startTurn(now, handed, approved);
-    }
+    if (pictureSize(handed) > 0 && !quietNow() && !turnRunning) startTurn(now, handed, approved, toMark);
     await refreshDigest().catch(logAndIgnore("jueki digest"));
   };
 
   /** Not awaited: a turn can run half an hour and the tick must not hold the next one. */
-  const startTurn = (now: number, picture: Picture, approved: readonly JuekiBlocker[]): void => {
+  const startTurn = (now: number, picture: Picture, approved: readonly JuekiBlocker[], marks: readonly { kind: string; id: string }[]): void => {
     turnRunning = true;
     void (async () => {
       try {
@@ -415,7 +466,8 @@ export const createJueki = (deps: JuekiDeps): Jueki => {
           log("no DM with the owner; the turn is not started");
           return;
         }
-        for (const b of approved) deps.repo.markHandled(b.id, now);
+        // Marked only now that a turn can really start: without a DM nothing was fed, and everything is in the next tick's picture.
+        for (const m of marks) deps.repo.mark(m.kind, m.id, now);
         const day = today();
         const reply = await deps.runTurn({
           channelId: channel,
@@ -428,6 +480,8 @@ export const createJueki = (deps: JuekiDeps): Jueki => {
           hold: true,
           trigger: "loop",
         });
+        // An approval is handed over once the turn has run; one that threw (or died with a restart) is fed again.
+        for (const b of approved) deps.repo.markHandled(b.id, deps.clock());
         const note = reply?.text.trim();
         if (note && !/no[_ ]reply/i.test(note)) await act(`note: ${note}`);
       } catch (e) {

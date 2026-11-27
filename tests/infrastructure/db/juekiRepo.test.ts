@@ -38,12 +38,37 @@ describe("juekiRepo", () => {
     expect(r.digest("d")).toEqual({ channel: "D1", ts: "2.2" });
   });
 
-  test("a blocker key is its identity: opening it twice gives the same row", () => {
+  test("a blocker key is its identity: opening it twice gives the same row (the first kind and text stay, prod only goes up)", () => {
     const r = repo();
     const a = r.openBlocker({ key: "k", kind: "permission", prod: false, text: "first" }, 5);
     const b = r.openBlocker({ key: "k", kind: "decision", prod: true, text: "second" }, 9);
     expect(b.id).toBe(a.id);
-    expect(b).toMatchObject({ kind: "permission", prod: false, text: "first", state: "pending", raisedCount: 0 });
+    expect(b).toMatchObject({ kind: "permission", prod: true, text: "first", state: "pending", raisedCount: 0 });
+  });
+
+  test("a key first stored non-prod and raised again as prod becomes prod; prod never goes back", () => {
+    const r = repo();
+    const a = r.openBlocker({ key: "deploy-x", kind: "decision", prod: false, text: "first" }, 1);
+    expect(a.prod).toBe(false);
+    const b = r.openBlocker({ key: "deploy-x", kind: "prod-write", prod: true, text: "second" }, 2);
+    expect(b).toMatchObject({ id: a.id, prod: true, text: "first" });
+    expect(r.openBlocker({ key: "deploy-x", kind: "decision", prod: false, text: "third" }, 3).prod).toBe(true);
+  });
+
+  test("close: a pending blocker Jueki fixed itself; a decided one is not touched; the same key opens again from nothing", () => {
+    const r = repo();
+    const a = r.openBlocker({ key: "k", kind: "prod-write", prod: true, text: "old" }, 1);
+    r.setNotice(a.id, "D1", "1.1");
+    r.raised(a.id, 10);
+    expect(r.close(a.id, 20)).toBe(true);
+    expect(r.close(a.id, 21)).toBe(false);
+    expect(r.blocker(a.id)).toMatchObject({ state: "fixed", decidedAt: 20 });
+    expect(r.pending()).toEqual([]);
+    const again = r.openBlocker({ key: "k", kind: "prod-write", prod: true, text: "new one" }, 30);
+    expect(again).toMatchObject({ id: a.id, state: "pending", text: "new one", raisedCount: 0, lastRaisedAt: 0, noticeChannel: "", decidedAt: 0 });
+    r.decide(a.id, "approved", 40);
+    expect(r.close(a.id, 41)).toBe(false);
+    expect(r.blocker(a.id)?.state).toBe("approved");
   });
 
   test("raising counts, the first decision wins, an approval is handed over once", () => {

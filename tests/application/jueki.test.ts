@@ -1,10 +1,11 @@
 import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
-import { createJueki, dayThreadTs, type JuekiDeps, type JuekiTurnRequest } from "../../src/application/jueki.ts";
+import { createJueki, dayThreadTs, rearmWatch, type JuekiDeps, type JuekiTurnRequest } from "../../src/application/jueki.ts";
 import { DEFAULT_PROD_REPING_MS, HOUR_MS, DAY_MS, MINUTE_MS, type BlockerFacts, type OwnPr } from "../../src/domain/jueki.ts";
 import { NO_STUCK_WORK } from "../../src/domain/stuckWork.ts";
 import { createJourneyRepo } from "../../src/infrastructure/db/journeyRepo.ts";
 import { createJuekiRepo } from "../../src/infrastructure/db/juekiRepo.ts";
+import { createWatchRepo } from "../../src/infrastructure/db/watchRepo.ts";
 import { migrate } from "../../src/infrastructure/db/schema.ts";
 import type { Watch } from "../../src/infrastructure/db/watchRepo.ts";
 
@@ -44,6 +45,7 @@ const setup = (start = NOON, over: Partial<JuekiDeps> = {}) => {
   let scan = NO_STUCK_WORK;
   let unanswered: { channelId: string; threadTs: string; lastAt: number; slackUserId: string }[] = [];
   let n = 0;
+  const flags = { dmOpen: true, turnThrows: false };
   const jueki = createJueki({
     clock: () => clock.t,
     ownerSlackId: OWNER,
@@ -60,7 +62,7 @@ const setup = (start = NOON, over: Partial<JuekiDeps> = {}) => {
         return { channel: "D1", ts: `b${++n}` };
       },
       settleInteractive: async (channel, ts, text) => void settled.push({ channel, ts, text }),
-      openDm: async () => "D1",
+      openDm: async () => (flags.dmOpen ? "D1" : undefined),
     },
     tickets: {
       bound: () => tickets,
@@ -75,6 +77,7 @@ const setup = (start = NOON, over: Partial<JuekiDeps> = {}) => {
     unanswered: () => unanswered,
     runTurn: async (req) => {
       turns.push(req);
+      if (flags.turnThrows) throw new Error("cut for a restart");
       return { text: "NO_REPLY" };
     },
     offsetMinutes: () => 420,
@@ -83,7 +86,7 @@ const setup = (start = NOON, over: Partial<JuekiDeps> = {}) => {
     ...over,
   });
   return {
-    jueki, repo, journeys, clock, posts, updates, asked, settled, turns, renewed, rearmed,
+    jueki, repo, journeys, clock, flags, posts, updates, asked, settled, turns, renewed, rearmed,
     set: {
       tickets: (t: typeof tickets) => (tickets = t),
       waiting: (w: Watch[]) => (waiting = w),
@@ -294,6 +297,53 @@ describe("the judgment turn", () => {
   });
 });
 
+describe("a held or failed turn loses nothing", () => {
+  test("no DM to the owner: nothing is marked as fed, the same items come back next tick", async () => {
+    const s = setup();
+    journey(s, "old thing", 30, NOON - 5 * DAY_MS);
+    s.flags.dmOpen = false;
+    await s.jueki.tick();
+    await settle();
+    expect(s.turns).toHaveLength(0);
+    expect(s.repo.lastMark("nudge", "journey:1")).toBeUndefined();
+    s.flags.dmOpen = true;
+    s.clock.t += 30 * MINUTE_MS;
+    await s.jueki.tick();
+    await settle();
+    expect(s.turns).toHaveLength(1);
+    expect(s.turns[0]!.text).toContain("journey #1");
+  });
+
+  test("an approval is handed over once the turn has run; a turn that throws leaves it to be fed again", async () => {
+    const s = setup();
+    const b = s.repo.openBlocker({ key: "k", kind: "permission", prod: false, text: "needs the staging bucket" }, NOON);
+    s.repo.decide(b.id, "approved", NOON);
+    s.flags.turnThrows = true;
+    await s.jueki.tick();
+    await settle();
+    expect(s.turns).toHaveLength(1);
+    expect(s.repo.approvedUnhandled().map((x) => x.id)).toEqual([b.id]);
+    s.flags.turnThrows = false;
+    s.clock.t += 30 * MINUTE_MS;
+    await s.jueki.tick();
+    await settle();
+    expect(s.turns).toHaveLength(2);
+    expect(s.turns[1]!.text).toContain("needs the staging bucket");
+    expect(s.repo.approvedUnhandled()).toEqual([]);
+  });
+
+  test("a ticket already capped at its 24h life and about to lapse is replaced (fed to the turn), not renewed every tick", async () => {
+    const s = setup();
+    s.set.waiting([watch({ state: "waiting" })]);
+    const boundAt = NOON - 23.5 * HOUR_MS;
+    s.set.tickets([{ id: "cccccccc", dispatchId: "ctx_w1", boundAt, expiresAt: boundAt + 24 * HOUR_MS }]);
+    await s.jueki.tick();
+    await settle();
+    expect(s.renewed).toEqual([]);
+    expect(s.turns[0]!.text).toContain("ticket cccccccc");
+  });
+});
+
 describe("blockers: the original rule (non-prod)", () => {
   test("raised once with Approve / Reject and never again, however often the turn asks", async () => {
     const s = setup();
@@ -390,13 +440,64 @@ describe("blockers: the prod rule", () => {
     expect(s.asked).toHaveLength(0);
     expect(s.repo.blockerByKey("cache-bust")).toBeUndefined();
 
-    await s.jueki.fixed("cache-bust", "flushed the menu cache, reversible");
+    expect(await s.jueki.fixed("cache-bust", "flushed the menu cache, reversible")).toBe(true);
     expect(s.repo.lines("2026-11-27").map((l) => l.text).join("\n")).toContain("prod fix by me");
     // The direct line goes out at night: a prod item was touched.
     const dm = s.posts.find((p) => p.text.includes("fixed a prod item myself"));
     expect(dm).toBeDefined();
     expect(dm).toMatchObject({ by: "Jueki" });
     expect(dm!.text).toContain("flushed the menu cache");
+  });
+
+  test("fixed is refused without a self-fix the rules granted for that key, and after the grant runs out", async () => {
+    const s = setup();
+    expect(await s.jueki.fixed("never-asked", "did a thing")).toBe(false);
+    expect(s.posts).toHaveLength(0);
+    await s.jueki.blocker({ key: "cache-bust", kind: "prod-write", text: "stale", facts: facts({ prod: true, customerImpact: true, reversible: true }) });
+    expect(await s.jueki.fixed("other-key", "x")).toBe(false);
+    s.clock.t += 7 * HOUR_MS;
+    expect(await s.jueki.fixed("cache-bust", "late")).toBe(false);
+    expect(s.posts).toHaveLength(0);
+  });
+
+  test("a self-fix closes an earlier prod ask for the same key: the old message is settled and the owner is not asked all night", async () => {
+    const s = setup();
+    await s.jueki.blocker({ key: "menu-cache", kind: "prod-write", text: "cache serves a stale menu", facts: facts({ prod: true, reversible: true }) });
+    expect(s.asked).toHaveLength(1);
+    // Later it turns urgent: low-risk and urgent, so Jueki fixes it itself.
+    const out = await s.jueki.blocker({ key: "menu-cache", kind: "prod-write", text: "cache serves a stale menu", facts: facts({ prod: true, reversible: true, customerImpact: true }) });
+    expect(out).toContain("self-fix");
+    expect(s.repo.blockerByKey("menu-cache")?.state).toBe("fixed");
+    expect(s.settled.map((x) => x.text).join("\n")).toContain("now fixed by me");
+    expect(await s.jueki.fixed("menu-cache", "flushed the cache")).toBe(true);
+    s.clock.t = NIGHT;
+    await s.jueki.tick();
+    expect(s.asked).toHaveLength(1);
+    expect(s.repo.pending()).toEqual([]);
+  });
+
+  test("the same key arising again after a self-fix is a new blocker", async () => {
+    const s = setup();
+    const risky = facts({ prod: true, incident: true, reversible: true });
+    await s.jueki.blocker({ key: "k", kind: "prod-write", text: "first time", facts: risky });
+    await s.jueki.fixed("k", "done");
+    const second = await s.jueki.blocker({ key: "k", kind: "prod-write", text: "second time", facts: { ...risky, dataWrite: true } });
+    expect(second).toContain("raised to the owner");
+    expect(s.asked).toHaveLength(1);
+    expect(s.repo.blockerByKey("k")).toMatchObject({ state: "pending", text: "second time" });
+  });
+
+  test("a key raised first as non-prod and then as prod is asked under the prod rule: marked prod, asked again", async () => {
+    const s = setup();
+    await s.jueki.blocker({ key: "deploy-x", kind: "decision", text: "ship it?", facts: facts() });
+    s.clock.t += 10 * MINUTE_MS;
+    const out = await s.jueki.blocker({ key: "deploy-x", kind: "prod-write", text: "ship it?", facts: facts({ prod: true, dataWrite: true }) });
+    expect(out).toContain("raised to the owner");
+    expect(s.repo.blockerByKey("deploy-x")?.prod).toBe(true);
+    expect(s.asked[1]!.text).toContain("prod blocker");
+    s.clock.t += DEFAULT_PROD_REPING_MS;
+    await s.jueki.tick();
+    expect(s.asked).toHaveLength(3);
   });
 
   test("urgent but with a data write, or low-risk but not urgent, is never self-fixed", async () => {
@@ -415,5 +516,62 @@ describe("act", () => {
     await s.jueki.act("chased <@U123> on *PR #9*");
     expect(s.posts[0]!.text).toContain("chased U123 on PR #9");
     expect(s.posts[0]!.text).not.toContain("<@");
+  });
+});
+
+describe("rearmWatch: a lapsed worker watch armed again, the grant bounded by the whole chain", () => {
+  const mk = () => {
+    const db = new Database(":memory:");
+    migrate(db);
+    const w = createWatchRepo(db);
+    const base = { channelId: "C1", threadTs: "1.1", slackUserId: OWNER, note: "n", check: "bun x/orca-worker-wait.ts 'ctx_w1'", everyMs: 30_000, deadlineAt: 1 };
+    return { w, base };
+  };
+  const T0 = 1_000_000_000_000;
+  const grant = { createdBy: OWNER, writeTargets: [{ channel: "C0TEAM00001" }] };
+
+  test("a plain watch is armed again plain", () => {
+    const { w, base } = mk();
+    const old = w.add({ ...base, createdAt: T0 }, T0);
+    const id = rearmWatch(w, old, T0 + 5 * DAY_MS);
+    expect(w.get(id)).toMatchObject({ createdBy: "", writeTargets: [], parentWatchId: 0, state: "waiting" });
+    expect(w.get(id)!.deadlineAt).toBe(T0 + 5 * DAY_MS + 12 * HOUR_MS);
+  });
+
+  test("a grant is carried inside the chain, with the lapsed watch as parent", () => {
+    const { w, base } = mk();
+    const old = w.add({ ...base, createdAt: T0, ...grant }, T0);
+    const id = rearmWatch(w, old, T0 + DAY_MS);
+    expect(w.get(id)).toMatchObject({ createdBy: OWNER, parentWatchId: old.id });
+    expect(w.get(id)!.writeTargets).toEqual([{ channel: "C0TEAM00001" }]);
+  });
+
+  test("the 30 days are counted from the FIRST watch of the chain: re-arming again and again does not renew the grant", () => {
+    const { w, base } = mk();
+    const root = w.add({ ...base, createdAt: T0, ...grant }, T0);
+    let cur = root;
+    let now = T0;
+    let carried = 0;
+    // Re-arm every 10 days: the third re-arm sits past the root's 30 days.
+    for (let i = 0; i < 4; i++) {
+      now += 10 * DAY_MS;
+      w.settle(cur.id, "expired", now);
+      const id = rearmWatch(w, cur, now);
+      cur = w.get(id)!;
+      if (cur.createdBy) carried++;
+    }
+    expect(carried).toBe(2);
+    expect(cur).toMatchObject({ createdBy: "", writeTargets: [], parentWatchId: 0 });
+    // The last grant-carrying watch ended no later than the root's 30 days.
+    const chain = [root.id + 1, root.id + 2].map((id) => w.get(id)!);
+    for (const c of chain) expect(c.deadlineAt).toBeLessThanOrEqual(T0 + 30 * DAY_MS);
+  });
+
+  test("a parent that already has the most grant-holding children waiting arms the new one plain", () => {
+    const { w, base } = mk();
+    const old = w.add({ ...base, createdAt: T0, ...grant }, T0);
+    for (let i = 0; i < 5; i++) w.add({ ...base, createdAt: T0, ...grant, parentWatchId: old.id }, T0);
+    const id = rearmWatch(w, old, T0 + HOUR_MS);
+    expect(w.get(id)).toMatchObject({ createdBy: "", writeTargets: [] });
   });
 });

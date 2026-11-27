@@ -7,7 +7,7 @@ import { type CommandDef } from "./shared.ts";
 export const JUEKI_COMMANDS: readonly CommandDef[] = [
   {
     name: "jueki",
-    // Mine alone: only the brain's own turn runs it, and only as the owner, so a pal's thread cannot write the owner's digest or raise a blocker as Jueki.
+    // Mine alone: only the brain's own turn runs it (never a typed line, a schedule or a watch-fired turn), and only as the owner, so a pal's thread cannot write the owner's digest or raise a blocker as Jueki. Any owner brain turn can, in any thread; `fixed` is therefore tied to a granted self-fix.
     internal: true,
     minRole: "owner",
     ownHelp: true,
@@ -43,7 +43,9 @@ export const JUEKI_COMMANDS: readonly CommandDef[] = [
         const key = cleanKey(args[0] ?? "");
         const line = digestLine(args.slice(1).join(" "));
         if (!key || !line) return `\`${prefix} jueki fixed <key> "<what I did>"\``;
-        await jueki.fixed(key, line);
+        if (!(await jueki.fixed(key, line))) {
+          return `No self-fix was granted for \`${key}\`: it needs a \`${prefix} jueki blocker ${key} --prod ...\` that answered \`self-fix\` in the last 6 hours. Nothing was posted.`;
+        }
         return "Reported in the digest and by one direct DM line.";
       }
       if (sub === "blocker") {

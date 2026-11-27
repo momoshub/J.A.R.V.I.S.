@@ -12,7 +12,7 @@ export type JuekiBlocker = {
   readonly kind: BlockerKind;
   readonly prod: boolean;
   readonly text: string;
-  readonly state: "pending" | "approved" | "rejected";
+  readonly state: "pending" | "approved" | "rejected" | "fixed";
   readonly noticeChannel: string;
   readonly noticeTs: string;
   readonly raisedCount: number;
@@ -47,7 +47,7 @@ const toBlocker = (r: BlockerRow): JuekiBlocker => ({
   kind: isBlockerKind(r.kind) ? r.kind : "other",
   prod: r.prod === 1,
   text: r.text,
-  state: r.state === "approved" || r.state === "rejected" ? r.state : "pending",
+  state: r.state === "approved" || r.state === "rejected" || r.state === "fixed" ? r.state : "pending",
   noticeChannel: r.notice_channel,
   noticeTs: r.notice_ts,
   raisedCount: r.raised_count,
@@ -70,11 +70,17 @@ export type JuekiRepo = {
   /** The blocker with this key, if any ever existed (the key is its identity). */
   blockerByKey: (key: string) => JuekiBlocker | undefined;
   blocker: (id: number) => JuekiBlocker | undefined;
-  /** Opens a blocker, or returns the one already stored under the key. */
+  /**
+   * Opens a blocker, or returns the one already stored under the key. A key stored non-prod that is
+   * raised again as prod BECOMES prod (never the other way): a prod blocker must never fall under the
+   * once-only rule. A key Jueki fixed itself opens again from nothing.
+   */
   openBlocker: (b: { key: string; kind: BlockerKind; prod: boolean; text: string }, at: number) => JuekiBlocker;
   setNotice: (id: number, channel: string, ts: string) => void;
   /** Record that it was put to the owner (again). */
   raised: (id: number, at: number) => void;
+  /** Jueki fixed it itself under the prod rule: closes a still pending row; false when it was not pending. */
+  close: (id: number, at: number) => boolean;
   /** First decision wins; false when it was already decided. */
   decide: (id: number, state: "approved" | "rejected", at: number) => boolean;
   pending: () => JuekiBlocker[];
@@ -100,7 +106,17 @@ export const createJuekiRepo = (db: DbClient): JuekiRepo => {
   const byIdStmt = db.query<BlockerRow, [number]>("SELECT * FROM jueki_blockers WHERE id = ?");
   const openStmt = db.query(
     `INSERT INTO jueki_blockers (key, kind, prod, text, created_at) VALUES ($key, $kind, $prod, $text, $at)
-     ON CONFLICT(key) DO NOTHING`,
+     ON CONFLICT(key) DO UPDATE SET
+       prod = MAX(jueki_blockers.prod, excluded.prod),
+       kind = CASE WHEN jueki_blockers.state = 'fixed' THEN excluded.kind ELSE jueki_blockers.kind END,
+       text = CASE WHEN jueki_blockers.state = 'fixed' THEN excluded.text ELSE jueki_blockers.text END,
+       raised_count = CASE WHEN jueki_blockers.state = 'fixed' THEN 0 ELSE jueki_blockers.raised_count END,
+       last_raised_at = CASE WHEN jueki_blockers.state = 'fixed' THEN 0 ELSE jueki_blockers.last_raised_at END,
+       notice_channel = CASE WHEN jueki_blockers.state = 'fixed' THEN '' ELSE jueki_blockers.notice_channel END,
+       notice_ts = CASE WHEN jueki_blockers.state = 'fixed' THEN '' ELSE jueki_blockers.notice_ts END,
+       handled_at = CASE WHEN jueki_blockers.state = 'fixed' THEN 0 ELSE jueki_blockers.handled_at END,
+       decided_at = CASE WHEN jueki_blockers.state = 'fixed' THEN 0 ELSE jueki_blockers.decided_at END,
+       state = CASE WHEN jueki_blockers.state = 'fixed' THEN 'pending' ELSE jueki_blockers.state END`,
   );
   const noticeStmt = db.query("UPDATE jueki_blockers SET notice_channel = $channel, notice_ts = $ts WHERE id = $id");
   const raisedStmt = db.query(
@@ -108,6 +124,9 @@ export const createJuekiRepo = (db: DbClient): JuekiRepo => {
   );
   const decideStmt = db.query(
     "UPDATE jueki_blockers SET state = $state, decided_at = $at WHERE id = $id AND state = 'pending'",
+  );
+  const closeStmt = db.query(
+    "UPDATE jueki_blockers SET state = 'fixed', decided_at = $at WHERE id = $id AND state = 'pending'",
   );
   const pendingStmt = db.query<BlockerRow, []>("SELECT * FROM jueki_blockers WHERE state = 'pending' ORDER BY id ASC");
   const approvedStmt = db.query<BlockerRow, []>(
@@ -136,6 +155,7 @@ export const createJuekiRepo = (db: DbClient): JuekiRepo => {
     },
     setNotice: (id, channel, ts) => void noticeStmt.run({ $id: id, $channel: channel, $ts: ts }),
     raised: (id, at) => void raisedStmt.run({ $id: id, $at: at }),
+    close: (id, at) => Number(closeStmt.run({ $id: id, $at: at }).changes) > 0,
     decide: (id, state, at) => Number(decideStmt.run({ $id: id, $state: state, $at: at }).changes) > 0,
     pending: () => pendingStmt.all().map(toBlocker),
     approvedUnhandled: () => approvedStmt.all().map(toBlocker),
