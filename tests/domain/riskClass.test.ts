@@ -362,3 +362,29 @@ describe("classifyDiff: round 8 audit findings", () => {
     expect(cls(file("src/a.ts", ...add("// a note")))).toBe("docs");
   });
 });
+
+describe("classifyDiff: round 9 review blockers", () => {
+  const hunk = (path: string, ...lines: string[]): ChangedFile => ({ path, patch: ["@@ -1,3 +1,3 @@", ...lines].join("\n") });
+
+  test("a comment ending in a backslash and trailing space joins the next line in C: not docs", () => {
+    const guard = (comment: string) => hunk("guard.c", "-  // refuse unless the caller is an admin", `+  ${comment}`, "   if (!is_admin) { puts(\"refused\"); return 1; }", '   system("echo PRIVILEGED-ACTION-RAN");');
+    expect(cls(guard("// refuse unless the caller is an admin \\ "))).not.toBe("docs");
+    expect(cls(guard("// refuse unless the caller is an admin ??/"))).not.toBe("docs");
+    expect(cls(hunk("guard.h", "+// a note \\\t"))).not.toBe("docs");
+    expect(cls(hunk("guard.c", "+// a plain note"))).toBe("docs");
+  });
+
+  test("source escapes decoded before parsing make a comment code: java and python unicode escapes", () => {
+    expect(cls(hunk("A.java", "+// note \\u000a Runtime.getRuntime().exec(cmd);"))).not.toBe("docs");
+    expect(cls(hunk("tool.py", '+# a tool \\u000a__import__("os").system("x")'))).not.toBe("docs");
+    expect(cls(hunk("tool.py", '+# a tool +AAo(__import__("os").system("x"))'))).not.toBe("docs");
+    expect(cls(hunk("tool.py", "+# a tool \\x0a import os"))).not.toBe("docs");
+    expect(cls(hunk("tool.py", "+# a note, 1 + 2 = 3 and a path C:/x"))).toBe("docs");
+  });
+
+  test("// is not a comment in plain css", () => {
+    expect(cls(hunk("site.css", "+// a { color: red; }"))).not.toBe("docs");
+    expect(cls(hunk("site.css", "+/* a note */"))).toBe("docs");
+    expect(cls(hunk("site.scss", "+// a note"))).toBe("docs");
+  });
+});
