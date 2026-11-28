@@ -436,6 +436,10 @@ describe("classifyDiff: round 13 review blocker", () => {
   test("manifests of other ecosystems are dependency changes", () => {
     for (const f of ["pom.xml", "environment.yml", "packages.lock.json", "npm-shrinkwrap.json", ".tool-versions", ".python-version", "build.gradle"]) expect(cls(file(f, ...add("x")))).toBe("capability");
   });
+  test("a package.json of any case is the dependency manifest", () => {
+    const bump = ["@@ -1,3 +1,3 @@", " {", '-  "left-pad": "1.0.0",', '+  "left-pad": "1.3.0",', " }"].join("\n");
+    for (const path of ["package.json", "Package.json", "PACKAGE.JSON"]) expect(cls({ path, patch: bump })).toBe("capability");
+  });
   test("AGENTS.md describes the steering grant rule as the code reads it", async () => {
     const { readFileSync } = await import("node:fs");
     expect(readFileSync("AGENTS.md", "utf8")).not.toContain("a `tools:` line, a list item under it, or any `Bash(...)`/`mcp__` line");
