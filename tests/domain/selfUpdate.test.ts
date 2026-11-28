@@ -134,7 +134,7 @@ describe("selfUpdateRules is the whole procedure, from the codebase", () => {
     // the old blanket rule is gone, and so is the two-round cap
     expect(STANDALONE_REVIEW_RULE).not.toContain("every fix, no exceptions");
     expect(STANDALONE_REVIEW_RULE).not.toContain("never a round 3");
-    expect(STANDALONE_REVIEW_RULE).toContain("round 2 and later happen only when the previous round is `VERDICT: changes` with a real blocker");
+    expect(STANDALONE_REVIEW_RULE).toContain("round 2 and later happen only when the previous round is `VERDICT: changes` with a real blocker or when a push landed after a `VERDICT: clean` (that push voids it)");
     expect(STANDALONE_REVIEW_RULE).toContain("there are at most 15 rounds");
     expect(STANDALONE_REVIEW_RULE).toContain("round 15 is the hard cap, there is no extension past it");
     // CI is the gate either way
