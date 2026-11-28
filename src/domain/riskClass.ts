@@ -94,13 +94,13 @@ const CAPABILITY_PATTERNS: readonly { readonly kind: CapabilityKind; readonly re
 
 /** In a skill/agent markdown file only its tool grants are a capability; the prose is `prompt`. */
 const STEERING_LIST_ITEM_RE = /^\s*-\s+\S/;
-const STEERING_TOOL_RE = /^\s*(?:allowed[-_]tools|tools|permissions?|disallowed[-_]tools)\s*:/i;
+const STEERING_TOOL_RE = /^\s*-?\s*(?:allowed[-_]?tools|tools|permissions?|permission[-_]?mode|disallowed[-_]?tools|mcp[-_]?servers|hooks|command|args)\s*:|!`/i;
 
 const DEPENDENCY_LINE_RE = /^\s*"(?:@[\w.-]+\/)?[\w.-]+"\s*:\s*"[\^~<>=*]*\d[^"]*"\s*,?\s*$/;
 const LOCKFILE_RE = /(?:^|\/)(?:bun\.lockb?|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock|poetry\.lock|uv\.lock|Pipfile\.lock|Gemfile\.lock|composer\.lock|go\.sum)$/i;
 /** Manifests and requirement lists of other ecosystems: what they name is what gets installed. */
-const DEPENDENCY_FILE_RE = /(?:^|\/)(?:[\w.-]*requirements[\w.-]*\.(?:txt|in)|constraints[\w.-]*\.(?:txt|in)|requirements\/[\w.\/-]+\.(?:txt|in)|Pipfile|Cargo\.toml|pyproject\.toml|go\.mod|Gemfile|composer\.json)$/i;
-const PACKAGE_JSON_RE = /(?:^|\/)package\.json$/;
+const DEPENDENCY_FILE_RE = /(?:^|\/)(?:[\w.-]*requirements[\w.-]*\.(?:txt|in)|constraints[\w.-]*\.(?:txt|in)|requirements\/[\w.\/-]+\.(?:txt|in)|Pipfile|Cargo\.toml|pyproject\.toml|go\.mod|Gemfile|composer\.json|pom\.xml|build\.gradle(?:\.kts)?|environment\.ya?ml|packages\.lock\.json|npm-shrinkwrap\.json|\.tool-versions|\.python-version|\.nvmrc)$/i;
+const PACKAGE_JSON_RE = /(?:^|\/)package\.json$/i;
 const WORKFLOW_RE = /(?:^|\/)\.github\/(?:workflows|actions)\//;
 const MANIFEST_RE = /(?:^|\/)slack-app-manifest\.ya?ml$/;
 const TEST_PATH_RE = /(?:^|\/)(?:tests?|e2e|__tests__)\/|\.(?:test|spec|e2e)\.[cm]?[tj]sx?$/;
@@ -198,7 +198,7 @@ const classifyFile = (file: ChangedFile): { risk: FileRisk; promptText: boolean 
       continue;
     }
     if (steeringAll) {
-      // a tool grant is a `tools:` line, a yaml list item under one, or any line that names a `Bash(...)` or `mcp__` tool
+      // a tool grant is a grant key (tools, permissionMode, disallowedTools, mcpServers, hooks, command), a yaml list item, a line that names a `Bash(...)` or `mcp__` tool, or a !`cmd` shell line; removed lines count too
       const grant = STEERING_TOOL_RE.test(text);
       const tool = grant || STEERING_LIST_ITEM_RE.test(text) || /Bash\(|mcp__/.test(text) ? capabilityOf(text) ?? (grant ? "tools" : undefined) : undefined;
       verdicts.push(tool !== undefined ? { class: "capability", reason: `${tool}: tool grant in a steering file`, promptText: true } : { class: "prompt", reason: "steering text (skill, guide or instruction file)", promptText: true });
