@@ -112,4 +112,13 @@ describe("bin/risk-class.ts", () => {
     expect(r.code).toBe(0);
     expect(r.out).toContain("risk class: runtime");
   });
+
+  test("an untracked file with a newline in its name cannot be written as a diff header: exit 2, never a docs report", () => {
+    mkdirSync(join(dir, "docs"), { recursive: true });
+    writeFileSync(join(dir, "docs", "a.md"), "more\n");
+    writeFileSync(join(dir, "deploy\n.sh"), "#!/bin/sh\necho hi\n", { mode: 0o755 });
+    const r = run("--base", "base");
+    expect(r.code).toBe(2);
+    expect(r.out).not.toContain("risk class: docs");
+  });
 });

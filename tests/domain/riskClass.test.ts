@@ -381,3 +381,39 @@ describe("classifyDiff: round 11 review blockers", () => {
     expect(text).not.toContain("(prose and comments)");
   });
 });
+
+describe("classifyDiff: round 12 review blockers", () => {
+  test("json is steering only for probe cases: a package.json or tool config in a steering folder is code", () => {
+    const base = ['@@ -1,3 +1,4 @@', ' {', '   "scripts": { "test": "echo ok" },', '+  "postinstall": "sh -c \\"touch x\\"",', ' }'].join("\n");
+    for (const path of [".claude/skills/verify/package.json", ".github/prompts/tool.json", ".cursor/rules/package.json", ".claude/agents/a.json"]) {
+      expect(cls({ path, patch: base })).not.toBe("prompt");
+    }
+    expect(cls(file("docs/probe-cases/06-x.json", ...add('{"a": 1}')))).toBe("prompt");
+  });
+
+  test("a tool grant written as a yaml list item in a steering file is a capability", () => {
+    const hunk = ["@@ -1,4 +1,6 @@", " ---", " allowed-tools:", "   - Read", "+  - Bash(curl:*)", "+  - Bash(sh:*)", " ---"].join("\n");
+    expect(cls({ path: ".claude/skills/verify/SKILL.md", patch: hunk })).toBe("capability");
+    expect(cls({ path: ".claude/agents/a.md", patch: ["@@ -1,3 +1,4 @@", " tools:", "   - Read", "+  - mcp__github__merge_pull_request"].join("\n") })).toBe("capability");
+    expect(cls(file(".claude/skills/verify/SKILL.md", ...add("- Read the diff first", "- Then run the tests")))).toBe("prompt");
+  });
+
+  test("a mode on the index line (an existing executable or symlink at a doc path) is not docs", () => {
+    const edit = (mode: string) => classifyDiff(parseUnifiedDiff(["diff --git a/docs/setup.md b/docs/setup.md", `index 1111111..2222222 ${mode}`, "--- a/docs/setup.md", "+++ b/docs/setup.md", "@@ -1 +1 @@", "-echo a", "+touch x"].join("\n"))).class;
+    expect(edit("100644")).toBe("docs");
+    for (const mode of ["100755", "120000", "160000"]) expect(edit(mode)).toBe("runtime");
+  });
+
+  test("uppercase lockfile names are lockfiles", () => {
+    expect(cls(file("Bun.lock", ...add("x")))).toBe("capability");
+    expect(cls(file("PACKAGE-LOCK.JSON", ...add("x")))).toBe("capability");
+  });
+
+  test("AGENTS.md's class list is free of the retired comment rules", async () => {
+    const { readFileSync } = await import("node:fs");
+    const text = readFileSync("AGENTS.md", "utf8");
+    for (const gone of ["comments in code", "long steering-worded prose strings in source", "in two ways only", "picks the comment syntax", "A line that reads as steering prose is `prompt`", "comments a hunk proves", "comment, hunk"]) {
+      expect(text).not.toContain(gone);
+    }
+  });
+});
