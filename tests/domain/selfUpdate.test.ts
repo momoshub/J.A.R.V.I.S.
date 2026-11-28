@@ -108,7 +108,7 @@ describe("selfUpdateRules is the whole procedure, from the codebase", () => {
     expect(STANDALONE_REVIEW_RULE).toContain("--worktree path:$BOT_WORKER_HOME-reviewer --agent claude");
     expect(STANDALONE_REVIEW_RULE).not.toContain("a folder or repo Orca knows");
     expect(STANDALONE_REVIEW_RULE.indexOf("BOT_WORKER_MCP_TRIM")).toBeLessThan(STANDALONE_REVIEW_RULE.indexOf("worker-start --run"));
-    expect(STANDALONE_REVIEW_RULE).toContain("Up to 5 review rounds");
+    expect(STANDALONE_REVIEW_RULE).toContain("Up to 15 review rounds");
     // The merge is the bot's decision, not the script's: no approving as the merging account any more.
     expect(STANDALONE_REVIEW_RULE).toContain("asks the bot to merge");
     expect(STANDALONE_REVIEW_RULE).toContain("ticket names `merge-gate`");
@@ -134,8 +134,8 @@ describe("selfUpdateRules is the whole procedure, from the codebase", () => {
     expect(STANDALONE_REVIEW_RULE).not.toContain("every fix, no exceptions");
     expect(STANDALONE_REVIEW_RULE).not.toContain("never a round 3");
     expect(STANDALONE_REVIEW_RULE).toContain("round 2 and later happen only when the previous round is `VERDICT: changes` with a real blocker");
-    expect(STANDALONE_REVIEW_RULE).toContain("there are at most 5 rounds");
-    expect(STANDALONE_REVIEW_RULE).toContain("ask the owner for approval before any further round (an approved extension is the only way past 5)");
+    expect(STANDALONE_REVIEW_RULE).toContain("there are at most 15 rounds");
+    expect(STANDALONE_REVIEW_RULE).toContain("round 15 is the hard cap, there is no extension past it");
     // CI is the gate either way
     expect(STANDALONE_REVIEW_RULE).toContain("never merge anything before green CI");
   });
@@ -245,8 +245,16 @@ describe("selfUpdateRules, the restart and the checks", () => {
       STANDALONE_REVIEW_RULE.indexOf("Fix every real finding"),
     );
     // and the loop is bounded, with a way out that is not a merge
-    expect(STANDALONE_REVIEW_RULE).toContain("Up to 5 review rounds");
-    expect(STANDALONE_REVIEW_RULE).toContain("after round 5,");
+    expect(STANDALONE_REVIEW_RULE).toContain("Up to 15 review rounds");
+    expect(STANDALONE_REVIEW_RULE).toContain("after round 15,");
+    // 15 is the hard cap: no extension past it, and the old cap of 5 is gone
+    expect(STANDALONE_REVIEW_RULE).not.toContain("Up to 5 ");
+    expect(STANDALONE_REVIEW_RULE).not.toContain("[review round 5]");
+    expect(STANDALONE_REVIEW_RULE).toContain("hard cap");
+    // a clean verdict names a head and dies with a push: re-review (and re-verify) the new head before any merge
+    expect(STANDALONE_REVIEW_RULE).toContain("any push after a clean review, a clean audit or a `verified` comment voids that verdict");
+    expect(STANDALONE_REVIEW_RULE).toContain("re-review on the new head");
+    expect(STANDALONE_REVIEW_RULE.indexOf("voids that verdict")).toBeLessThan(STANDALONE_REVIEW_RULE.indexOf("Merge only with"));
     expect(STANDALONE_REVIEW_RULE).toContain("do not merge - leave the PR open");
     // the step sits in the flow before the merge, and the rule before the restart
     expect(rules.indexOf(STANDALONE_REVIEW_RULE)).toBeLessThan(rules.indexOf("after the merge, watch the e2e"));
