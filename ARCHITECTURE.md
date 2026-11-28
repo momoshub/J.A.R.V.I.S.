@@ -316,10 +316,12 @@ no classes.
   for runtime code, the latest `[review round N]` review ends `VERDICT: clean` and a `[verify]` comment ends `VERDICT: verified` naming the sha, written by an account named in `MERGE_GATE_ATTESTERS` (never the PR's author or the app; an empty list means no runtime PR merges), with a raw `pr-merge` refused while the gate is on.
   The writer's worker ticket names `merge-gate` (never a raw `pr-merge`); a reviewer's or verifier's never does. Who holds what: the writer holds a ticket
   and a one-shot push credential, the reviewer and verifier a non-admin login that can only post reviews and comments, the app's private key and the merge live in the bot alone
-  (the owner's by-hand steps to finish this are in the README, "Who merges"). When it touches runtime code
-  (logic, commands, adapters, `bin/` scripts, or a mixed PR) a reviewer Orca worker
-  reads it first, up to 5 rounds (each round is a real GitHub review, request changes or approve; fixes are pushes answered by a `[fix round N]` comment); docs,
-  prompt text, skills and dashboard UI need no reviewer. `bin/jarvis-restart.sh` runs typecheck and tests, rebuilds the
+  (the owner's by-hand steps to finish this are in the README, "Who merges"). The class of the change is read off the
+  diff, not the folder (`bin/risk-class.ts`): `docs` need no reviewer; `prompt` text (steering strings, guides,
+  skills) gets the probe gate and a reviewer Orca worker; `runtime` code and `capability` changes (tools, commands, roles,
+  tickets, permissions, network, credentials, process execution, dependencies, CI; a mixed PR counts as its highest class) get a reviewer and a
+  verifier. The reviewer reads it first, up to 15 rounds (each round is a real GitHub review, request changes or approve; fixes are pushes answered by a `[fix round N]` comment); `bin/reviewer-metrics.ts`
+  measures it afterwards from the merged PRs (rounds, blockers, false positives, defects that got past a clean verdict). `bin/jarvis-restart.sh` runs typecheck and tests, rebuilds the
   dashboard bundle, and only restarts when all three pass. Under the release supervisor
   those checks run on an immutable per-commit export of HEAD (`~/.jarvis/releases/<sha>`,
   `bin/jarvis-release.sh`), not on the live checkout, and a green run only moves the

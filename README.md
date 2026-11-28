@@ -1897,6 +1897,38 @@ Identity and learnings are stored in the DB and applied on the next reply - no r
 
 **Learnings need the owner's approval.** A learning is injected into every future reply, in every channel, so only the owner typing `learn <fact>` saves one active. A `learn` from anyone else, a `learn` the agent runs for itself, and every `POST /api/learnings` (the endpoint the agent curls, and the dashboard's teach box - the loopback API cannot tell the two apart) is stored *pending*: it never reaches a prompt, the API answers `{"status":"pending", "id":N, "message":...}` so the agent does not claim it saved one, and the owner gets a DM with Approve / Reject buttons (or `learn pending`, `learn approve <id>`, `learn reject <id>`). The agent may itself run `learn approve|reject` only inside a turn the owner's own message started (the run ticket says so, never the text); it then DMs the owner what it approved, from which thread, and how to take it back. A watch, worker, `tell` or loop turn, and every non-owner, stays refused. Existing learnings stay active. Up to 20 can wait at once, and `POST /api/learnings/update` (new wording) sends the learning back to pending. With a memory adapter an approved fact lives only in the adapter, so there is no numbered learning left to delete: `adapter forget <fact>` (a typed line, never run by a turn; the text as `learnings` shows it) removes that line from the global notes and from every channel note that holds it, as one new revision. `adapter revert <id>` rolls back TO that revision, so everything after it is undone - it is not a way to drop a single fact. **Scope:** a learning applies in every channel by default, but a lesson about one pod or channel should not load into unrelated threads. `POST /api/learnings` takes an optional `"scope"`: `"channel"` (the channel of the turn that proposes it, found through its run ticket), a list of channel ids, or nothing for global. The owner's notice shows the scope, and `learn approve <id> global` or `learn approve <id> <channel id>` changes it as they approve. Existing learnings stay global; `learnings` and `learn pending` show a scope when there is one. With a memory adapter, a scoped fact is filed into that channel's own note.
 
+## Routing a change by what it can do
+
+A self-fix PR is reviewed by risk, and the risk is read off what the diff can change, not off the folder it sits in. `bin/risk-class.ts` classifies the diff of a worktree (the merge base with `origin/main` to the working tree, plus untracked files) or a unified diff you hand it:
+
+```bash
+bun bin/risk-class.ts                       # text: class, reviewer / verifier / probe gate, one line per file
+bun bin/risk-class.ts --json                # the whole report with the reasons
+bun bin/risk-class.ts --base origin/main    # the default base
+gh pr diff 123 | bun bin/risk-class.ts --diff -
+```
+
+| class | what it is | owes |
+| --- | --- | --- |
+| `docs` | prose in doc files (markdown, rst, images, pdf, LICENSE); never a change to a code file, comments included | nothing: typecheck, tests and CI |
+| `prompt` | steering files an agent loads: `CLAUDE.md`/`AGENTS.md`, skills, prompt guides, probe cases (a prompt string in a code file is `runtime` and still owes the probe gate) | the probe gate and a standalone reviewer |
+| `runtime` | any other code, tests, config, and anything the script does not recognise | a reviewer and a verifier |
+| `capability` | what the bot or its workers may do: tools, commands, roles, tickets, permissions, network, credentials, process execution, dependencies, CI | a reviewer (told the reasons) and a verifier |
+
+A file takes the class of its riskiest changed line, a PR the class of its riskiest file; removed lines count as much as added ones. The exit code is 0 whatever the class (it routes, it does not gate), 2 when it cannot read a diff, which the self-fix guide treats as `runtime`.
+
+### Measuring the reviewer
+
+`bin/reviewer-metrics.ts` walks the newest merged PRs through `gh api` (read-only; `gh` logged in with read access) and reports, per PR and in total, the review rounds, the blockers raised, the false positives (blockers the writer pushed back on and the reviewer then let go) and the defects that got past a `VERDICT: clean` (a later fix or revert PR that cites the PR, and, as a weaker upper bound, one that only rewrites its lines):
+
+```bash
+bun bin/reviewer-metrics.ts                                  # the newest 60 merged PRs of this repo, as text
+bun bin/reviewer-metrics.ts --repo owner/repo --limit 100 --since 2026-11-01 --window-days 14
+bun bin/reviewer-metrics.ts --json --out reviewer-metrics.json
+```
+
+It also breaks the numbers down by risk class and counts the PRs the classifier says needed a reviewer that had none. The rules are heuristics over the review and fix comments (`[review round N]`, `[fix round N]`, `VERDICT:`) and the patches; they undercount rather than invent, and `src/domain/reviewerMetrics.ts` states each one.
+
 ## Probing a prompt or skill change
 
 A change to the system prompt, an adapter skill or a prompt guide changes what the model does, and a reader cannot see that in a diff. `bin/probe-harness.ts` runs the same replay cases on the text before and after the change and has a judge model compare the answers pairwise, after Harness2's Propose-Probe-Compose ([google-research/harness2](https://github.com/google-research/harness2)). It needs no ground truth: it compares behaviour.

@@ -22,7 +22,7 @@
 /** A PR whose every file matches one of these needs no reviewer and no verifier (the self-fix guide's "review by risk"). */
 const NON_RUNTIME: readonly RegExp[] = [
   /\.md$/i,
-  /^docs\//,
+  /^docs\/.*\.(?:md|rst|png|jpe?g|gif|webp|ico|pdf)$/i,
   /^web\//,
   /^\.claude\/skills\//,
   /^data\/prompt-guides\//,

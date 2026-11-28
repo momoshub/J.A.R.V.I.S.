@@ -63,8 +63,8 @@ describe("selfUpdateRules is the whole procedure, from the codebase", () => {
     expect(rules).toContain("the repo is public");
   });
 
-  test("a verifier runs runtime-code PRs and the writer never calls its own PR verified", () => {
-    expect(rules).toContain("verifier (runtime code only");
+  test("a verifier runs runtime and capability PRs and the writer never calls its own PR verified", () => {
+    expect(rules).toContain("verifier (the `runtime` and `capability` classes of `bin/risk-class.ts` only");
     expect(rules).toContain(".claude/skills/verify/SKILL.md");
     expect(rules).toContain("`VERDICT: verified|failed`");
     expect(rules).toContain("You never call your own PR verified");
@@ -108,28 +108,36 @@ describe("selfUpdateRules is the whole procedure, from the codebase", () => {
     expect(STANDALONE_REVIEW_RULE).toContain("--worktree path:$BOT_WORKER_HOME-reviewer --agent claude");
     expect(STANDALONE_REVIEW_RULE).not.toContain("a folder or repo Orca knows");
     expect(STANDALONE_REVIEW_RULE.indexOf("BOT_WORKER_MCP_TRIM")).toBeLessThan(STANDALONE_REVIEW_RULE.indexOf("worker-start --run"));
-    expect(STANDALONE_REVIEW_RULE).toContain("Up to 5 review rounds");
+    expect(STANDALONE_REVIEW_RULE).toContain("Up to 15 review rounds");
     // The merge is the bot's decision, not the script's: no approving as the merging account any more.
     expect(STANDALONE_REVIEW_RULE).toContain("asks the bot to merge");
     expect(STANDALONE_REVIEW_RULE).toContain("ticket names `merge-gate`");
     expect(STANDALONE_REVIEW_RULE).not.toContain("approves the PR as the merging account");
   });
 
-  test("review by risk: docs and prompt text need no reviewer, runtime code does", () => {
+  test("review by behaviour: the risk classifier routes, docs need no reviewer, everything else does", () => {
     for (const text of [rules, STANDALONE_REVIEW_RULE]) {
-      expect(text).toContain("docs, prompt text");
-      expect(text).toContain("dashboard UI");
-      expect(text).toMatch(/need none|gets no reviewer/);
-      expect(text).toContain("runtime code");
+      expect(text).toContain("`bun bin/risk-class.ts --base origin/main`");
+      expect(text).toContain("not the folder");
+      expect(text).toContain("`docs` (doc files only: markdown, rst, images, pdf, LICENSE; any change to a code file, a comment included, is at least `runtime`) gets no reviewer");
+      expect(text).not.toContain("prose and comments only");
     }
-    expect(STANDALONE_REVIEW_RULE).toContain("adapter skills, prompt guides or dashboard UI gets no reviewer");
-    expect(STANDALONE_REVIEW_RULE).toContain("a mixed PR counts as runtime code");
+    // prompt text gets a reviewer and the probe gate but no verifier; runtime and capability get both
+    expect(STANDALONE_REVIEW_RULE).toContain("`prompt` (steering files: instruction files, skills, prompt guides, probe cases) gets the probe gate and a standalone reviewer, no verifier");
+    expect(STANDALONE_REVIEW_RULE).toContain("a prompt string inside a code file is a change to code, so it is `runtime` and also owes the probe gate");
+    expect(STANDALONE_REVIEW_RULE).toContain("get a standalone reviewer agent and a verifier before you merge");
+    for (const kind of ["tools", "commands", "roles", "tickets", "permissions", "network", "credentials", "process execution", "dependencies", "CI"]) expect(STANDALONE_REVIEW_RULE).toContain(kind);
+    expect(STANDALONE_REVIEW_RULE).toContain("the brief quotes the script's reasons");
+    expect(STANDALONE_REVIEW_RULE).toContain("A mixed PR counts as its highest class, a failed script as `runtime`");
+    // the folder rule is gone
+    expect(STANDALONE_REVIEW_RULE).not.toContain("gets no reviewer: `bun run typecheck` and `bun test` green, CI green through `bin/merge-when-green.sh <pr>` (below), merge. A PR that touches");
+    expect(STANDALONE_REVIEW_RULE).not.toContain("adapter skills, prompt guides or dashboard UI gets no reviewer");
     // the old blanket rule is gone, and so is the two-round cap
     expect(STANDALONE_REVIEW_RULE).not.toContain("every fix, no exceptions");
     expect(STANDALONE_REVIEW_RULE).not.toContain("never a round 3");
-    expect(STANDALONE_REVIEW_RULE).toContain("round 2 and later happen only when the previous round is `VERDICT: changes` with a real blocker");
-    expect(STANDALONE_REVIEW_RULE).toContain("there are at most 5 rounds");
-    expect(STANDALONE_REVIEW_RULE).toContain("ask the owner for approval before any further round (an approved extension is the only way past 5)");
+    expect(STANDALONE_REVIEW_RULE).toContain("round 2 and later happen only when the previous round is `VERDICT: changes` with a real blocker or when a push landed after a `VERDICT: clean` (that push voids it)");
+    expect(STANDALONE_REVIEW_RULE).toContain("there are at most 15 rounds");
+    expect(STANDALONE_REVIEW_RULE).toContain("round 15 is the hard cap, there is no extension past it");
     // CI is the gate either way
     expect(STANDALONE_REVIEW_RULE).toContain("never merge anything before green CI");
   });
@@ -226,7 +234,7 @@ describe("selfUpdateRules, the restart and the checks", () => {
     expect(STANDALONE_REVIEW_RULE).toContain("`ORCA_TERMINAL_HANDLE` is unset, `run-create` refuses it as `terminal_handle_stale`");
     // CI is part of the gate, through the helper that refuses on red
     expect(STANDALONE_REVIEW_RULE).toContain("Merge only with `bin/merge-when-green.sh <pr>`");
-    expect(STANDALONE_REVIEW_RULE).toContain("Never merge runtime code before a clean review, and never merge anything before green CI");
+    expect(STANDALONE_REVIEW_RULE).toContain("Never merge a `prompt`, `runtime` or `capability` change before a clean review, and never merge anything before green CI");
     // the helper outlives the default tool timeout, and a slow CI is a retry, not a bypass
     expect(STANDALONE_REVIEW_RULE).toContain("Bash timeout of 600000");
     expect(STANDALONE_REVIEW_RULE).toContain("exit 3 means CI has not finished so run it again");
@@ -239,8 +247,19 @@ describe("selfUpdateRules, the restart and the checks", () => {
       STANDALONE_REVIEW_RULE.indexOf("Fix every real finding"),
     );
     // and the loop is bounded, with a way out that is not a merge
-    expect(STANDALONE_REVIEW_RULE).toContain("Up to 5 review rounds");
-    expect(STANDALONE_REVIEW_RULE).toContain("after round 5,");
+    expect(STANDALONE_REVIEW_RULE).toContain("Up to 15 review rounds");
+    expect(STANDALONE_REVIEW_RULE).toContain("after round 15,");
+    // 15 is the hard cap: no extension past it, and the old cap of 5 is gone
+    expect(STANDALONE_REVIEW_RULE).not.toContain("Up to 5 ");
+    expect(STANDALONE_REVIEW_RULE).not.toContain("[review round 5]");
+    expect(STANDALONE_REVIEW_RULE).toContain("hard cap");
+    // a clean verdict names a head and dies with a push: re-review (and re-verify) the new head before any merge
+    expect(STANDALONE_REVIEW_RULE).toContain("any push after a clean review, a clean audit or a `verified` comment voids that verdict");
+    expect(STANDALONE_REVIEW_RULE).toContain("re-review on the new head");
+    // the gate is not claimed to cover what it does not: skills, guides and web/ are outside `touchesRuntime`
+    expect(STANDALONE_REVIEW_RULE).toContain("only for a PR whose paths it counts as runtime");
+    expect(STANDALONE_REVIEW_RULE).not.toContain("the merge gate refuses a review or verify that names another commit");
+    expect(STANDALONE_REVIEW_RULE.indexOf("voids that verdict")).toBeLessThan(STANDALONE_REVIEW_RULE.indexOf("Merge only with"));
     expect(STANDALONE_REVIEW_RULE).toContain("do not merge - leave the PR open");
     // the step sits in the flow before the merge, and the rule before the restart
     expect(rules.indexOf(STANDALONE_REVIEW_RULE)).toBeLessThan(rules.indexOf("after the merge, watch the e2e"));
