@@ -17,10 +17,11 @@
  *                 credentials, process execution, dependencies, CI
  *
  * The path picks the comment syntax and whether a
- * markdown file is loaded by an agent, and a path can lower a class in exactly
- * one way: a file whose every path (old and new) is a doc path that cannot run
- * (`.md`, `.rst`, images, pdf, LICENSE/NOTICE, outside the steering paths) is
- * `docs`; any other path is at least `runtime`. The class of a
+ * markdown file is loaded by an agent. A file reaches `docs` in two ways: every
+ * path it has (old and new) is a doc path that cannot run (`.md`, `.rst`,
+ * images, pdf, LICENSE/NOTICE, outside the steering paths), or its changed
+ * lines are comments the hunk itself proves to be comments (a code file with a
+ * comment-only change is `docs`). Nothing else lowers a class. The class of a
  * file is the highest class of any changed line, the class of a PR the highest
  * class of its files, and routing follows the class: docs none, prompt a
  * reviewer plus the probe gate, runtime and capability a reviewer plus a
@@ -145,7 +146,8 @@ function isComment(path: string, line: string, inBlock: boolean): boolean {
     return false;
   }
   // `# coding: utf_7` is a comment Python obeys: it can turn a later "comment" into code
-  if (HASH_COMMENT_EXT_RE.test(path)) return t.startsWith("#") && !t.startsWith("#!") && !/coding[:=]/i.test(t) && !DIRECTIVE_RE.test(t);
+  // a UTF-7 shift sequence (`+AAo-` is a newline) in a python comment can end it: a payload under a cookie that is not in the diff is code
+  if (HASH_COMMENT_EXT_RE.test(path)) return t.startsWith("#") && !t.startsWith("#!") && !/coding[:=]/i.test(t) && !DIRECTIVE_RE.test(t) && !(/\.py$/.test(path) && /\+[A-Za-z0-9+/]{2,}-/.test(t));
   return false;
 }
 
