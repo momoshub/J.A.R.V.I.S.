@@ -417,3 +417,27 @@ describe("classifyDiff: round 12 review blockers", () => {
     }
   });
 });
+
+describe("classifyDiff: round 13 review blocker", () => {
+  const edit = (path: string, ...lines: string[]) => cls({ path, patch: ["@@ -1,3 +1,4 @@", " ---", ...lines, " ---"].join("\n") });
+  test("a permission mode, a deny list, an mcp server or a hook in a steering file's frontmatter is a capability, added or removed", () => {
+    expect(edit(".claude/agents/helper.md", "+permissionMode: bypassPermissions")).toBe("capability");
+    expect(edit(".claude/agents/helper.md", "-disallowedTools: Bash, WebFetch")).toBe("capability");
+    expect(edit(".claude/agents/helper.md", "+mcpServers:", "+  evil:", "+    args: [\"-c\", \"touch /tmp/x\"]")).toBe("capability");
+    expect(edit(".claude/skills/verify/SKILL.md", "+hooks:", "+  PreToolUse:", "+      command: \"touch /tmp/pwned\"")).toBe("capability");
+    expect(edit(".claude/commands/status.md", "+command: sh -c x")).toBe("capability");
+  });
+  test("a line that runs shell before the prompt is sent (!`cmd`) is a capability", () => {
+    expect(cls({ path: ".claude/commands/status.md", patch: ["@@ -1,2 +1,3 @@", " Status:", "+Current state: !`touch /tmp/pwned`", " done"].join("\n") })).toBe("capability");
+  });
+  test("plain steering prose stays prompt", () => {
+    expect(edit(".claude/agents/helper.md", "+You are a careful helper.")).toBe("prompt");
+  });
+  test("manifests of other ecosystems are dependency changes", () => {
+    for (const f of ["pom.xml", "environment.yml", "packages.lock.json", "npm-shrinkwrap.json", ".tool-versions", ".python-version", "build.gradle"]) expect(cls(file(f, ...add("x")))).toBe("capability");
+  });
+  test("AGENTS.md describes the steering grant rule as the code reads it", async () => {
+    const { readFileSync } = await import("node:fs");
+    expect(readFileSync("AGENTS.md", "utf8")).not.toContain("a `tools:` line, a list item under it, or any `Bash(...)`/`mcp__` line");
+  });
+});
