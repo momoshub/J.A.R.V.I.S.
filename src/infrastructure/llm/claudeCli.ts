@@ -41,6 +41,12 @@ import { DEFAULT_MCP_SCHEMA_CACHE_DIR, NO_CLAUDEAI_CONNECTORS_ENV, SLACK_CONNECT
 export type ClaudeCliConfig = {
   /** Path or name of the claude binary. Default "claude". */
   binPath?: string;
+  /**
+   * Start every turn through the seatbelt wrapper (`bin/sandboxed-claude.sh`, the `SEATBELT=on` switch): the turn's
+   * shell then holds no keychain, no `gh` login, no App key and no way out of the sandbox, and reaches GitHub and
+   * Orca through the bot's proxy with its ticket. Absent: the turn runs as before.
+   */
+  seatbelt?: { wrapper: string };
   /** Model alias or id passed as --model (e.g. "opus"). Omitted when undefined. */
   model?: string;
   /** Pass --dangerously-skip-permissions for full tool access. Default true. */
@@ -551,13 +557,15 @@ const spawnClaude = (
   const slackTicket = config.slackTicket?.(bill, runTicket);
   // The claude.ai Slack connector acts as the human who authorised it: never in an owner turn, whatever else the connectors hold.
   const turnPolicy = ownerTicket ? withOwnerDenials(policy) : policy;
+  const claudeCmd = [
+    config.binPath ?? "claude",
+    ...args,
+    ...(ownerTicket ? ["--disallowedTools", SLACK_CONNECTOR_SERVER] : []),
+    ...connectorArgs(config, turnPolicy, useHostLogin, !!ownerTicket),
+  ];
   const proc = Bun.spawn({
-    cmd: [
-      config.binPath ?? "claude",
-      ...args,
-      ...(ownerTicket ? ["--disallowedTools", SLACK_CONNECTOR_SERVER] : []),
-      ...connectorArgs(config, turnPolicy, useHostLogin, !!ownerTicket),
-    ],
+    // Sandboxed: the wrapper takes the real claude from JARVIS_CLAUDE_BIN and the login from the env or its token file.
+    cmd: config.seatbelt ? [config.seatbelt.wrapper, ...claudeCmd.slice(1)] : claudeCmd,
     stdin: Buffer.from(prompt),
     stdout: "pipe",
     stderr: "pipe",
@@ -575,6 +583,8 @@ const spawnClaude = (
     env: {
       ...hostLoginEnv(oauthToken, useHostLogin, config.envPassthrough, !!ownerTicket),
       ...extraEnv,
+      // A turn's proxy standing is its ticket (and its role), never a bare session: the wrapper must not mint one.
+      ...(config.seatbelt ? { JARVIS_CLAUDE_BIN: config.binPath ?? "claude", SEATBELT_NO_SESSION: "1" } : {}),
       // What the `mcp` code-mode CLI needs to hold a call to the turn's role (full access, disallowed servers).
       ...turnMcpEnv({ skipPermissions: skipsPermissions(config, policy), disallowedTools: turnPolicy?.disallowedTools }),
       // undefined removes one inherited from a parent turn: an owner ticket is never borrowed

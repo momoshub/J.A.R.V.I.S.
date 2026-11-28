@@ -31,8 +31,10 @@ describe("workerMcpEnv", () => {
       [WORKER_MCP_DENY_ENV]: "a,b",
       [WORKER_MCP_TRIM_ENV]: "/x/trim.ts",
       [WORKER_HOME_ENV]: "/w/home",
+      BOT_WORKER_ROLE_MCP_DENY: "",
     });
     expect(workerMcpEnv([], "/x/trim.ts", "/w/home")[WORKER_MCP_DENY_ENV]).toBe("");
+    expect(workerMcpEnv([], "/x/trim.ts", "/w/home", "reviewer=pg").BOT_WORKER_ROLE_MCP_DENY).toBe("reviewer=pg");
   });
 });
 
@@ -91,8 +93,11 @@ describe("mergeDeniedServers", () => {
 
 describe("WORKER_MCP_TRIM_RULE", () => {
   test("starts workers in the worker home, trimmed before the launch, never in a folder a person works in", () => {
-    expect(WORKER_MCP_TRIM_RULE).toContain(`"$${WORKER_MCP_TRIM_ENV}"\` with no argument`);
-    expect(WORKER_MCP_TRIM_RULE).toContain(`--worktree path:$${WORKER_HOME_ENV}`);
+    expect(WORKER_MCP_TRIM_RULE).toContain(`"$${WORKER_MCP_TRIM_ENV}" --role <role>\``);
+    expect(WORKER_MCP_TRIM_RULE).toContain(`--worktree path:$${WORKER_HOME_ENV}-<role>`);
+    expect(WORKER_MCP_TRIM_RULE).toContain("`writer`, `reviewer`, `verifier` or `investigator`");
+    expect(WORKER_MCP_TRIM_RULE).toContain("`worker-report` block");
+    expect(WORKER_MCP_TRIM_RULE).toContain("`VERDICT:` line");
     expect(WORKER_MCP_TRIM_RULE).toContain("never in `~/Workspaces`");
     expect(WORKER_MCP_TRIM_RULE).toContain(WORKER_SETTINGS_PATH);
     expect(WORKER_MCP_TRIM_RULE).toContain("before the launch, never after");

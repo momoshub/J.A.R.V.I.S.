@@ -3,6 +3,7 @@ import {
   FOOTER_BLOCK_ID,
   footerBlock,
   footerLine,
+  footerUpdate,
   triggerLabel,
   MARKDOWN_LIMIT,
   sectionChunks,
@@ -181,5 +182,27 @@ describe("triggered by", () => {
     expect(triggerLabel(undefined)).toBeUndefined();
     expect(triggerLabel("brief")).toBeUndefined();
     expect(footerLine("Jarvis", undefined, "brief")).toBe("Jarvis");
+  });
+});
+
+describe("footerUpdate", () => {
+  const blocks = [{ type: "section", text: { type: "mrkdwn", text: "a" } }];
+  test("keeps the blocks and adds the footer last", () => {
+    const u = footerUpdate({ text: "a", blocks }, "Jarvis");
+    expect(u?.text).toBe("a");
+    expect(u?.blocks).toEqual([...blocks, footerBlock("Jarvis")]);
+  });
+  test("a post that already has the footer is left as it is", () => {
+    expect(footerUpdate({ text: "a", blocks: [...blocks, footerBlock("old")] }, "Jarvis")).toBeUndefined();
+  });
+  test("a plain text post becomes blocks, a post with nothing in it gets nothing", () => {
+    expect(footerUpdate({ text: "hello" }, "Jarvis")?.blocks.at(-1)).toEqual(footerBlock("Jarvis"));
+    expect(footerUpdate({ text: " " }, "Jarvis")).toBeUndefined();
+  });
+  test("at 50 blocks the content is clipped, the footer stays", () => {
+    const full = Array.from({ length: MAX_BLOCKS }, () => blocks[0] as (typeof blocks)[number]);
+    const u = footerUpdate({ text: "a", blocks: full }, "Jarvis");
+    expect(u?.blocks).toHaveLength(MAX_BLOCKS);
+    expect(u?.blocks.at(-1)).toEqual(footerBlock("Jarvis"));
   });
 });

@@ -26,6 +26,7 @@ import type { AllowedUser } from "../domain/types.ts";
 import type { CommandLogRepo } from "../infrastructure/db/commandLogRepo.ts";
 import { isWorkerToken, parseTtl, RENEW_ACTION, WORKER_TTL_DEFAULT_MS } from "../domain/workerTicket.ts";
 import { logAndIgnore } from "./ignoredError.ts";
+import { type MergeGateConfig, runMergeGate } from "./mergeGate.ts";
 import type { Clock } from "./ports.ts";
 import { type WorkerRedeem, type WorkerRenewal, renewalSummary } from "./workerTickets.ts";
 
@@ -70,6 +71,8 @@ export type GithubActionDeps = {
   allowedOwners: readonly string[];
   /** The app's slug (`GITHUB_APP_SLUG`); its commit identity is `<slug>[bot]`. */
   slug: string;
+  /** The `merge-gate` action's rules (`MERGE_GATE*`). Absent = off: the action answers `disabled` and the script keeps its old path. */
+  mergeGate?: Omit<MergeGateConfig, "botLogin">;
 };
 
 export type GithubActionResult = { url?: string; number?: number; github: unknown };
@@ -102,6 +105,7 @@ const describe = (req: ActionRequest): string =>
     req.base && `base=${String(req.base)}`,
     req.event,
     req.method,
+    req.action === "merge-gate" && typeof req.sha === "string" && `sha=${req.sha.slice(0, 7)}`,
     typeof req.ttl === "string" && req.ttl && `ttl=${req.ttl.slice(0, 12)}`,
     req.action === "pr-create" && `draft=${req.draft === true}`,
     typeof req.title === "string" && req.title && `title=${req.title.length}ch`,
@@ -170,7 +174,11 @@ export const createGithubActions = (deps: GithubActionDeps): GithubActions => {
       // dispatch and a short id, never the token.
       const plan = planAction(req);
       const asWorker = isWorkerToken(ticket);
-      const call = plan.ok ? { action: plan.action, repo: plan.repo } : { action: String(req.action), repo: String(req.repo) };
+      // With the gate off the answer is `disabled` for any live ticket of the repo, whatever it grants: a writer minted
+      // before the gate existed (or an executer turn) must fall back to the old path, not be locked out. The ticket is
+      // still checked (live, bound, this repo) by asking for the grant every live ticket has, a renewal.
+      const gateOff = plan.ok && plan.action === "merge-gate" && deps.mergeGate?.enabled !== true;
+      const call = gateOff && plan.ok ? { action: RENEW_ACTION, repo: plan.repo } : plan.ok ? { action: plan.action, repo: plan.repo } : { action: String(req.action), repo: String(req.repo) };
       const worker = asWorker
         ? (deps.resolveWorker?.(ticket, call) ?? {
             ok: false as const,
@@ -201,6 +209,8 @@ export const createGithubActions = (deps: GithubActionDeps): GithubActions => {
       if (worker && !worker.ok) refuse(worker.message);
       if (!user) refuse("whoever asked is not on the access list");
       if (!plan.ok) return refuse(plan.error);
+      // With the gate on the bot merges only through it: a raw `pr-merge` would skip every rule (checks, review, verify).
+      if (plan.action === "pr-merge" && deps.mergeGate?.enabled) return refuse("with MERGE_GATE on the bot merges only through merge-gate (bin/merge-when-green.sh): a raw pr-merge is refused");
       // Each action is its own grant, read from the stored role of whoever the ticket runs as. A worker ticket
       // is checked against its minter's role on every redeem, so demoting the minter stops the worker at once.
       const book = deps.roles ?? DEFAULT_BOOK;
@@ -208,7 +218,7 @@ export const createGithubActions = (deps: GithubActionDeps): GithubActions => {
       if (worker?.ok && user && !can(book, user.role, commandPerm("worker-ticket"))) refuse("a worker ticket only works while whoever minted it still holds the worker-ticket grant");
       if (user) {
         const perm = permissionFor(plan.action, purposeOf(req));
-        const allowed = perm ? can(book, user.role, perm) : mayActAsApp(book, user.role);
+        const allowed = perm && !gateOff ? can(book, user.role, perm) : mayActAsApp(book, user.role);
         if (!allowed) refuse(deniedMessage(book, user.role, plan.action, purposeOf(req)));
       }
       const owner = plan.repo.split("/")[0] ?? "";
@@ -229,6 +239,10 @@ export const createGithubActions = (deps: GithubActionDeps): GithubActions => {
         return { github: { renewed: { id: renewed.id, expiresAt: renewed.expiresAt, ttlMs: renewed.ttlMs, clamped: renewed.clamped, capped: renewed.capped, message: summary } } };
       }
 
+      if (gateOff) {
+        log(true, "merge-gate disabled");
+        return { number: Number(req.number), github: { decision: "disabled", reasons: ["the bot's merge gate is off (MERGE_GATE)"], sha: String(req.sha).trim() } };
+      }
       try {
         const installation = await deps.github.installationOfRepo(plan.repo);
         if (plan.action === "git-auth") {
@@ -246,6 +260,18 @@ export const createGithubActions = (deps: GithubActionDeps): GithubActions => {
               : await gitAuth(installation);
           log(true, `git-auth ${plan.repo}`);
           return { github: auth };
+        }
+        if (plan.action === "merge-gate") {
+          // The decision is the bot's, made here with the app's token; the caller gets the verdict, never the token.
+          const outcome = await runMergeGate(
+            { enabled: false, requiredChecks: [], attesters: [], ...deps.mergeGate, botLogin: botName },
+            (method, path, body) => deps.github.request(installation, method, path, body),
+            plan.repo,
+            Number(req.number),
+            String(req.sha).trim(),
+          );
+          log(outcome.decision === "merged", `merge-gate ${outcome.decision}${"reasons" in outcome ? `: ${outcome.reasons.join("; ")}` : ""}`);
+          return { number: Number(req.number), github: outcome };
         }
         const outs: unknown[] = [];
         for (const c of plan.calls) outs.push(await deps.github.request(installation, c.method, c.path, c.body));

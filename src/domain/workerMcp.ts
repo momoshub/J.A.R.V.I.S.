@@ -24,8 +24,12 @@
  * Orca knows) and trims. A worker that changes code cuts its own
  * `git worktree add` from the real repository, by absolute path.
  *
- * The names come from `WORKER_MCP_DENY`; empty keeps every server, as before.
+ * The names come from `WORKER_MCP_DENY`; empty keeps every server, as before. A role's own
+ * home (`workerRoles.ts`) gets the same exclusions plus the tool rules of its role.
  */
+
+import { WORKER_REPORT_BRIEF_LINE, WORKER_REPORT_FENCE } from "./workerReport.ts";
+import { WORKER_ROLE_MCP_DENY_ENV } from "./workerRoles.ts";
 
 /** Env var a turn carries with the excluded server names, comma separated. */
 export const WORKER_MCP_DENY_ENV = "BOT_WORKER_MCP_DENY";
@@ -42,7 +46,7 @@ export const WORKER_SETTINGS_PATH = ".claude/settings.local.json";
  * trimmed after keeps every server. The folder is the worker home, never a folder
  * the owner works in, because the trim leaves its file there.
  */
-export const WORKER_MCP_TRIM_RULE = `Workers run in their own folder, never in \`~/Workspaces\` or any folder a person works in (the MCP exclusion below is written into the folder and would strip those servers from the person's own sessions there). Before the worker starts, run \`"$${WORKER_MCP_TRIM_ENV}"\` with no argument: it creates the worker home (\`$${WORKER_HOME_ENV}\`), registers it with Orca if missing and writes the host's MCP exclusions into its \`${WORKER_SETTINGS_PATH}\`, which a session reads only when it starts, so it must come before the launch, never after. Then start the worker with \`--worktree path:$${WORKER_HOME_ENV}\`, and put absolute paths in its brief: it is not inside the repository, so a worker that changes code cuts its own \`git worktree add <abs path> -b <branch> origin/<base>\` from the real repository`;
+export const WORKER_MCP_TRIM_RULE = `Workers run in their own folder, never in \`~/Workspaces\` or any folder a person works in (the MCP exclusion below is written into the folder and would strip those servers from the person's own sessions there). Each worker has a role (\`writer\`, \`reviewer\`, \`verifier\` or \`investigator\`) and each role its own folder, because the tools a role may use are written into the folder too and workers of different roles run at the same time. Before the worker starts, run \`"$${WORKER_MCP_TRIM_ENV}" --role <role>\`: it creates the role's worker home (\`$${WORKER_HOME_ENV}-<role>\`), registers it with Orca if missing and writes the role's tool rules (a reviewer or investigator cannot edit, push or merge, a writer cannot merge by hand) and the host's MCP exclusions into its \`${WORKER_SETTINGS_PATH}\`, which a session reads only when it starts, so it must come before the launch, never after. Then start the worker with \`--worktree path:$${WORKER_HOME_ENV}-<role>\`, and put absolute paths in its brief: it is not inside the repository, so a worker that changes code cuts its own \`git worktree add <abs path> -b <branch> origin/<base>\` from the real repository. Its brief ends by telling it to finish its report with the fenced \`${WORKER_REPORT_FENCE}\` block (${WORKER_REPORT_BRIEF_LINE}), keeping the \`VERDICT:\` line a reviewer or verifier posts`;
 
 /**
  * Fanout gives each worker its own checkout of the repository instead, so the exclusion goes
@@ -61,10 +65,16 @@ export const parseDenyList = (raw: string | undefined): string[] => [
 ];
 
 /** The environment a turn gets: the names to exclude, the helper that applies them and the worker home. */
-export const workerMcpEnv = (deny: readonly string[], trimScript: string, workerHome: string): Record<string, string> => ({
+export const workerMcpEnv = (
+  deny: readonly string[],
+  trimScript: string,
+  workerHome: string,
+  roleDeny = "",
+): Record<string, string> => ({
   [WORKER_MCP_DENY_ENV]: deny.join(","),
   [WORKER_MCP_TRIM_ENV]: trimScript,
   [WORKER_HOME_ENV]: workerHome,
+  [WORKER_ROLE_MCP_DENY_ENV]: roleDeny,
 });
 
 /** The paths `orca repo list --json` reports, or none when the output is not that shape. */

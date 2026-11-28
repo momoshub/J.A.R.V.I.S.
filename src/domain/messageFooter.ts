@@ -91,6 +91,18 @@ export const withFooter = <T extends AnyBlock>(blocks: readonly T[], line?: stri
     ? blocks.filter((b) => !isFooter(b)).slice(0, MAX_BLOCKS)
     : [...blocks.filter((b) => !isFooter(b)).slice(0, MAX_BLOCKS - 1), footerBlock(line)];
 
+/**
+ * What `chat.update` must send to put the footer under a message that is already posted (a turn's own post, whose
+ * closing reply was dropped): its own blocks kept and the footer last, or - for a plain text post - the text as
+ * blocks (`signedText`). `undefined` when it already carries a footer, or has nothing to build one on.
+ */
+export const footerUpdate = (message: { text?: string; blocks?: readonly AnyBlock[] }, line: string): { text: string; blocks: (AnyBlock | Block)[] } | undefined => {
+  const blocks = message.blocks ?? [];
+  if (blocks.some(isFooter)) return undefined;
+  if (blocks.length > 0) return { text: message.text?.trim() ? message.text : " ", blocks: withFooter(blocks, line) };
+  return message.text?.trim() ? signedText(message.text, line) : undefined;
+};
+
 const FENCE = /^\s*```/;
 const FENCE_ROOM = 8; // "```\n" reopened at the top of a chunk + "\n```" closing it
 

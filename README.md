@@ -25,7 +25,7 @@ The codebase is generic - the bot's identity (name, persona, labels) lives in th
 - **macOS first.** It is developed and run on a Mac. These parts are Mac-only:
   - **desktop control** (`bin/desktop.ts`, `bin/mac-ui.js`: `osascript` and the Accessibility permission, see [Desktop access](#desktop-access));
   - **Keychain token key mode** (`TOKEN_KEY_SOURCE=keychain`; the default `file` mode works anywhere);
-  - **restart via launchd**: `bin/jarvis-restart.sh` asks the running bot to exit once idle and relies on a supervisor to start it again. The repo ships no launchd plist; on a Mac write a LaunchAgent with `KeepAlive`, elsewhere use anything that restarts the process on exit (systemd `Restart=always`, a container restart policy, ...).
+  - **restart via launchd**: `bin/jarvis-restart.sh` asks the running bot to exit once idle and relies on a supervisor to start it again. On a Mac the repo ships a LaunchAgent template (`launchd/com.example.jarvis.plist`) that runs the release supervisor `bin/jarvis-release.sh` instead of `bun` directly: each restart is built and checked in its own per-commit folder, health-checked after the start and rolled back by itself, with `jarvis-release.sh rollback` as the way back that needs neither the bot nor CI (see `docs/releases.md`, including the one-time manual install). Elsewhere use anything that restarts the process on exit (systemd `Restart=always`, a container restart policy, ...); `jarvis-restart.sh` then checks the checkout in place, as before.
 - **On Linux** everything else runs (Slack, memory, dashboard, commands, GitHub App, reviews). Desktop control is unavailable, keychain mode is unavailable (stay on `file`), and restarts need your own supervisor.
 - **Orca is optional.** It is the multi-agent IDE the owner's turns use for background workers; with it missing or stopped, turns get no `ORCA_TERMINAL_HANDLE` and fall back to the Agent tool. Turn it off with `ORCA_TERMINAL_WORKTREE=off`.
 
@@ -105,6 +105,9 @@ Required / notable env (see `.env.example`):
 | `GITHUB_APP_SLUG` | app slug, `@<slug>` calls it (default `jarvis`) |
 | `GITHUB_APP_ALLOWED_OWNERS` | repo owners the app acts for, comma list (default empty: the app acts for no owner until set) |
 | `GITHUB_APP_LABEL` | label that calls it on an issue/PR (default `jarvis`) |
+| `MERGE_GATE` | `on`: the bot merges the PR itself, with the app's credential, once the gate holds (see [Who merges](#who-merges-one-principal-per-job)); `off` (default) keeps `bin/merge-when-green.sh` on the human token |
+| `MERGE_GATE_REQUIRED_CHECKS` | checks that must be green on the head sha, comma list (default `checks,gitleaks`) |
+| `MERGE_GATE_ATTESTERS` | accounts whose `[review round N]` / `[verify]` words count, comma list; required for runtime code (default empty: nobody's count, so no runtime PR merges; the repo is public and "anyone but the author" would let any GitHub user vouch) |
 | `SELF_PR_AUTHOR` / `SELF_PR_REVIEWER` | gh logins for the bot's own PRs: the author opens the PR and answers reviews, the reviewer posts its reviews (request changes or approve) and merges. Both or neither, and not the same login (otherwise: one account) |
 | `ACCEPTED_BOT_IDS` | Slack bot ids, comma list, whose messages are answered as the person they post for. A bot that posts with a person's user token carries both a `bot_id` and that person's `user`; with its id listed the message is handled as that user speaking, authorized through the normal access check (exactly that person's role, never more). A bot message without a `user` is still ignored, and after 3 accepted-bot turns in a row in one thread with no person writing, the bot stops answering bots there until a person does. The turn's context marks such a message `via bot` next to the person. Default empty: every bot message is ignored |
 | `REVIEW_ROUNDS_MAX` | review rounds a PR is followed for, the review that was asked for included (default `5`; `0` turns following off). See [Review rounds](#review-rounds) |
@@ -114,7 +117,8 @@ Required / notable env (see `.env.example`):
 | `EXECUTER_DB_MCP_SERVERS` | the subset of `DB_MCP_SERVERS` the executer role may query; list only servers whose credential is read-only on the server side. Default empty: executers get none |
 | `WORKER_MCP_DENY` | user-scope MCP servers (names as `claude mcp list` shows them) kept out of the Orca workers the bot starts, comma list. Default empty: every worker loads every server, as before. See "Keeping MCP servers out of workers" |
 | `WHISPER_BIN`, `WHISPER_MODEL_PATH`, `FFMPEG_BIN`, `WHISPER_TIMEOUT_MS` | voice messages are transcribed locally (ffmpeg, then whisper.cpp's `whisper-cli`, language auto-detected). Defaults: `/opt/homebrew/bin/whisper-cli`, `~/.local/share/whisper-models/ggml-large-v3-turbo-q5_0.bin`, `/opt/homebrew/bin/ffmpeg`, 120000 ms per step. A missing binary or model never drops the clip: the turn starts with a note that it could not be transcribed |
-| `WORKER_HOME_DIR` | the one folder every Orca worker starts in (`--worktree path:<it>`); the MCP exclusion is written there and never into a folder you work in. Default `~/.jarvis/worker-home`, created at boot and registered with Orca (as a plain folder) the first time a worker is about to start. See "Keeping MCP servers out of workers" |
+| `WORKER_ROLE_MCP_DENY` | servers kept out of one role's Orca workers on top of `WORKER_MCP_DENY`, `role=names` pairs split by `;` (`reviewer=pg-prod,ch-ro;investigator=pg-prod`; roles `writer`, `reviewer`, `verifier`, `investigator`). Default empty. See "Tools by worker role" |
+| `WORKER_HOME_DIR` | the shared worker home; each role's workers start in `<it>-<role>` (`--worktree path:<it>-<role>`), made next to it; the MCP exclusion and the role's tool rules are written there and never into a folder you work in. Default `~/.jarvis/worker-home`, created at boot and registered with Orca (as a plain folder) the first time a worker is about to start. See "Keeping MCP servers out of workers" |
 | `DASHBOARD_PORT` | dashboard port (local, loopback-only, no auth) |
 | `DASHBOARD_ALLOWED_ORIGINS` | extra browser origins allowed to POST (proxy/tunnel access) |
 | `DATABASE_PATH` | the live sqlite file (default `data/bot.db`). Put it **outside the git checkout**, `~/` works, e.g. `~/.jarvis/data/bot.db` - see [Where the database lives](#where-the-database-lives) |
@@ -162,7 +166,7 @@ Every command has two interfaces - use whichever you like. Both triggers are con
 - **slash**: `<SLASH_COMMAND> <command> <args>` (register that single slash command in the Slack app config; it sub-routes to all commands. Socket Mode needs no request URL)
 - **message**: `<COMMAND_PREFIX> <command> <args>` (or the legacy `!<command>`), in a DM or by @-mentioning the bot
 
-A few commands are **internal**: the bot's own tools (today `journey`, its work log, `bug-report`, which tells the owner about a bug it found in itself - the coordinator approves the small ones in code, the rest wait for the owner's Approve / Reject - and `claim`, which keeps one writer per job), run only by the brain in its own turn through the run helper. A typed line, the slash command, the menu, a schedule or the dashboard gets a short refusal whatever the caller's role (the owner included); they are not in `help`, the command menu, the dashboard command list or the role grants, because no role holds them - the brain runs them as whoever its turn serves.
+A few commands are **internal**: the bot's own tools (today `journey`, its work log, `bug-report`, which tells the owner about a bug it found in itself - the coordinator approves the small ones in code, the rest wait for the owner's Approve / Reject, or for the agent's own `bug-report approve <id>` inside a turn the owner's message started, which DMs the owner an audit line with a Reject button - and `claim`, which keeps one writer per job), run only by the brain in its own turn through the run helper. A typed line, the slash command, the menu, a schedule or the dashboard gets a short refusal whatever the caller's role (the owner included); they are not in `help`, the command menu, the dashboard command list or the role grants, because no role holds them - the brain runs them as whoever its turn serves.
 
 Every command is gated by its own `command:<name>` grant, and its sub-actions by the permission named in the cell (see [Roles & tool access](#roles--tool-access)). **Only `owner` is hard-coded.** `pal`, `executer` and `admin` are custom roles like any other: the *seeded to* column only says which of them a fresh install starts with the grant, and the owner moves it with `role grant` / `role revoke` or the Roles page. A role you create holds exactly what you grant it. Rows marked *owner* are hard-coded and never grantable.
 
@@ -185,7 +189,7 @@ Every command is gated by its own `command:<name>` grant, and its sub-actions by
 | `add @user [role]` | admin; only roles ranking below your own | grant access under any role, custom ones included; no role given means the default one (`pal`); an unknown role name is refused |
 | `remove @user` | admin (only someone ranking below your own role) | revoke access |
 | `learn <fact>` | executer, admin | teach a durable fact: the owner's own typing is saved at once, anyone else's (and any `learn` the agent runs for itself) waits as *pending* for the owner's approval and is not part of any reply until then |
-| `learn pending` / `learn approve <id> [global\|<channel ids>]` / `learn reject <id>` | *owner* | list what waits (with its scope), approve it (it is carried into every reply from then on, or only in the channels you name) or reject it (never). Typed by the owner only: the agent cannot run these for itself. The owner also gets each pending learning as a DM with Approve / Reject buttons |
+| `learn pending` / `learn approve <id> [global\|<channel ids>]` / `learn reject <id>` | *owner* | list what waits (with its scope), approve it (it is carried into every reply from then on, or only in the channels you name) or reject it (never). Typed by the owner, or run by the agent inside a turn the owner's own message started (never in a watch, worker, `tell` or loop turn): then the owner is DMed an audit line with the thread and how to take it back. The owner also gets each pending learning as a DM with Approve / Reject buttons |
 | `learnings` / `relearn <id> <text>` / `unlearn <id>` | executer, admin | list, reword or delete learnings. Rewording by anyone but the owner sends the learning back to pending |
 | `review-policy [owner/repo] [first\|after\|default]` (alias `rvpolicy`) | pal, executer, admin (setting: `settings:manage`) | how a repo gets approved - see [Review policy per repo](#review-policy-per-repo) |
 | `review-agents [n\|default]` (alias `rvagents`) | pal, executer, admin (setting: `settings:manage`) | how many child agents one review may fan out to - see [How wide a review fans out](#how-wide-a-review-fans-out) |
@@ -436,10 +440,67 @@ Claude sessions there. They start in a dedicated worker home instead,
 `WORKER_HOME_DIR` (default `~/.jarvis/worker-home`). Boot creates it; the helper,
 run with no argument, registers it with Orca as a plain folder when `orca repo
 list` does not know it (`--worktree path:` only takes folders Orca knows), trims
-it, and the prompts then start the worker with `--worktree path:$BOT_WORKER_HOME`.
+it, and the prompts then start the worker with `--worktree path:$BOT_WORKER_HOME-<role>` (see the next section; `worker-mcp-trim.ts` with no `--role` still makes and trims the shared home itself).
 The bot never writes `.claude/settings.local.json` anywhere you work. A worker
 that has to change code cuts its own `git worktree add <absolute path>` from the
 real repository, so its brief uses absolute paths.
+
+### Tools by worker role
+
+Every worker used to start with the same tools. Now a worker has a role, and the
+role decides what its session may run. The mechanism is the one above: a session
+reads `.claude/settings.local.json` of its working directory once, when it starts,
+and a single shared folder cannot hold different settings for workers that run at
+the same time, so each role has a folder of its own, `$BOT_WORKER_HOME-<role>`
+(next to `WORKER_HOME_DIR`). `bin/worker-mcp-trim.ts --role <role>` creates it,
+registers it with Orca and writes into it the host's MCP exclusions
+(`WORKER_MCP_DENY`, plus `WORKER_ROLE_MCP_DENY` for that role) and the role's
+`permissions.allow` / `permissions.deny`. The prompts that start a worker say to
+run it with the role first and to start the worker in that folder.
+
+| Role | Cannot | Can |
+|---|---|---|
+| `writer` | merge by hand (`gh pr merge`, `github-app.sh pr-merge`, a merge through `gh api`) | edit, commit, push its branch, open the PR, land it with `bin/merge-when-green.sh` |
+| `reviewer` | edit, commit, push, merge, open or edit a PR, any github-app action but `comment` | read the PR (`gh pr view` / `diff` / `checks`, `gh api` for reviews and comments), post a review, cut its own `git worktree` to run the checks |
+| `verifier` | the same as the reviewer, and no review | run the change in a worktree of its own, comment its verdict |
+| `investigator` | edit or write a file, commit, push, merge, comment, any write to GitHub | read the repository and GitHub |
+
+Deny rules are enforced by the session before a tool runs, whatever its permission mode (checked on Claude Code 2.1.285 against `git push`, `gh pr merge` and a merge through `gh api`, also behind a `GH_TOKEN=$(...)` assignment and through `cd <repo> && git ...`, which is how a worker reaches the repository: `git -C` is not allowed). The allow list only
+matters in a permission mode that asks: there a command in neither list asks for
+approval and the watch reports the worker parked on it. Orca launches workers
+with prompts off, where the allow list changes nothing and the deny list is the
+whole boundary. Rules match command prefixes (also behind a `VAR=value`
+assignment; `git -c ...` and `git --...` are denied outright for the read-only
+roles, and `gh api graphql` too), so a `bash -c` or `env git ...` wrapper, a shell
+redirect (`> file`, `tee`, `sed -i`) or a GraphQL mutation read from a file is not
+caught: the investigator has no write tool, but it is not stopped from a
+redirect, and a reviewer or verifier may use the file tools in scratch
+folders (`/tmp`, `/private/tmp`, `/var/folders`) and is refused under a home
+folder (`/Users`, `/home`; other paths such as `/etc` are not listed). The
+writer can still push to any branch it can reach: keeping `main` closed to it is
+branch protection's job, not this profile's. This takes away what a role never
+needs, it is not a sandbox, and the credentials a shell can read are a separate
+boundary. The two
+lists in a role's folder are replaced on every run (a rule dropped from a profile
+is dropped there), other settings in the file stay. Change a role's profile in
+`src/domain/workerRoles.ts`.
+
+A worker ends its report with one fenced block, so the hand-back reads fields
+instead of prose:
+
+````
+```worker-report
+{"role":"reviewer","status":"succeeded","pr":123,"head_sha":"<the head it read>","verdict":"changes","findings":[{"severity":"blocker","summary":"what is wrong","file":"src/x.ts","line":42}],"owner_actions":[],"cost":null}
+```
+````
+
+`status` is `succeeded`, `failed` or `blocked`; `verdict` is `clean`, `changes`,
+`verified`, `failed` or `none` (a writer or investigator); `findings` are
+`blocker` or `nit`; `owner_actions` are steps only the owner can do. The last such
+block wins. `bin/orca-worker-wait.ts` finds it in the worker's record and the
+hand-back names it as the worker's claim: the turn still checks `head_sha` against
+the PR's head and the verdict on the PR itself. The `VERDICT:` line in review and
+verifier comments stays; the review loop and the verifier gate read it there.
 
 - `fanout` gives each worker a checkout of its own instead: the checkout is
   created first without an agent (`orca worktree create`, no `--agent`),
@@ -851,6 +912,24 @@ running:
 It answers `503` when deaf, so an uptime check sees an outage instead of a
 process that happens to be alive.
 
+### Releases and the way back
+
+A restart after a merged change is built **outside the live checkout**: HEAD is
+exported to `~/.jarvis/releases/<sha>`, typechecked, tested and bundled there
+(`bin/jarvis-restart.sh` still refuses on red, and still drains), and only then
+does the supervisor's `current` link move. After the start the supervisor waits
+for `GET /health` to say `ok: true`; a release that does not come up in
+`RELEASE_HEALTH_TIMEOUT_S` (180) or exits first is undone by itself and the last
+known good one runs again. By hand, when the bot is too broken to help:
+
+```bash
+~/.jarvis/releases/bin/jarvis-release.sh status
+~/.jarvis/releases/bin/jarvis-release.sh rollback        # last known good, restarts at once
+```
+
+It needs only bash and `launchctl`. Installing the supervisor is a one-time
+manual step (the LaunchAgent lives outside the repo): `docs/releases.md`.
+
 ## Stuck work
 
 Every 15 minutes, outside any turn, the bot looks for work that died without
@@ -987,6 +1066,24 @@ off disk, and the dashboard's loopback API has no authentication, so it can reac
 the console routes (`/api/slack/post`, ...) with `curl` and act as the bot in any
 channel. Closing those is a separate decision about what a full-access turn may
 read and call.
+
+## Seatbelt
+
+> **Not ready to switch on.** The final review of this change confirmed holes that are still open (Claude's shell snapshots and other repos under `~/Workspaces` can be planted, some home dot-files and other repos' `.env` files can be read, package caches are writable, the dashboard's other endpoints have no authentication). Merging it is safe because it is off by default and changes nothing then. The list and the fixes are in `CLAUDE.md`, the "Seatbelt" entry.
+
+Every turn, every Orca worker and the bot are one macOS user, so a worker's shell could read the GitHub App key and run `gh auth token`. The seatbelt takes those credentials out of reach of anything the bot or Orca *starts*, with no second user and no sudo. It is **off by default**: until you switch it on, nothing changes.
+
+What runs under it is cut off from the keychain, `~/.config/gh`, `~/.config/jarvis` (a worker keeps only its own ticket file), `~/.ssh` and the ssh agent, the cloud credential folders, the Orca runtime token, the bot's `.env` and databases, and from starting anything outside it (`launchctl`, `open`, `osascript`, cron, `at`). It cannot write shell startup files, LaunchAgents, Claude's settings, Orca's profiles or the checkout's `bin/` and hooks. Its `gh`, `orca` and `git` push credential are shims that ask the bot over loopback with the caller's ticket; the bot decides (merge is never available to a worker) and runs the real command.
+
+**Switch it on** (owner, once):
+
+1. `claude setup-token`, then `umask 077; pbpaste > ~/.config/jarvis/sandbox-claude-token` (Claude Code's own login lives in the keychain, which the sandbox denies).
+2. In Orca: Settings, Agents, `claude`, command override: `<checkout>/bin/sandboxed-claude.sh`. This is what wraps every Orca worker, including one a worker starts itself.
+3. In `.env`: `SEATBELT=on`. Restart the bot.
+4. A reviewer or verifier posts with a ticket that carries `comment` (a proxied review is a comment; approvals are not available inside).
+5. Run `bin/sandbox-selftest.sh` (macOS) to see every escape refused. Switch off: `SEATBELT=off` and clear the Orca override.
+
+Inside, the home folder is closed by default (reads and writes) with an allowlist; `ps` cannot run; ssh remotes and `gh auth token` do not work, so push over https with a `push` ticket. Before you rely on it, run `bin/sandboxed-claude.sh -p hi` once with the token file in place: a turn through the OAuth token was not exercised end to end here. Limits, honestly: outside the checkout and the home's dot-entries the profile is a denylist, so another repo's `.git/config` is still writable; gh writes through the proxy are authored by the host's gh login (use `bin/github-app.sh` for the app's name); git metadata of a worker's own worktree stays writable (run unsandboxed git there with `-c core.fsmonitor=false -c core.hooksPath=/dev/null`); a wrapped worker's agent-hook status reports no longer reach Orca; the dashboard's other endpoints have no authentication and loopback stays reachable (the proxy needs it), so a sandboxed process can still call them until a separate decision closes that; a push-grant ticket's token is held inside; `git push -u` cannot write the shared `.git/config` (push with an explicit branch); a process outside the sandbox (your own terminal, the host's `gh` login) still holds the credentials;  owner turns lose the claude.ai connectors and desktop control while it is on. The real fix is a separate macOS user for the keys (not built here).
 
 ## Stopping a turn
 
@@ -1254,6 +1351,7 @@ bin/github-app.sh review <owner/repo> <n> APPROVE|REQUEST_CHANGES|COMMENT [body-
 bin/github-app.sh pr-edit <owner/repo> <n> [--title <t>] [--body-file <f>]
 bin/github-app.sh pr-close|pr-reopen <owner/repo> <n>
 bin/github-app.sh pr-merge <owner/repo> <n> [--method merge|squash|rebase]
+bin/github-app.sh merge-gate <owner/repo> <n> --sha <40-hex head>   # the bot decides; see "Who merges"
 bin/github-app.sh labels-add|labels-remove <owner/repo> <n> <label>...
 bin/github-app.sh reviewers-request <owner/repo> <n> <login|team:slug>...
 bin/github-app.sh git <owner/repo> <local-repo-dir> -- <git args>...
@@ -1288,7 +1386,7 @@ brain's own run bridge, so a typed line, a schedule, an errand or the menu never
 mint one):
 
 ```
-worker-ticket <owner/repo> pending [pr-create|comment|pr-edit|push|labels-add|reviewers-request ...] [--ttl 3h]
+worker-ticket <owner/repo> pending [pr-create|comment|pr-edit|push|labels-add|reviewers-request|merge-gate ...] [--ttl 3h]
 worker-ticket bind <id> <ctx_...>      # after worker-start prints the dispatch id
 worker-ticket revoke <id|ctx_...>
 worker-ticket renew <id|ctx_...> [--ttl 3h]   # admin; also revives one that lapsed but was never revoked
@@ -1300,7 +1398,7 @@ is written once to a mode-0600 file in a 0700 folder
 path, to `export` before `bin/github-app.sh` (the helper reads the first line of
 that file; the brain never reads, prints or posts it, and the file is deleted
 when the ticket ends). The ticket works for that one repo and those actions only
-(default `pr-create`, `comment`, `pr-edit` and the app's commit identity; never review, merge or close), cannot
+(default `pr-create`, `comment`, `pr-edit` and the app's commit identity; never review, raw merge or close; `merge-gate` only when named on the mint, see [Who merges](#who-merges-one-principal-per-job)), cannot
 run any command, is checked against the minting person's role on every call,
 expires in 3 hours (max 6) and ends when the worker finishes or dies (the turn's
 `watch worker`), on `worker-ticket revoke`, or at expiry. Tickets are rows in
@@ -1368,6 +1466,87 @@ both work, as do `/github/setup` and `/setup`. Deliveries are verified with
 `X-Hub-Signature-256`, answered 202 at once, deduped on `X-GitHub-Delivery`,
 and only acted on for repositories owned by `GITHUB_APP_ALLOWED_OWNERS`.
 Bots, the app itself included, never trigger it.
+
+### Who merges: one principal per job
+
+The writer pushes a branch and holds nothing else; the reviewer cannot merge; the
+merge is decided by the bot, in code, with the GitHub App's credential that no
+model session ever sees. That is the `merge-gate` action (`domain/mergeGate.ts`
+for the rules, `application/mergeGate.ts` for the GitHub reads and the one merge
+call). `bin/merge-when-green.sh` calls it with the worker's ticket instead of
+approving and merging with a human admin's `gh` token:
+
+```
+bin/github-app.sh merge-gate <owner/repo> <n> --sha <40-hex head>
+```
+
+The bot merges (a merge commit, pinned to the sha, so a push that lands meanwhile
+is refused by GitHub) only when **all** of this holds on that exact sha:
+
+- the PR is open, not a draft, and mergeable (a conflict answers `conflict`: exit 4);
+- every required check (`MERGE_GATE_REQUIRED_CHECKS`, default `checks` and `gitleaks`) is green and no other check is red, judged per name: cancelled and skipped runs are set aside (CI cancels a run when a newer push supersedes it, and a push-only `checks` run skips itself, so most heads carry some next to the real one), any other red run refuses and is never hidden by a later green one, an unfinished one waits, and a required name with only cancelled or skipped runs has not run on this head yet (`pending`); one not yet reported or still running answers `pending` (exit 3, run it again);
+- for a PR that touches runtime code (anything that is not `*.md`, `docs/`, `web/`, `.claude/skills/`, `data/prompt-guides/`, `.env.example`; `.github/`, `bin/`, `tests/` and prompt text in `.ts` count as runtime): the latest `[review round N]` review was written on this head and ends `VERDICT: clean`, and the latest `[verify]` comment ends `VERDICT: verified` and names the head sha;
+- those review and verify words come from an account named in `MERGE_GATE_ATTESTERS` that is neither the PR's author nor the app itself (`<slug>[bot]`); with the list empty a runtime PR is refused. The writer can comment as the app and the repo is public, so neither its own nor a stranger's `VERDICT: clean` counts. A `[verify]` comment edited after it was posted refuses the merge (anyone with write access can edit another's comment, so an edited verdict proves nothing, and an older good one is not used instead), and a renamed file counts under both its old and new path, so moving code into `docs/` is still runtime. GitHub lists at most 3000 files of a PR: fewer than the PR changed counts as runtime, and a list that fills the 30-page cap refuses.
+
+Anything else answers `refused` with every reason (exit 1). Exit codes of the
+script are unchanged: 0 merged, 1 refused or red, 2 usage, 3 not finished yet,
+4 conflict. With `MERGE_GATE=on` a raw `pr-merge` is refused for every ticket, the owner's included, so the gate cannot be walked around through the other action; with it off `pr-merge` is unchanged. A worker ticket never carries `pr-merge`; `merge-gate` is the one
+merge it may ask for, only when named on the mint (`worker-ticket <owner/repo>
+pending merge-gate`), on the **writer's** ticket. A reviewer or verifier is
+started without one, so it cannot merge, and a ticket without it is refused.
+
+`MERGE_GATE=off` (the default) makes the bot answer `disabled` to any live ticket
+of the repo, whether or not it names `merge-gate` (so a writer minted before this
+change is not locked out), and the script then falls back to the old human-token
+path with a warning, so nothing breaks before the host is ready. So does a shell
+with no ticket at all (a person at a terminal). That fallback is only as strong as
+the human token is out of reach: once it is gone from the host the fallback has
+nothing to merge with, and `MERGE_GATE_REQUIRED=1` in the writer's environment
+closes it outright (no ticket, or a gate that is off, is an error, never the human path).
+
+**What the owner still does by hand to finish the wall** (none of it can be done
+by the bot or a worker, by design):
+
+1. **Let the app merge.** In the GitHub App's settings give it *Repository
+   permissions -> Contents: Read and write* (it has Pull requests: write
+   already), then accept the new permission on the installation for
+   `momoshub` (Settings -> Applications -> the app -> Review request). Until
+   then the merge call returns 403.
+2. **Stop asking for an approval nobody can give.** The app opens the PR, and
+   GitHub never lets an author approve its own PR, so with *1 required
+   approving review* on `main` only a human could unblock a docs-only PR (it has
+   no reviewer). The gate replaces that rule (it demands the review and the
+   verify for runtime code, and the checks for all): set it to 0, keeping the
+   required checks and `enforce_admins`:
+   `gh api -X PATCH repos/momoshub/J.A.R.V.I.S./branches/main/protection/required_pull_request_reviews -F required_approving_review_count=0`
+   (run by an admin, once). Alternatively keep 1 and give the bot a second app
+   identity to approve with; that is not built here.
+3. **Make the bot the only thing that can merge.** Branch protection can restrict
+   who may push to `main`, and a merge is a push. On an org repo:
+   `gh api -X PATCH repos/momoshub/J.A.R.V.I.S./branches/main/protection` cannot set it in
+   place, so use the full `PUT` once with `restrictions` naming only the app
+   (`{"users":[],"teams":[],"apps":["<app-slug>"]}`) next to the current
+   `required_status_checks` (`checks`, `gitleaks`) and `enforce_admins: true`.
+   Then not even an admin's token can merge by hand without lifting the rule first.
+4. **Take the human merger out of the writer's reach.** The writer's shell can
+   read every `gh` login on the host. Log the admin account out of `gh` on the
+   host (`gh auth logout -u <admin-login>`) and keep only a *non-admin* login for
+   the reviewer and verifier (`SELF_PR_REVIEWER`: write or triage access, enough
+   to post reviews and comments, not to merge or to edit protection) and for the
+   writer's one-shot push (`SELF_PR_AUTHOR`/the push account: write access, and
+   protected branches stop it pushing to `main`). Keep the admin token off the
+   host entirely (a password manager, used by hand when protection must change).
+   The reviewer and verifier tokens stay readable by the writer's shell, which is
+   why `MERGE_GATE_ATTESTERS` can pin the accounts that count, but a forged
+   `VERDICT: clean` needs one of them; a separate reviewer **host** or a second
+   GitHub App for reviews would close that last gap, and is not built here.
+5. **Name the attesters and turn it on.** Set `MERGE_GATE_ATTESTERS` to the
+   reviewer's and verifier's GitHub logins (ideally two accounts that are not the
+   one the writer pushes with), `MERGE_GATE=on` in the bot's `.env`, and
+   `MERGE_GATE_REQUIRED=1` in the environment the writers run in; restart Jarvis when
+   idle. Check with a docs-only PR: `bin/merge-when-green.sh <n>` from its
+   worktree should print `merged by the bot`. From then on the script never
+   uses the human path when the bot answers.
 
 ## Reviews that start by themselves
 
@@ -1669,7 +1848,7 @@ A permission is an id; `role perms [filter]` and the Roles page list them all:
 | permission | grants |
 | --- | --- |
 | `command:<name>` | running that command (a command's `minRole` in code is only where its grant is seeded) |
-| `github:<action>` | acting on GitHub as the App: `pr-create`, `comment`, `review`, `pr-edit`, `pr-close`, `pr-reopen`, `pr-merge`, `labels-add`, `labels-remove`, `reviewers-request`, `git` (commit as the App), `push` (push a branch with its token) |
+| `github:<action>` | acting on GitHub as the App: `pr-create`, `comment`, `review`, `pr-edit`, `pr-close`, `pr-reopen`, `pr-merge`, `merge-gate` (the bot's own merge decision), `labels-add`, `labels-remove`, `reviewers-request`, `git` (commit as the App), `push` (push a branch with its token) |
 | `mcp:<server>` | using an MCP server in a chat turn: `notion`, `datadog`, each `DB_MCP_SERVERS` entry, plus any server named on the Roles page. A server a role lacks the grant for is denied by name |
 | `tools:full-access` | chat turns run the CLI with full access (real shell, writes, the normal cwd) - the owner alone as seeded. Without it the role is sandboxed: an explicit `--allowedTools` allow-list in a fixed scratch dir, with no permission bypass and `--permission-mode dontAsk` |
 | `tools:code` | the sandboxed code tools: clone into the scratch dir, edit, commit, push a branch, open a PR, the `Agent`/`Task` tool for parallel or long work, and the browser tools (the dashboard's code-tier tool list replaces the read-only base) |
@@ -1716,7 +1895,7 @@ The sidebar collapses to a slim rail of icons, with each page's full name as the
 
 Identity and learnings are stored in the DB and applied on the next reply - no restart.
 
-**Learnings need the owner's approval.** A learning is injected into every future reply, in every channel, so only the owner typing `learn <fact>` saves one active. A `learn` from anyone else, a `learn` the agent runs for itself, and every `POST /api/learnings` (the endpoint the agent curls, and the dashboard's teach box - the loopback API cannot tell the two apart) is stored *pending*: it never reaches a prompt, the API answers `{"status":"pending", "id":N, "message":...}` so the agent does not claim it saved one, and the owner gets a DM with Approve / Reject buttons (or `learn pending`, `learn approve <id>`, `learn reject <id>`). Existing learnings stay active. Up to 20 can wait at once, and `POST /api/learnings/update` (new wording) sends the learning back to pending. With a memory adapter an approved fact lives only in the adapter, so there is no numbered learning left to delete: `adapter forget <fact>` (a typed line, never run by a turn; the text as `learnings` shows it) removes that line from the global notes and from every channel note that holds it, as one new revision. `adapter revert <id>` rolls back TO that revision, so everything after it is undone - it is not a way to drop a single fact. **Scope:** a learning applies in every channel by default, but a lesson about one pod or channel should not load into unrelated threads. `POST /api/learnings` takes an optional `"scope"`: `"channel"` (the channel of the turn that proposes it, found through its run ticket), a list of channel ids, or nothing for global. The owner's notice shows the scope, and `learn approve <id> global` or `learn approve <id> <channel id>` changes it as they approve. Existing learnings stay global; `learnings` and `learn pending` show a scope when there is one. With a memory adapter, a scoped fact is filed into that channel's own note.
+**Learnings need the owner's approval.** A learning is injected into every future reply, in every channel, so only the owner typing `learn <fact>` saves one active. A `learn` from anyone else, a `learn` the agent runs for itself, and every `POST /api/learnings` (the endpoint the agent curls, and the dashboard's teach box - the loopback API cannot tell the two apart) is stored *pending*: it never reaches a prompt, the API answers `{"status":"pending", "id":N, "message":...}` so the agent does not claim it saved one, and the owner gets a DM with Approve / Reject buttons (or `learn pending`, `learn approve <id>`, `learn reject <id>`). The agent may itself run `learn approve|reject` only inside a turn the owner's own message started (the run ticket says so, never the text); it then DMs the owner what it approved, from which thread, and how to take it back. A watch, worker, `tell` or loop turn, and every non-owner, stays refused. Existing learnings stay active. Up to 20 can wait at once, and `POST /api/learnings/update` (new wording) sends the learning back to pending. With a memory adapter an approved fact lives only in the adapter, so there is no numbered learning left to delete: `adapter forget <fact>` (a typed line, never run by a turn; the text as `learnings` shows it) removes that line from the global notes and from every channel note that holds it, as one new revision. `adapter revert <id>` rolls back TO that revision, so everything after it is undone - it is not a way to drop a single fact. **Scope:** a learning applies in every channel by default, but a lesson about one pod or channel should not load into unrelated threads. `POST /api/learnings` takes an optional `"scope"`: `"channel"` (the channel of the turn that proposes it, found through its run ticket), a list of channel ids, or nothing for global. The owner's notice shows the scope, and `learn approve <id> global` or `learn approve <id> <channel id>` changes it as they approve. Existing learnings stay global; `learnings` and `learn pending` show a scope when there is one. With a memory adapter, a scoped fact is filed into that channel's own note.
 
 ## Routing a change by what it can do
 
@@ -1777,6 +1956,20 @@ bun bin/probe-harness.ts --base old/SKILL.md --candidate new/SKILL.md --runs 3 -
 Each case is a past user message written without private content (no Slack ids, no names, no urls: the repo is public) and the traits a good answer shows. The answering calls are sandboxed: the text under test is the whole system prompt, there are no tools, no MCP servers and no Slack, no saved session, no user or project settings (no hooks, plugins or CLAUDE.md of the host), an empty working folder, and an environment holding only what the CLI needs to log in. So it measures how the model writes to a message, not what it does with tools. Before any call the script prints an estimate of the token spend (default run: 5 cases x 2 runs x 2 versions + 10 judgements = 30 calls, roughly 35k input and 10k output tokens for a near-empty text; every answer call carries the whole text, so a long one adds about 1k input tokens per 4k chars per call - trust the printed estimate), and after the run the real figure.
 
 The report gives the totals (candidate wins, base wins, ties), a row per case, and what each version did in the judge's words for every pair that was not a tie. A handful of pairs is a signal, not a measurement: read the contrasts, and rerun with a higher `--runs` before a close call. Paste the report in the PR body of every docs, prompt-text or skill change (the `jarvis-source` skill step follows this PR: the skill lives in the DB). Add a case in `docs/probe-cases/` when a voice or behaviour rule keeps slipping.
+
+## Briefing a verifier
+
+A verifier briefed from the PR description exercises what the writer says it fixed. `bin/verify-brief.ts` builds the brief from the diff's paths instead, so it does not depend on the writer:
+
+```bash
+bun bin/verify-brief.ts brief --pr 123 --out brief.md            # or --base origin/main --head <sha>; --no-gh skips past review blockers
+bun bin/verify-brief.ts agent --model sonnet                      # `eval` it: VERIFIER_AGENT / VERIFIER_MODEL / VERIFIER_NOTE
+bun bin/verify-brief.ts check --brief brief.md --comment verify.md  # exit 1 when the [verify] comment leaves a required item out
+```
+
+`--pr` takes the PR's head, base and file list from GitHub (paged, so a very large diff works), never from the checkout you run in. The policy docs and the contracts are read at the merge base, so a PR that edits `SECURITY.md` cannot feed its own words into the brief (the edit is flagged as a change to scrutinise instead).
+
+The brief lists the boundaries the changed paths cross (tickets, roles, commands, Slack, merge gates, scripts, databases, env, prompts, watches, web) with adversarial and escalation cases to try beyond the happy path, the policy paragraphs that govern them, the regression history of the same files (fix, bug and revert merges, the tests they touched, past `[review round]` blockers) and the contracts (tests, system-model tests, command fixtures, `.env.example`). The verifier's `[verify]` comment names the items it exercised (`Exercised: ticket.1, command.2`, `n/a <id>: <reason>`). `agent` starts the verifier on another model family (`codex`, then `antigravity`) when its CLI is on the host, and on `claude` with a note when none is. See `.claude/skills/verify/SKILL.md`.
 
 ## Testing
 

@@ -95,6 +95,15 @@ describe("createClaudeCliLlm", () => {
     expect(out).toBe("At your service.");
   });
 
+  test("with the seatbelt on the wrapper is the command, told which claude to run; off, claude is called directly", async () => {
+    const reply = `echo '{"type":"result","subtype":"success","is_error":false,"result":"'"$1"'"}'`;
+    const real = fakeBin(`#!/usr/bin/env bash\ncat > /dev/null\n${reply.replace('"$1"', "real")}`);
+    const wrapper = fakeBin(`#!/usr/bin/env bash\ncat > /dev/null\nR="wrapper bin=$JARVIS_CLAUDE_BIN nosession=$SEATBELT_NO_SESSION"\necho "{\\"type\\":\\"result\\",\\"subtype\\":\\"success\\",\\"is_error\\":false,\\"result\\":\\"$R\\"}"`);
+    const ask = { system: "sys", messages: [{ role: "user" as const, content: "hi" }] };
+    expect(await createClaudeCliLlm({ binPath: real }).complete(ask)).toBe("real");
+    expect(await createClaudeCliLlm({ binPath: real, seatbelt: { wrapper } }).complete(ask)).toBe(`wrapper bin=${real} nosession=1`);
+  });
+
   test("throws on an error result", async () => {
     const bin = fakeBin(
       `#!/usr/bin/env bash\ncat > /dev/null\necho '{"type":"result","subtype":"error_during_execution","is_error":true,"result":"boom"}'`,

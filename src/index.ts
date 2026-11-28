@@ -9,7 +9,7 @@
 // TODO(split): big file, deliberately not refactored in one go. Rule: split the part you
 //   touch into its own module; the markers below name where each section should go.
 import { writeGuides } from "./infrastructure/system/guideWriter.ts";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { tmpdir, userInfo } from "node:os";
 import { loadConfig, modelLabel, WORKER_TICKET_DIR, type AppConfig } from "./config/env.ts";
@@ -107,6 +107,7 @@ import { DEFAULT_MCP_SCHEMA_CACHE_DIR } from "./infrastructure/llm/mcpConfig.ts"
 import { createSettingsRepo, modelKey, SETTING_KEYS } from "./infrastructure/db/settingsRepo.ts";
 import { agentModelEnv, agentModelsOf, builtinAgentOverrides } from "./domain/agentModels.ts";
 import { workerMcpEnv } from "./domain/workerMcp.ts";
+import { parseRoleMcpDeny } from "./domain/workerRoles.ts";
 import { loadBotProfile } from "./application/botProfile.ts";
 import { seedOwner } from "./infrastructure/db/seed.ts";
 import { createAnthropicLlm } from "./infrastructure/llm/anthropic.ts";
@@ -140,6 +141,8 @@ import { commandPerm } from "./domain/permissions.ts";
 import { can as roleCan } from "./domain/roles.ts";
 import { logSourceOrder } from "./domain/investigation.ts";
 import { createDashboard } from "./infrastructure/dashboard/server.ts";
+import { createExecProxy } from "./application/execProxy.ts";
+import { createExecRunner } from "./infrastructure/system/execProxyRunner.ts";
 import { runForBrain } from "./application/brainRun.ts";
 import { dispatchCommand, isQuietCommand, listCommandInfo, startReview } from "./application/commands.ts";
 import type { ReviewApp } from "./application/commands/shared.ts";
@@ -205,6 +208,8 @@ const buildLlm = (
   config.llmProvider === "claude-cli"
     ? createClaudeCliLlm({
         binPath: config.claudeBin,
+        // SEATBELT=on: every turn, whatever its role, starts through the wrapper (docs: README "Seatbelt").
+        ...(config.seatbelt.enabled ? { seatbelt: { wrapper: join(import.meta.dir, "..", "bin", "sandboxed-claude.sh") } } : {}),
         model: config.claudeModel,
         skipPermissions: config.claudeSkipPermissions,
         cwd,
@@ -338,6 +343,14 @@ const main = async () => {
     }
     // A name that matches no server excludes nothing from the workers, and a typo is silent.
     const unknown = unknownMcpServers(createClaudeJsonReader()(), config.workerMcpDeny);
+    const roleDeny = parseRoleMcpDeny(config.workerRoleMcpDeny);
+    const roleUnknown = Object.values(roleDeny.deny).flatMap((names) => unknownMcpServers(createClaudeJsonReader()(), names));
+    if (roleUnknown.length > 0) {
+      activity.line(`WARNING: WORKER_ROLE_MCP_DENY names no user-scope MCP server in ~/.claude.json (it excludes nothing): ${[...new Set(roleUnknown)].join(", ")}`);
+    }
+    if (roleDeny.unknown.length > 0) {
+      activity.line(`WARNING: WORKER_ROLE_MCP_DENY names no worker role (it excludes nothing): ${roleDeny.unknown.join(", ")}`);
+    }
     if (unknown.length > 0) {
       activity.line(`WARNING: WORKER_MCP_DENY names no user-scope MCP server in ~/.claude.json (it excludes nothing): ${unknown.join(", ")}`);
     }
@@ -456,11 +469,14 @@ const main = async () => {
   // Reads a claude.ai artifact by opening a full session, which has the tool a
   // `-p` spawn does not.
   const artifactScript = join(import.meta.dir, "..", "bin", "artifact-read.sh");
-  const restartScript = join(import.meta.dir, "..", "bin", "jarvis-restart.sh");
   // Posts a turn's answer to the GitHub issue its thread was opened for, as the app.
   const githubCommentScript = join(import.meta.dir, "..", "bin", "github-app-comment.sh");
   const githubAppScript = join(import.meta.dir, "..", "bin", "github-app.sh");
-  const repoPath = join(import.meta.dir, "..");
+  // Under the release supervisor this process runs from an immutable per-commit
+  // folder with no .git; the checkout the self-fix flow pulls into and restarts
+  // from is the source repo, and so is the restart helper.
+  const repoPath = config.sourceRepo ?? join(import.meta.dir, "..");
+  const restartScript = join(repoPath, "bin", "jarvis-restart.sh");
   const stuckWorkProbe = createStuckWorkProbe({
     orca: createOrcaCli(),
     gh: defaultRunner(repoPath),
@@ -500,7 +516,7 @@ const main = async () => {
       githubCommentScript,
       githubAppScript,
       models: modelsForRoles(),
-      protectedPaths: [repoPath],
+      protectedPaths: config.releasesDir ? [repoPath, config.releasesDir] : [repoPath],
       dbServers: config.dbMcpServers,
       executerDbServers: config.executerDbMcpServers,
       sandboxTools: config.sandboxTools,
@@ -570,7 +586,7 @@ const main = async () => {
     BOT_MCP_CLI: join(import.meta.dir, "..", "bin", "mcp.ts"),
     JARVIS_SLACK_API_URL: `http://127.0.0.1:${config.dashboardPort}/api/slack`,
     // The servers kept out of Orca workers and the helper the worker-start prompts run first.
-    ...workerMcpEnv(config.workerMcpDeny, workerMcpTrimScript, workerHome),
+    ...workerMcpEnv(config.workerMcpDeny, workerMcpTrimScript, workerHome, config.workerRoleMcpDeny),
   });
   // A turn's environment is the bot's without its secrets. Names only, never values.
   const withheld = scrubSecretEnv(process.env, new Set(config.turnEnvPassthrough)).removed;
@@ -997,6 +1013,31 @@ const main = async () => {
   };
 
   // TODO(split): move dashboard wiring to src/application/dashboardWiring.ts
+  // The exec proxy for sandboxed callers' `gh` and `orca` shims (SEATBELT=on). It needs no GitHub App:
+  // it runs the real `gh` with the bot's own login, so it is built whenever the seatbelt is on.
+  const execProxy = config.seatbelt.enabled
+    ? createExecProxy({
+        clock,
+        sessionSecret: () => {
+          try {
+            return readFileSync(config.seatbelt.secretPath, "utf8").trim() || undefined;
+          } catch {
+            return undefined;
+          }
+        },
+        peekTurn: (token) => {
+          const r = commandTickets.peek(token);
+          return r.ok ? { actor: r.ctx.actor, channel: r.ctx.channel } : undefined;
+        },
+        redeemWorker: workerTickets.redeem,
+        users,
+        roles,
+        allowedOwners: config.githubApp.allowedOwners,
+        audit: commandLog,
+        run: createExecRunner(),
+      })
+    : undefined;
+  console.log(`[seatbelt] ${config.seatbelt.enabled ? "on: turns start through bin/sandboxed-claude.sh, the exec proxy serves gh and orca" : "off"}`);
   // Set once the GitHub App is wired below; the dashboard reaches it through this.
   let githubApp: GithubApp | undefined;
   let githubActions: GithubActions | undefined;
@@ -1121,6 +1162,7 @@ const main = async () => {
         if (!githubActions) throw new Error("the GitHub App is not configured");
         return { ...(await githubActions.run(req)) };
       },
+      execProxy: async (req) => (execProxy ? execProxy.handle(req) : { ok: false as const, status: 503, error: "the sandbox proxy is off (SEATBELT=off)" }),
       slackProxy,
       ownerTickets,
     },
@@ -1483,6 +1525,7 @@ const main = async () => {
       audit: commandLog,
       allowedOwners: config.githubApp.allowedOwners,
       slug: config.githubApp.slug,
+      mergeGate: config.githubApp.mergeGate,
     });
     // A ticket that ends (revoked, worker done, expired) takes its GitHub token with it.
     workerTickets.onEnd((id) => {

@@ -11,6 +11,13 @@ const base = {
 };
 
 describe("loadConfig", () => {
+  test("the release supervisor's source checkout and releases folder are unset by default and read from the env", () => {
+    const c = loadConfig(base);
+    expect([c.sourceRepo, c.releasesDir]).toEqual([undefined, undefined]);
+    const o = loadConfig({ ...base, JARVIS_SOURCE_REPO: "/src/jarvis", JARVIS_RELEASES_DIR: "/rel" });
+    expect([o.sourceRepo, o.releasesDir]).toEqual(["/src/jarvis", "/rel"]);
+  });
+
   test("voice transcription has sane defaults and every path can be set", () => {
     const c = loadConfig(base);
     expect(c.whisperBin).toBe("/opt/homebrew/bin/whisper-cli");
@@ -201,5 +208,12 @@ describe("loadConfig", () => {
       author: "writer",
       reviewer: "checker",
     });
+  });
+
+  test("SEATBELT is off unless switched on, and the secret path expands ~", () => {
+    expect(loadConfig(base).seatbelt).toEqual({ enabled: false, secretPath: join(homedir(), ".config", "jarvis", "sandbox-secret") });
+    expect(loadConfig({ ...base, SEATBELT: "on", SEATBELT_SECRET_PATH: "~/s" }).seatbelt).toEqual({ enabled: true, secretPath: join(homedir(), "s") });
+    expect(loadConfig({ ...base, SEATBELT: "off" }).seatbelt.enabled).toBe(false);
+    expect(() => loadConfig({ ...base, SEATBELT: "yes" })).toThrow();
   });
 });

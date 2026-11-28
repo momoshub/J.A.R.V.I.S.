@@ -8,12 +8,21 @@
 #   github-app.sh pr-close <owner/repo> <number>
 #   github-app.sh pr-reopen <owner/repo> <number>
 #   github-app.sh pr-merge <owner/repo> <number> [--method merge|squash|rebase]
+#   github-app.sh merge-gate <owner/repo> <number> --sha <full-head-sha>
 #   github-app.sh labels-add <owner/repo> <number> <label>...
 #   github-app.sh labels-remove <owner/repo> <number> <label>...
 #   github-app.sh reviewers-request <owner/repo> <number> <login|team:slug>...
 #   github-app.sh git <owner/repo> <local-repo-dir> -- <git args>...
 #   github-app.sh push <owner/repo> <local-repo-dir> <branch> [--force-with-lease]
 #   github-app.sh ticket-renew <owner/repo> [--ttl 3h]
+#
+# merge-gate asks the BOT to merge: it merges, with the app's own credential, only
+# when the PR head is that sha, the required checks are green on it and, for
+# runtime code, the latest review is VERDICT: clean and a [verify] comment says
+# VERDICT: verified naming the sha. The answer's github.decision is merged,
+# pending (ask again), conflict, refused (github.reasons say why) or disabled
+# (the bot's MERGE_GATE is off). Only a ticket that names merge-gate may ask;
+# bin/merge-when-green.sh is its caller.
 #
 # ticket-renew is for an Orca worker: it extends its OWN worker ticket to now +
 # ttl (default 3h, at most 6h per renewal, 24h in all from the bind) and prints
@@ -53,7 +62,7 @@
 set -uo pipefail
 
 if [ "$#" -lt 2 ]; then
-  sed -n '3,36p' "$0" >&2
+  sed -n '3,44p' "$0" >&2
   exit 2
 fi
 
@@ -274,6 +283,10 @@ elif action == "pr-merge":
     f = flags(["--method"])
     if "--method" in f:
         p["method"] = f["--method"]
+elif action == "merge-gate":
+    p["number"] = number()
+    f = flags(["--sha"])
+    p["sha"] = f.get("--sha", "")
 elif action in ("labels-add", "labels-remove"):
     p["number"] = number()
     p["labels"] = rest

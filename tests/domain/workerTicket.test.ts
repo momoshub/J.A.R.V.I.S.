@@ -38,6 +38,14 @@ describe("parseWorkerTicketArgs", () => {
     expect(r.ok && mayPush(r.req.actions)).toBe(false);
   });
 
+  test("merge-gate is an explicit opt-in: never a default, grantable, and the raw merge stays out of reach", () => {
+    expect(DEFAULT_WORKER_ACTIONS).not.toContain("merge-gate");
+    const r = parseWorkerTicketArgs(["o/r", "pending", "merge-gate"]);
+    expect(r.ok && r.req.actions).toEqual(["merge-gate", "git-commit"]);
+    expect(r.ok && mayPush(r.req.actions)).toBe(false);
+    expect(parseWorkerTicketArgs(["o/r", "pending", "pr-merge"]).ok).toBe(false);
+  });
+
   test("an action beyond the ceiling is refused, never dropped", () => {
     for (const a of ["pr-merge", "review", "pr-close", "labels-remove", "nope"]) {
       const r = parseWorkerTicketArgs(["o/r", "pending", "comment", a]);

@@ -9,6 +9,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { expandHome } from "../domain/dbPath.ts";
 import { parseAllowedOwners } from "../domain/githubApp.ts";
+import { DEFAULT_REQUIRED_CHECKS, parseGateList } from "../domain/mergeGate.ts";
 import {
   DEFAULT_MAX_NUDGES,
   DEFAULT_MIN_AGE_MS,
@@ -140,6 +141,12 @@ const schema = z
     TOKEN_KEY_KEYCHAIN_SERVICE: z.string().trim().min(1).default("jarvis-token-key"),
     // Folder for the activity/error logs (one JSON line per event).
     LOG_DIR: z.string().default("logs"),
+    // Set by the release supervisor (bin/jarvis-release.sh launch), never by hand:
+    // the bot then runs from an immutable per-commit folder, and these name the
+    // checkout the self-fix flow works on and the folder that holds the releases.
+    // Unset (the plain `bun run src/index.ts`): the checkout it runs from.
+    JARVIS_SOURCE_REPO: z.string().optional(),
+    JARVIS_RELEASES_DIR: z.string().optional(),
     // Channel that gets the one restart notice listing the waiting threads.
     // Unset: nobody is told. Also the inner child's voice-drift log channel
     // unless the `inner_child_drift_channel` setting names another.
@@ -231,6 +238,24 @@ const schema = z
     GITHUB_APP_ALLOWED_OWNERS: z.string().default(""),
     // Label that calls the app when added to an issue or PR.
     GITHUB_APP_LABEL: z.string().default("jarvis"),
+    // Seatbelt (macOS sandbox-exec) around every turn and Orca worker: no keychain, no gh login, no
+    // App key, no bot .env / databases, no Orca runtime token, no way to start a process outside
+    // it. GitHub and Orca are reached through the bot's ticketed proxy instead. Off (the
+    // default) changes nothing; "on" also needs the one-time steps in the README ("Sandbox").
+    SEATBELT: z.enum(["on", "off"]).default("off"),
+    // The secret that signs seatbelt sessions (created by bin/sandboxed.sh, read by the bot).
+    SEATBELT_SECRET_PATH: z.string().default(join(homedir(), ".config", "jarvis", "sandbox-secret")),
+    // The bot's own merge gate (`merge-gate` action): when on, the bot merges a
+    // PR itself, with the app's credential, once checks, review and verify hold
+    // on the named sha, and `bin/merge-when-green.sh` holds only a ticket. Off
+    // (the default) keeps the script on the human token until the host is ready.
+    MERGE_GATE: z.enum(["on", "off"]).default("off"),
+    // Checks that must be green on the head sha (comma list).
+    MERGE_GATE_REQUIRED_CHECKS: z.string().default(DEFAULT_REQUIRED_CHECKS.join(",")),
+    // Accounts whose `[review round N]` / `[verify]` words count (comma list).
+    // Empty: nobody's do, so no runtime PR merges (the repo is public: "anyone
+    // but the author" would let any GitHub user vouch).
+    MERGE_GATE_ATTESTERS: z.string().default(""),
 
     // Slack bot ids (comma separated) whose messages are answered as the person
     // they post for. Such a bot posts with a person's user token, so its messages
@@ -271,10 +296,19 @@ const schema = z
     // the worker folder's .claude/settings.local.json (deniedMcpServers). Empty
     // keeps every server, as before. The bot's own turns are not affected.
     WORKER_MCP_DENY: z.string().optional(),
-    // The one folder every Orca worker starts in (`--worktree path:<it>`), so the
-    // exclusion above is written into a folder only workers use and never into one
-    // a person works in (~/Workspaces). bin/worker-mcp-trim.ts creates it, registers
-    // it with Orca as a plain folder and trims it. Blank = ~/.jarvis/worker-home.
+    // Servers kept out of one role's workers on top of WORKER_MCP_DENY, as
+    // `reviewer=pg-prod,ch-ro;investigator=pg-prod` (roles: writer, reviewer,
+    // verifier, investigator). Each role starts in its own folder
+    // ($BOT_WORKER_HOME-<role>) whose settings also carry the role's tool rules
+    // (a reviewer or investigator cannot edit, push or merge, a writer cannot merge
+    // by hand), written by the same bin/worker-mcp-trim.ts --role <role>.
+    WORKER_ROLE_MCP_DENY: z.string().optional(),
+    // The shared worker home. Each role's Orca workers start in <it>-<role>
+    // (`--worktree path:<it>-<role>`), a folder next to it, so the exclusion above and
+    // the role's tool rules are written into folders only workers use and never into
+    // one a person works in (~/Workspaces). bin/worker-mcp-trim.ts --role <role>
+    // creates it, registers it with Orca as a plain folder and writes it; with no
+    // --role it does the same for <it> itself. Blank = ~/.jarvis/worker-home.
     WORKER_HOME_DIR: z.string().optional(),
     // Voice messages (an audio clip with no text) are transcribed locally before
     // their turn: ffmpeg converts to 16 kHz mono wav, whisper.cpp's whisper-cli
@@ -341,12 +375,16 @@ export type AppConfig = {
   tokenKeySource: "file" | "keychain";
   tokenKeyKeychainService: string;
   logDir: string;
+  sourceRepo?: string;
+  releasesDir?: string;
   /** Channel for the restart notice listing waiting threads; unset is silent. */
   drainNoticeChannel?: string;
   /** How long a turn started while a restart waits may run before it is cut. */
   restartTurnBudgetMs: number;
   /** Idle-worker reaper: sweep interval (0 = off), idle threshold, log-only mode. */
   orcaReap: { intervalMs: number; idleMs: number; dryRun: boolean };
+  /** The seatbelt (`SEATBELT=on`): every turn is started through `bin/sandboxed-claude.sh`, and the proxy checks sessions signed with `secretPath`. */
+  seatbelt: { enabled: boolean; secretPath: string };
   /** Stale-promise sweep: interval (0 = off), minimum age of the promise, look-back window, nudges per sweep. */
   stalePromise: { intervalMs: number; minAgeMs: number; windowMs: number; maxNudges: number };
   /** The coordinator (domain/coordinator.ts): its display name (what it signs with), tick interval (0 = off), stale journey age, prod blocker re-ask, quiet hours (local hours) and the zone's offset in minutes east of UTC. */
@@ -364,6 +402,7 @@ export type AppConfig = {
     slug: string;
     allowedOwners: string[];
     label: string;
+    mergeGate: { enabled: boolean; requiredChecks: string[]; attesters: string[] };
   };
   /** Who opens the bot's own PRs and who reviews and merges them; unset is one account. */
   selfPrAccounts?: SelfPrAccounts;
@@ -381,7 +420,9 @@ export type AppConfig = {
   executerDbMcpServers: string[];
   /** User-scope MCP servers kept out of Orca workers; empty keeps every server. */
   workerMcpDeny: string[];
-  /** Absolute folder every Orca worker starts in. */
+  /** Raw `WORKER_ROLE_MCP_DENY`: per-role server exclusions, read by the trim helper. */
+  workerRoleMcpDeny: string;
+  /** Absolute shared worker home; each role's workers start in `<it>-<role>` (`roleHomeDir`). */
   workerHomeDir: string;
   /** whisper.cpp CLI, the ggml model and ffmpeg for voice messages, and the limit on each step. */
   whisperBin: string;
@@ -446,6 +487,8 @@ export const loadConfig = (source: Record<string, string | undefined> = process.
     tokenKeySource: env.TOKEN_KEY_SOURCE,
     tokenKeyKeychainService: env.TOKEN_KEY_KEYCHAIN_SERVICE,
     logDir: env.LOG_DIR,
+    sourceRepo: env.JARVIS_SOURCE_REPO,
+    releasesDir: env.JARVIS_RELEASES_DIR,
     ...(env.DRAIN_NOTICE_CHANNEL ? { drainNoticeChannel: env.DRAIN_NOTICE_CHANNEL } : {}),
     restartTurnBudgetMs: env.RESTART_TURN_BUDGET_MS,
     orcaReap: { intervalMs: env.ORCA_REAP_INTERVAL_MS, idleMs: env.ORCA_REAP_IDLE_MS, dryRun: env.ORCA_REAP_DRY_RUN },
@@ -467,6 +510,7 @@ export const loadConfig = (source: Record<string, string | undefined> = process.
     },
     ...(env.OFFLINE_ALARM_CHANNEL ? { offlineAlarmChannel: env.OFFLINE_ALARM_CHANNEL } : {}),
     ...(env.SLASH_MIRROR_CHANNEL ? { slashMirrorChannel: env.SLASH_MIRROR_CHANNEL } : {}),
+    seatbelt: { enabled: env.SEATBELT === "on", secretPath: expandHome(env.SEATBELT_SECRET_PATH) },
     githubApp: {
       ...(env.GITHUB_APP_ID?.trim() ? { appId: env.GITHUB_APP_ID.trim() } : {}),
       privateKeyPath: env.GITHUB_APP_PRIVATE_KEY_PATH,
@@ -476,6 +520,11 @@ export const loadConfig = (source: Record<string, string | undefined> = process.
       slug: env.GITHUB_APP_SLUG.trim(),
       allowedOwners: parseAllowedOwners(env.GITHUB_APP_ALLOWED_OWNERS),
       label: env.GITHUB_APP_LABEL.trim(),
+      mergeGate: {
+        enabled: env.MERGE_GATE === "on",
+        requiredChecks: parseGateList(env.MERGE_GATE_REQUIRED_CHECKS, DEFAULT_REQUIRED_CHECKS),
+        attesters: parseGateList(env.MERGE_GATE_ATTESTERS),
+      },
     },
     ...((accounts) => (accounts ? { selfPrAccounts: accounts } : {}))(
       parseSelfPrAccounts(env.SELF_PR_AUTHOR, env.SELF_PR_REVIEWER),
@@ -487,6 +536,7 @@ export const loadConfig = (source: Record<string, string | undefined> = process.
     turnEnvPassthrough: parseList(env.TURN_ENV_PASSTHROUGH),
     executerDbMcpServers: parseList(env.EXECUTER_DB_MCP_SERVERS),
     workerMcpDeny: parseDenyList(env.WORKER_MCP_DENY),
+    workerRoleMcpDeny: env.WORKER_ROLE_MCP_DENY?.trim() ?? "",
     workerHomeDir: expandHome(env.WORKER_HOME_DIR?.trim() || join(homedir(), ".jarvis", "worker-home")),
     whisperBin: expandHome(env.WHISPER_BIN?.trim() || "/opt/homebrew/bin/whisper-cli"),
     whisperModelPath: expandHome(env.WHISPER_MODEL_PATH?.trim() || join(homedir(), ".local", "share", "whisper-models", "ggml-large-v3-turbo-q5_0.bin")),

@@ -18,6 +18,7 @@
  * thread stays live the whole time.
  */
 import { NO_REPLY } from "./tellPrompt.ts";
+import { parseWorkerReportLine, REPORT_LINE_PREFIX, reportSummary } from "./workerReport.ts";
 import { parseWorkerUsageLine, usageSummary } from "./workerUsage.ts";
 
 /** How often a watch may poll at the fastest. Anything tighter is a spin. */
@@ -564,7 +565,11 @@ const blockedLead = (tasks: readonly string[]): string =>
 export const readyMessage = (note: string, waited: number, output?: string): string => {
   const usage = parseWorkerUsageLine(output ?? "");
   // The usage line is JSON for the watcher to store; the turn gets it as a sentence.
-  const lines = (output ?? "").trim().split("\n").filter((l) => !(usage && USAGE_PREFIX.test(l)));
+  const report = parseWorkerReportLine(output ?? "", (output ?? "").match(WORKER_LINE)?.[1]);
+  const lines = (output ?? "")
+    .trim()
+    .split("\n")
+    .filter((l) => !(usage && USAGE_PREFIX.test(l)) && !(report && REPORT_LINE_PREFIX.test(l)));
   const tail = lines.slice(-3).join("\n").slice(0, 400);
   const worker = workerLead(output ?? "", waited);
   const blocked = worker ? [] : blockedTasks(output ?? "");
@@ -578,6 +583,9 @@ export const readyMessage = (note: string, waited: number, output?: string): str
       ? "Unblock it or finish its job yourself, now, when you can answer it from what you know or can look up; only when the question is genuinely a person's to answer, ask them here in one line. Do not do the planned part above until the worker has finished."
       : "Do it yourself, now, with the commands and tools you already have. This was agreed before the wait - you are finishing a job, not proposing one, so do not ask whether to go ahead and do not hand the steps back for someone else to type. If something genuinely stops you, say in one line what you tried and what blocked it.",
     worker && !worker.waiting ? `\n${RELAY_RULES}` : "",
+    report
+      ? `\nThe worker's structured report (its claim, not a fact: check the PR's current head against head_sha and the verdict on the PR itself before you act on it): ${reportSummary(report)}.`
+      : "",
     usage
       ? `\nThe worker used ${usageSummary(usage)} (Claude session ${usage.sessionId}). Leave this out of your reply unless someone asked what it cost; \`worker-cost\` has it stored.`
       : "",
