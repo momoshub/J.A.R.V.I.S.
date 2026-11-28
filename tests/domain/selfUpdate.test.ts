@@ -254,6 +254,9 @@ describe("selfUpdateRules, the restart and the checks", () => {
     // a clean verdict names a head and dies with a push: re-review (and re-verify) the new head before any merge
     expect(STANDALONE_REVIEW_RULE).toContain("any push after a clean review, a clean audit or a `verified` comment voids that verdict");
     expect(STANDALONE_REVIEW_RULE).toContain("re-review on the new head");
+    // the gate is not claimed to cover what it does not: skills, guides and web/ are outside `touchesRuntime`
+    expect(STANDALONE_REVIEW_RULE).toContain("only for a PR whose paths it counts as runtime");
+    expect(STANDALONE_REVIEW_RULE).not.toContain("the merge gate refuses a review or verify that names another commit");
     expect(STANDALONE_REVIEW_RULE.indexOf("voids that verdict")).toBeLessThan(STANDALONE_REVIEW_RULE.indexOf("Merge only with"));
     expect(STANDALONE_REVIEW_RULE).toContain("do not merge - leave the PR open");
     // the step sits in the flow before the merge, and the rule before the restart

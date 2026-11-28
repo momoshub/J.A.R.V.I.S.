@@ -16,8 +16,11 @@
  *                 commands run, roles and permissions, tickets, network,
  *                 credentials, process execution, dependencies, CI
  *
- * The path only tells the parser which comment syntax to use and whether a
- * markdown file is loaded by an agent; it never lowers a class. The class of a
+ * The path picks the comment syntax and whether a
+ * markdown file is loaded by an agent, and a path can lower a class in exactly
+ * one way: a file whose every path (old and new) is a doc path that cannot run
+ * (`.md`, `.rst`, images, pdf, LICENSE/NOTICE, outside the steering paths) is
+ * `docs`; any other path is at least `runtime`. The class of a
  * file is the highest class of any changed line, the class of a PR the highest
  * class of its files, and routing follows the class: docs none, prompt a
  * reviewer plus the probe gate, runtime and capability a reviewer plus a
@@ -101,7 +104,7 @@ const TEST_PATH_RE = /(?:^|\/)(?:tests?|e2e|__tests__)\/|\.(?:test|spec|e2e)\.[c
 const GITHOOK_RE = /(?:^|\/)\.githooks\//;
 
 /** Markdown an agent loads as instructions: skills, agents, guides, probe replay cases, the repo's own instruction files. */
-const STEERING_PATH_RE = /(?:^|\/)(?:CLAUDE|AGENTS)\.md$|(?:^|\/)SKILL\.md$|(?:^|\/)\.claude\/(?:skills|agents|commands)\/|(?:^|\/)prompt-guides\/|(?:^|\/)docs\/probe-cases\//;
+const STEERING_PATH_RE = /(?:^|\/)(?:CLAUDE|AGENTS|GEMINI)(?:\.local)?\.md$|(?:^|\/)SKILL\.md$|(?:^|\/)\.claude\/(?!settings)[^/]+\/.*\.md$|(?:^|\/)\.claude\/(?:skills|agents|commands)\/|(?:^|\/)\.github\/(?:copilot-instructions\.md|instructions\/)|(?:^|\/)prompt-guides\/|(?:^|\/)docs\/probe-cases\//i;
 // Only what cannot run or name a dependency: no svg (a `<script>`), no txt (`requirements.txt`), no mdx (compiled JSX with expressions)
 const DOC_EXT_RE = /\.(?:md|rst|png|jpe?g|gif|webp|ico|pdf)$|(?:^|\/)(?:LICENSE|NOTICE|SECURITY\.md)$/i;
 const SLASH_COMMENT_EXT_RE = /\.(?:ts|tsx|js|jsx|mjs|cjs|css|scss|java|go|rs|c|h|cpp)$/;
@@ -138,7 +141,8 @@ function isComment(path: string, line: string, inBlock: boolean): boolean {
     // a `*` or `*/` line that is not provably inside a block comment (no opener in view) is scanned as code
     return false;
   }
-  if (HASH_COMMENT_EXT_RE.test(path)) return t.startsWith("#") && !t.startsWith("#!");
+  // `# coding: utf_7` is a comment Python obeys: it can turn a later "comment" into code
+  if (HASH_COMMENT_EXT_RE.test(path)) return t.startsWith("#") && !t.startsWith("#!") && !/coding[:=]/i.test(t);
   return false;
 }
 
