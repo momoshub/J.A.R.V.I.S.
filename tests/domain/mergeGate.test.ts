@@ -291,10 +291,16 @@ describe("app-only verdicts (MERGE_GATE_APP_VERDICTS)", () => {
     expect(evaluateGate(withHuman("stranger", []))).toEqual({ decision: "merge", runtime: true });
   });
 
-  test("a clean audit dressed to hide a FALSE row does not pass the gate", () => {
-    const dressed = `[flow-audit]\nHEAD: ${SHA}\n| 1 | a | ${SHA.slice(0, 7)} | SUPPORTED |\n| 2 | stale verify | **FALSE** |\nVERDICT: clean`;
-    refusedWith(bots({ comments: [bots().comments[0]!, { login: "aud-app[bot]", userType: BOT_TYPE, body: dressed }] }), "UNSUPPORTED or FALSE row");
+  test("a clean audit dressed to hide a FALSE or UNSUPPORTED row does not pass the gate, in every shape", () => {
+    const rows = ["| 2 | stale verify | **FALSE** |", "| 2 | stale verify | FALSE (verify on old sha) |", "| 2 | x | ❌ FALSE |", "| 2 | SUPPORTED | FALSE |", "| 2 | x | `UNSUPPORTED` |", "2 | stale verify | FALSE |"];
+    for (const row of rows) {
+      const dressed = `[flow-audit]\nHEAD: ${SHA}\n| 1 | a | ${SHA.slice(0, 7)} | SUPPORTED |\n${row}\nVERDICT: clean`;
+      refusedWith(bots({ comments: [bots().comments[0]!, { login: "aud-app[bot]", userType: BOT_TYPE, body: dressed }] }), "UNSUPPORTED or FALSE row");
+      // the same through the plain flag, with no app-verdicts rule in play
+      refusedWith(base({ flowAudit: true, comments: [...base().comments, { login: "rev", body: dressed }] }), "UNSUPPORTED or FALSE row");
+    }
   });
+
 });
 
 describe("a verdict expires", () => {
