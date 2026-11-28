@@ -72,6 +72,21 @@ describe("selfUpdateRules is the whole procedure, from the codebase", () => {
     expect(rules).toContain("only the reviewer runs on opus");
   });
 
+  test("a read-only opus flow audit sits after reviewer and verifier, before the merge, and bullshit found blocks it", () => {
+    expect(rules).toContain("flow audit (every PR, docs-only ones too; after the reviewer and verifier, before the merge)");
+    expect(rules).toContain("read-only auditor checks the review FLOW, not the code");
+    expect(rules).toContain("on opus (`--agent claude --model opus`; role `reviewer`");
+    expect(rules).toContain("bun bin/flow-audit-brief.ts brief --pr <pr>");
+    expect(rules).toContain("run from a checkout of origin/main and never the PR branch");
+    expect(rules).toContain("`VERDICT: bullshit found` blocks the merge");
+    expect(rules).toContain("`bun bin/flow-audit-brief.ts check --comment <file> --sha <head>`");
+    expect(rules).toContain("MERGE_GATE_FLOW_AUDIT=on");
+    expect(rules.indexOf("- verifier (runtime code only")).toBeLessThan(rules.indexOf("- flow audit"));
+    expect(rules.indexOf("- flow audit")).toBeLessThan(rules.indexOf("- a PR description and commits carry no attribution"));
+    expect(agentRules).toContain("a background Agent tool agent on opus");
+    expect(agentRules).not.toContain("orca orchestration worker-start --run <runId> --spec-file <brief> --task-title <short> --worktree path:$BOT_WORKER_HOME-reviewer");
+  });
+
   test("the verifier brief is built by a script from sources the writer did not write, on another model family when there is one", () => {
     expect(rules).toContain("bun bin/verify-brief.ts brief --pr <pr>");
     expect(rules).toContain("never from the PR description");
@@ -108,7 +123,7 @@ describe("selfUpdateRules is the whole procedure, from the codebase", () => {
     expect(STANDALONE_REVIEW_RULE).toContain("--worktree path:$BOT_WORKER_HOME-reviewer --agent claude");
     expect(STANDALONE_REVIEW_RULE).not.toContain("a folder or repo Orca knows");
     expect(STANDALONE_REVIEW_RULE.indexOf("BOT_WORKER_MCP_TRIM")).toBeLessThan(STANDALONE_REVIEW_RULE.indexOf("worker-start --run"));
-    expect(STANDALONE_REVIEW_RULE).toContain("Up to 5 review rounds");
+    expect(STANDALONE_REVIEW_RULE).toContain("Up to 15 review rounds");
     // The merge is the bot's decision, not the script's: no approving as the merging account any more.
     expect(STANDALONE_REVIEW_RULE).toContain("asks the bot to merge");
     expect(STANDALONE_REVIEW_RULE).toContain("ticket names `merge-gate`");
@@ -128,8 +143,8 @@ describe("selfUpdateRules is the whole procedure, from the codebase", () => {
     expect(STANDALONE_REVIEW_RULE).not.toContain("every fix, no exceptions");
     expect(STANDALONE_REVIEW_RULE).not.toContain("never a round 3");
     expect(STANDALONE_REVIEW_RULE).toContain("round 2 and later happen only when the previous round is `VERDICT: changes` with a real blocker");
-    expect(STANDALONE_REVIEW_RULE).toContain("there are at most 5 rounds");
-    expect(STANDALONE_REVIEW_RULE).toContain("ask the owner for approval before any further round (an approved extension is the only way past 5)");
+    expect(STANDALONE_REVIEW_RULE).toContain("there are at most 15 rounds");
+    expect(STANDALONE_REVIEW_RULE).toContain("ask the owner for approval before any further round (an approved extension is the only way past 15)");
     // CI is the gate either way
     expect(STANDALONE_REVIEW_RULE).toContain("never merge anything before green CI");
   });
@@ -239,8 +254,8 @@ describe("selfUpdateRules, the restart and the checks", () => {
       STANDALONE_REVIEW_RULE.indexOf("Fix every real finding"),
     );
     // and the loop is bounded, with a way out that is not a merge
-    expect(STANDALONE_REVIEW_RULE).toContain("Up to 5 review rounds");
-    expect(STANDALONE_REVIEW_RULE).toContain("after round 5,");
+    expect(STANDALONE_REVIEW_RULE).toContain("Up to 15 review rounds");
+    expect(STANDALONE_REVIEW_RULE).toContain("after round 15,");
     expect(STANDALONE_REVIEW_RULE).toContain("do not merge - leave the PR open");
     // the step sits in the flow before the merge, and the rule before the restart
     expect(rules.indexOf(STANDALONE_REVIEW_RULE)).toBeLessThan(rules.indexOf("after the merge, watch the e2e"));

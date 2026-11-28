@@ -12,6 +12,10 @@ export type MergeGateConfig = {
   enabled: boolean;
   requiredChecks: readonly string[];
   attesters: readonly string[];
+  /** `MERGE_GATE_FLOW_AUDIT`: also require a clean `[flow-audit]` comment naming the head. Absent = off. */
+  flowAudit?: boolean;
+  /** `MERGE_GATE_APP_VERDICTS`: verdicts count from bot accounts only, and the verifier and flow auditor must be two accounts. Absent = off. */
+  appVerdicts?: boolean;
   /** The app's login, `<slug>[bot]`. */
   botLogin: string;
 };
@@ -79,11 +83,13 @@ export const runMergeGate = async (
       status: text(obj(c).status),
       conclusion: typeof obj(c).conclusion === "string" ? (obj(c).conclusion as string) : null,
     })),
-    reviews: reviews.map((r) => ({ login: login(obj(r).user), body: text(obj(r).body), commitId: text(obj(r).commit_id) })),
-    comments: comments.map((c) => ({ login: login(obj(c).user), body: text(obj(c).body), edited: text(obj(c).updated_at) !== text(obj(c).created_at) })),
+    reviews: reviews.map((r) => ({ login: login(obj(r).user), body: text(obj(r).body), commitId: text(obj(r).commit_id), userType: text(obj(obj(r).user).type) })),
+    comments: comments.map((c) => ({ login: login(obj(c).user), body: text(obj(c).body), edited: text(obj(c).updated_at) !== text(obj(c).created_at), userType: text(obj(obj(c).user).type) })),
     requiredChecks: config.requiredChecks,
     attesters: config.attesters,
     botLogin: config.botLogin,
+    ...(config.flowAudit ? { flowAudit: true } : {}),
+    ...(config.appVerdicts ? { appVerdicts: true } : {}),
   };
   const decision = evaluateGate(input);
   if (decision.decision !== "merge") return { ...decision, sha };

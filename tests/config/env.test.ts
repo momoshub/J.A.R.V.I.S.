@@ -10,6 +10,20 @@ const base = {
   OWNER_SLACK_ID: "U0OWNER0001",
 };
 
+describe("loadConfig: the merge gate's flow audit and app-only verdicts", () => {
+  test("both default off", () => {
+    const g = loadConfig(base).githubApp.mergeGate;
+    expect([g.flowAudit, g.appVerdicts]).toEqual([false, false]);
+  });
+  test("MERGE_GATE_FLOW_AUDIT=on is read", () => {
+    expect(loadConfig({ ...base, MERGE_GATE_FLOW_AUDIT: "on" }).githubApp.mergeGate.flowAudit).toBe(true);
+  });
+  test("MERGE_GATE_APP_VERDICTS=on refuses to start without MERGE_GATE_ROLE_TICKETS=on", () => {
+    expect(() => loadConfig({ ...base, MERGE_GATE_APP_VERDICTS: "on" })).toThrow("MERGE_GATE_ROLE_TICKETS");
+    expect(loadConfig({ ...base, MERGE_GATE_APP_VERDICTS: "on", MERGE_GATE_ROLE_TICKETS: "on" }).githubApp.mergeGate.appVerdicts).toBe(true);
+  });
+});
+
 describe("loadConfig", () => {
   test("the release supervisor's source checkout and releases folder are unset by default and read from the env", () => {
     const c = loadConfig(base);

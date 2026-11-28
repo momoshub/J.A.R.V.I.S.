@@ -185,6 +185,146 @@ describe("evaluateGate", () => {
   });
 });
 
+describe("flow audit (MERGE_GATE_FLOW_AUDIT)", () => {
+  const audit = (over: { sha?: string; verdict?: string; status?: string; extra?: string } = {}) =>
+    `[flow-audit]\nHEAD: ${over.sha ?? SHA}\n| # | Claim | Evidence | Status |\n|---|---|---|---|\n| 1 | fixed | ${SHA.slice(0, 7)} | ${over.status ?? "SUPPORTED"} |\n${over.extra ?? ""}VERDICT: ${over.verdict ?? "clean"}`;
+  const withAudit = (body: string, login = "rev", edited = false): GateInput => {
+    const b = base();
+    return base({ flowAudit: true, comments: [...b.comments, { login, body, edited }] });
+  };
+
+  test("off (absent) changes nothing: no audit comment is needed", () => {
+    expect(evaluateGate(base())).toEqual({ decision: "merge", runtime: true });
+    expect(evaluateGate(base({ flowAudit: false }))).toEqual({ decision: "merge", runtime: true });
+  });
+
+  test("on: a clean audit of the head from an attester merges", () => {
+    expect(evaluateGate(withAudit(audit()))).toEqual({ decision: "merge", runtime: true });
+  });
+
+  test("on: no audit refuses, docs-only PRs included", () => {
+    refusedWith(base({ flowAudit: true }), "no [flow-audit] comment from a named attester");
+    refusedWith(base({ flowAudit: true, files: ["README.md"], reviews: [], comments: [] }), "no [flow-audit] comment");
+  });
+
+  test("on: VERDICT: bullshit found blocks the merge", () => {
+    refusedWith(withAudit(audit({ verdict: "bullshit found", status: "FALSE" })), "bullshit found");
+  });
+
+  test("on: an audit of another sha is rejected", () => {
+    refusedWith(withAudit(audit({ sha: "b".repeat(40) })), "not the head");
+  });
+
+  test("on: two VERDICT lines are rejected", () => {
+    refusedWith(withAudit(audit({ extra: "VERDICT: bullshit found\n" })), "2 VERDICT lines");
+  });
+
+  test("on: an audit by the PR author, the app or a stranger does not count", () => {
+    for (const login of ["jarvis[bot]", "stranger"]) refusedWith(withAudit(audit(), login), "no [flow-audit] comment from a named attester");
+    refusedWith(base({ flowAudit: true, pr: { ...base().pr, author: "rev" }, comments: [{ login: "rev", body: audit() }] }), "no [flow-audit] comment");
+  });
+
+  test("on: a stranger's bullshit-found comment does not shadow the attester's clean one", () => {
+    const b = withAudit(audit());
+    expect(evaluateGate({ ...b, comments: [...b.comments, { login: "stranger", body: audit({ verdict: "bullshit found", status: "FALSE" }) }] })).toEqual({ decision: "merge", runtime: true });
+  });
+
+  test("on: the latest audit of an attester is the one read, and an edited one refuses", () => {
+    const b = withAudit(audit());
+    refusedWith({ ...b, comments: [...b.comments, { login: "rev", body: audit({ verdict: "bullshit found", status: "FALSE" }) }] }, "bullshit found");
+    refusedWith(withAudit(audit(), "rev", true), "was edited after it was posted");
+  });
+
+  test("on: with no attesters nobody's audit counts", () => {
+    refusedWith({ ...withAudit(audit()), attesters: [] }, "MERGE_GATE_ATTESTERS names no account");
+  });
+});
+
+describe("app-only verdicts (MERGE_GATE_APP_VERDICTS)", () => {
+  const BOT_TYPE = "Bot";
+  const audit = `[flow-audit]\nHEAD: ${SHA}\n| 1 | fixed | ${SHA.slice(0, 7)} | SUPPORTED |\nVERDICT: clean`;
+  /** Reviewer, verifier and auditor each a bot account of its own, none the PR author or the app. */
+  const bots = (over: Partial<GateInput> = {}): GateInput =>
+    base({
+      appVerdicts: true,
+      flowAudit: true,
+      attesters: ["rev-app[bot]", "ver-app[bot]", "aud-app[bot]"],
+      reviews: [{ login: "rev-app[bot]", userType: BOT_TYPE, body: "[review round 1]\nVERDICT: clean", commitId: SHA }],
+      comments: [
+        { login: "ver-app[bot]", userType: BOT_TYPE, body: `[verify] ${SHA}\nVERDICT: verified` },
+        { login: "aud-app[bot]", userType: BOT_TYPE, body: audit },
+      ],
+      ...over,
+    });
+
+  test("three separate bot accounts satisfy the gate", () => {
+    expect(evaluateGate(bots())).toEqual({ decision: "merge", runtime: true });
+  });
+
+  test("off (absent): a human attester still counts as before", () => {
+    expect(evaluateGate(base({ reviews: [{ login: "rev", userType: "User", body: "[review round 1]\nVERDICT: clean", commitId: SHA }] }))).toEqual({ decision: "merge", runtime: true });
+  });
+
+  test("on: a verdict from a human login is rejected outright, even a named attester", () => {
+    const d = bots({ attesters: ["rev-app[bot]", "ver-app[bot]", "aud-app[bot]", "kai-at-momos"], reviews: [{ login: "kai-at-momos", userType: "User", body: "[review round 1]\nVERDICT: clean", commitId: SHA }] });
+    refusedWith(d, "posted by kai-at-momos, a human account");
+    refusedWith(d, "no `[review round N]` review from a named attester");
+  });
+
+  test("on: an account whose type is unknown is not a bot", () => {
+    refusedWith(bots({ comments: [{ login: "ver-app[bot]", body: `[verify] ${SHA}\nVERDICT: verified` }, { login: "aud-app[bot]", userType: BOT_TYPE, body: audit }] }), "no `[verify]` comment");
+  });
+
+  test("on: the PR author and the app itself still do not count, bot or not", () => {
+    refusedWith(bots({ attesters: ["jarvis[bot]", "ver-app[bot]", "aud-app[bot]"], reviews: [{ login: "jarvis[bot]", userType: BOT_TYPE, body: "[review round 1]\nVERDICT: clean", commitId: SHA }] }), "no `[review round N]` review");
+    refusedWith(bots({ pr: { ...base().pr, author: "rev-app[bot]" } }), "no `[review round N]` review");
+  });
+
+  test("on: the verifier and the flow auditor must be two accounts", () => {
+    const one = bots({ comments: [{ login: "ver-app[bot]", userType: BOT_TYPE, body: `[verify] ${SHA}\nVERDICT: verified` }, { login: "ver-app[bot]", userType: BOT_TYPE, body: audit }] });
+    refusedWith(one, "two separate workers");
+  });
+
+  test("a named human attester is refused with a reason; a stranger's comment is ignored, so no GitHub user can block a PR", () => {
+    const withHuman = (login: string, attesters: string[]) => bots({ attesters: [...bots().attesters, ...attesters], comments: [...bots().comments, { login, userType: "User", body: "[verify]\nVERDICT: failed" }] });
+    refusedWith(withHuman("lyluongthien", ["lyluongthien"]), "posted by lyluongthien, a human account");
+    expect(evaluateGate(withHuman("stranger", []))).toEqual({ decision: "merge", runtime: true });
+  });
+
+  test("a clean audit dressed to hide a FALSE or UNSUPPORTED row does not pass the gate, in every shape", () => {
+    const rows = ["| 2 | stale verify | **FALSE** |", "| 2 | stale verify | FALSE (verify on old sha) |", "| 2 | x | ❌ FALSE |", "| 2 | SUPPORTED | FALSE |", "| 2 | x | `UNSUPPORTED` |", "2 | stale verify | FALSE |"];
+    for (const row of rows) {
+      const dressed = `[flow-audit]\nHEAD: ${SHA}\n| 1 | a | ${SHA.slice(0, 7)} | SUPPORTED |\n${row}\nVERDICT: clean`;
+      refusedWith(bots({ comments: [bots().comments[0]!, { login: "aud-app[bot]", userType: BOT_TYPE, body: dressed }] }), "UNSUPPORTED or FALSE row");
+      // the same through the plain flag, with no app-verdicts rule in play
+      refusedWith(base({ flowAudit: true, comments: [...base().comments, { login: "rev", body: dressed }] }), "UNSUPPORTED or FALSE row");
+    }
+  });
+
+});
+
+describe("a verdict expires", () => {
+  const audit = (verdict: string, status = "SUPPORTED", sha = SHA) => `[flow-audit]\nHEAD: ${sha}\n| 1 | x | ${SHA.slice(0, 7)} | ${status} |\nVERDICT: ${verdict}`;
+  const withAudit = (...bodies: string[]): GateInput => base({ flowAudit: true, comments: [...base().comments, ...bodies.map((body) => ({ login: "rev", body }))] });
+
+  test("when the head moves: review, verify and audit each name the sha they judged", () => {
+    const other = "b".repeat(40);
+    refusedWith(base({ reviews: [{ login: "rev", body: "[review round 1]\nVERDICT: clean", commitId: other }] }), "was written on");
+    refusedWith(base({ comments: [{ login: "rev", body: `[verify] ${other}\nVERDICT: verified` }] }), "does not name the head");
+    refusedWith(withAudit(audit("clean", "SUPPORTED", other)), "not the head");
+  });
+
+  test("when a later word on the same sha contradicts it: the latest of each kind wins", () => {
+    refusedWith(withAudit(audit("clean"), audit("bullshit found", "FALSE")), "bullshit found");
+    refusedWith(base({ comments: [{ login: "rev", body: `[verify] ${SHA}\nVERDICT: verified` }, { login: "rev", body: `[verify] ${SHA}\nVERDICT: failed` }] }), "does not end `VERDICT: verified`");
+    refusedWith(base({ reviews: [{ login: "rev", body: "[review round 2]\nVERDICT: clean", commitId: SHA }, { login: "rev", body: "[review round 2]\nVERDICT: changes", commitId: SHA }] }), "does not end `VERDICT: clean`");
+  });
+
+  test("a later clean one on the same sha re-validates it", () => {
+    expect(evaluateGate(withAudit(audit("bullshit found", "FALSE"), audit("clean")))).toEqual({ decision: "merge", runtime: true });
+  });
+});
+
 describe("namesSha / parseGateList", () => {
   test("a full sha or a 7+ hex prefix names it; shorter or different does not", () => {
     expect(namesSha(`ran on ${SHA}`, SHA)).toBe(true);
