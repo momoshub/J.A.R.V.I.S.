@@ -24,13 +24,14 @@ describe("classifyDiff: by what the change can do", () => {
     expect(cls(file("data/prompt-guides/self-fix-1.md", ...add(PROSE)))).toBe("prompt");
     expect(cls(file(".claude/skills/verify/SKILL.md", ...add("Run the change on the PR head.")))).toBe("prompt");
     expect(cls(file("CLAUDE.md", ...add("Keep it short.")))).toBe("prompt");
-    expect(cls(file("src/domain/personality.ts", ...add(`  "${PROSE}" +`)))).toBe("prompt");
+    // a prompt string in a code file is still a change to a code file: runtime (reviewer and verifier), and it owes the probe gate
+    expect(cls(file("src/domain/personality.ts", ...add(`  "${PROSE}" +`)))).toBe("runtime");
     const r = classifyDiff([file("src/domain/personality.ts", ...add(`  "${PROSE}" +`))]);
-    expect(r.routing).toEqual({ reviewer: true, verifier: false, probe: true });
+    expect(r.routing).toEqual({ reviewer: true, verifier: true, probe: true });
   });
 
   test("the folder does not decide: prompt text in a file named like runtime is still read by content", () => {
-    expect(cls(file("src/application/respond.ts", ...add(`  \`${PROSE}\``)))).toBe("prompt");
+    expect(cls(file("src/application/respond.ts", ...add(`  \`${PROSE}\``)))).toBe("runtime");
     // and code in a prompt-sounding file is runtime
     expect(cls(file("src/domain/promptGuides.ts", ...add("export const n = (a: number): number => a + 1;")))).toBe("runtime");
   });
@@ -96,7 +97,7 @@ describe("classifyDiff: by what the change can do", () => {
     const r = classifyDiff([file("README.md", ...add("docs")), file("src/domain/personality.ts", ...add(`  "${PROSE}" +`)), file("src/x.ts", ...add("const a = 1;"))]);
     expect(r.class).toBe("runtime");
     expect(r.routing).toEqual({ reviewer: true, verifier: true, probe: true });
-    expect(r.files.map((f) => f.class)).toEqual(["docs", "prompt", "runtime"]);
+    expect(r.files.map((f) => f.class)).toEqual(["docs", "runtime", "runtime"]);
   });
 
   test("an empty diff is docs: nothing to review", () => {
@@ -267,9 +268,9 @@ describe("classifyDiff: round 8 review blocker, a # line a hunk cannot place out
   });
 
   test("steering prose in a python string or a yaml block scalar is prompt text, not a comment", () => {
-    expect(cls(hunk("prompts.py", 'SYS = """', `# ${PROMPT}`))).toBe("prompt");
-    expect(cls(hunk("agent.yml", "system_prompt: |", `    # ${PROMPT}`))).toBe("prompt");
-    expect(cls(file("run.sh", ...add(`# ${PROMPT}`)))).toBe("prompt");
+    expect(cls(hunk("prompts.py", 'SYS = """', `# ${PROMPT}`))).toBe("runtime");
+    expect(cls(hunk("agent.yml", "system_prompt: |", `    # ${PROMPT}`))).toBe("runtime");
+    expect(cls(file("run.sh", ...add(`# ${PROMPT}`)))).toBe("runtime");
   });
 
   test("more instruction files an agent loads, and comment-shaped directives, are not docs", () => {
@@ -323,9 +324,12 @@ describe("classifyDiff: a code file is never docs, whatever its lines look like 
     expect(cls(hunk("a.rs", ' let s = r#"', '+// "#; std::process::Command::new("x"); let t = r#"'))).toBe("runtime");
   });
 
-  test("steering prose in a comment still gets the prompt class, and a capability word in a comment is a capability", () => {
-    expect(cls(hunk("src/a.ts", `+// ${PROSE}`))).toBe("prompt");
-    expect(cls(hunk("run.sh", `+# ${PROSE}`))).toBe("prompt");
+  test("steering prose in a code file is runtime that owes the probe gate, and a capability word in a comment is a capability", () => {
+    for (const [path, line] of [["src/a.ts", `// ${PROSE}`], ["run.sh", `# ${PROSE}`], ["bin/deploy.sh", "echo you must always ask the owner before you deploy; touch ./x && echo done"]] as const) {
+      const r = classifyDiff([hunk(path, `+${line}`)]);
+      expect(r.class).toBe("runtime");
+      expect(r.routing).toEqual({ reviewer: true, verifier: true, probe: true });
+    }
     expect(cls(hunk("src/a.ts", "+// const t = process.env.GH_TOKEN;"))).toBe("capability");
   });
 
