@@ -98,7 +98,7 @@ const STEERING_TOOL_RE = /^\s*(?:allowed[-_]tools|tools|permissions?|disallowed[
 const DEPENDENCY_LINE_RE = /^\s*"(?:@[\w.-]+\/)?[\w.-]+"\s*:\s*"[\^~<>=*]*\d[^"]*"\s*,?\s*$/;
 const LOCKFILE_RE = /(?:^|\/)(?:bun\.lockb?|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock|poetry\.lock|uv\.lock|Pipfile\.lock|Gemfile\.lock|composer\.lock|go\.sum)$/;
 /** Manifests and requirement lists of other ecosystems: what they name is what gets installed. */
-const DEPENDENCY_FILE_RE = /(?:^|\/)(?:requirements[\w.-]*\.txt|constraints[\w.-]*\.txt|Pipfile|Cargo\.toml|pyproject\.toml|go\.mod|Gemfile|composer\.json)$/;
+const DEPENDENCY_FILE_RE = /(?:^|\/)(?:[\w.-]*requirements[\w.-]*\.(?:txt|in)|constraints[\w.-]*\.(?:txt|in)|requirements\/[\w.\/-]+\.(?:txt|in)|Pipfile|Cargo\.toml|pyproject\.toml|go\.mod|Gemfile|composer\.json)$/i;
 const PACKAGE_JSON_RE = /(?:^|\/)package\.json$/;
 const WORKFLOW_RE = /(?:^|\/)\.github\/(?:workflows|actions)\//;
 const MANIFEST_RE = /(?:^|\/)slack-app-manifest\.ya?ml$/;
@@ -158,7 +158,11 @@ const classifyFile = (file: ChangedFile): { risk: FileRisk; promptText: boolean 
     return { risk: { path: file.path, class: cls, reasons }, promptText: verdicts.some((v) => v.promptText) };
   };
   const paths = [file.path, ...(file.oldPath !== undefined && file.oldPath !== file.path ? [file.oldPath] : [])];
-  const steering = paths.some((p) => STEERING_PATH_RE.test(p));
+  // steering text is markdown (and probe-case json) in a steering place: a script that lives in a skill folder is still a script, and a file
+  // that moved between steering and non-steering places is judged line by line as code, never lowered to `prompt` by one of its paths
+  const isSteeringDoc = (p: string): boolean => STEERING_PATH_RE.test(p) && /\.(?:md|json)$/i.test(p);
+  const steering = paths.some(isSteeringDoc);
+  const steeringAll = paths.every(isSteeringDoc);
   const lines = file.binary ? [] : changedLines(file.patch);
   const verdicts: Verdict[] = [];
 
@@ -192,7 +196,7 @@ const classifyFile = (file: ChangedFile): { risk: FileRisk; promptText: boolean 
       verdicts.push({ class: "docs", reason: "prose", promptText: false });
       continue;
     }
-    if (steering) {
+    if (steeringAll) {
       const tool = STEERING_TOOL_RE.test(text) ? capabilityOf(text) ?? "tools" : undefined;
       verdicts.push(tool !== undefined ? { class: "capability", reason: `${tool}: tool grant in a steering file`, promptText: true } : { class: "prompt", reason: "steering text (skill, guide or instruction file)", promptText: true });
       continue;
@@ -216,7 +220,7 @@ const classifyFile = (file: ChangedFile): { risk: FileRisk; promptText: boolean 
 
   // a patch with no readable lines (empty diff of a rename, say) is still a change to that file
   if (verdicts.length === 0) {
-    return done([prose || steering ? { class: steering ? "prompt" : "docs", reason: "rename or empty change", promptText: steering } : { class: "runtime", reason: "rename or empty change", promptText: false }]);
+    return done([prose || steeringAll ? { class: steeringAll ? "prompt" : "docs", reason: "rename or empty change", promptText: steeringAll } : { class: "runtime", reason: "rename or empty change", promptText: false }]);
   }
   return done(verdicts);
 };
@@ -266,6 +270,8 @@ export const parseUnifiedDiff = (text: string): ChangedFile[] => {
     else if (raw.startsWith("rename to ")) cur.path = raw.slice("rename to ".length);
     else if (raw.startsWith("old mode ") || raw.startsWith("new mode ")) cur.modeChanged = true;
     else if (raw.startsWith("deleted file mode")) cur.deleted = true;
+    // a new file that is executable (100755), a symlink (120000) or a gitlink (160000) is not plain text whatever its path
+    else if (raw.startsWith("new file mode ") && !raw.endsWith(" 100644")) cur.modeChanged = true;
     else if (raw.startsWith("Binary files ") || raw.startsWith("GIT binary patch")) cur.binary = true;
     else if (raw.startsWith("+++ ") && raw !== "+++ /dev/null") cur.path = stripPrefix(raw.slice(4).replace(/^"|"$/g, ""));
   }

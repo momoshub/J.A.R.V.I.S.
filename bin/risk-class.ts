@@ -14,7 +14,7 @@
 // whatever the class (it routes, it does not gate), 2 on a usage problem or a
 // diff it cannot read - the self-fix guide treats that as `runtime`.
 // The rules are `classifyDiff` in src/domain/riskClass.ts.
-import { readFileSync } from "node:fs";
+import { lstatSync, readFileSync } from "node:fs";
 import { classifyDiff, formatRiskReport, parseUnifiedDiff } from "../src/domain/riskClass.ts";
 
 const USAGE = "usage: bun bin/risk-class.ts [--base <ref>] [--diff <file>|-] [--json]";
@@ -57,15 +57,19 @@ const readDiff = (): string => {
   const mergeBase = git("merge-base", base, "HEAD").trim();
   const tracked = git("diff", "--no-color", "--no-ext-diff", "--src-prefix=a/", "--dst-prefix=b/", mergeBase);
   // untracked files are additions: written as a diff here rather than touching the index
-  const added = git("ls-files", "--others", "--exclude-standard")
-    .split("\n")
+  // -z: names come back unquoted whatever their bytes; a directory or a symlink is not text, so it is an addition of mode 120000 (never docs)
+  const added = git("ls-files", "-z", "--others", "--exclude-standard")
+    .split("\0")
     .filter((f) => f !== "")
     .map((f) => {
+      const st = lstatSync(f);
+      if (st.isSymbolicLink() || st.isDirectory()) return `diff --git a/${f} b/${f}\nnew file mode 120000\n--- /dev/null\n+++ b/${f}\n@@ -0,0 +1 @@\n+symlink\n`;
+      const mode = st.mode & 0o111 ? "100755" : "100644";
       const text = readFileSync(f, "utf8");
-      if (text.includes("\0")) return `diff --git a/${f} b/${f}\nnew file mode 100644\nBinary files /dev/null and b/${f} differ\n`;
+      if (text.includes("\0")) return `diff --git a/${f} b/${f}\nnew file mode ${mode}\nBinary files /dev/null and b/${f} differ\n`;
       const lines = text.split("\n");
       if (lines[lines.length - 1] === "") lines.pop();
-      return `diff --git a/${f} b/${f}\nnew file mode 100644\n--- /dev/null\n+++ b/${f}\n@@ -0,0 +1,${lines.length} @@\n${lines.map((l) => `+${l}`).join("\n")}\n`;
+      return `diff --git a/${f} b/${f}\nnew file mode ${mode}\n--- /dev/null\n+++ b/${f}\n@@ -0,0 +1,${lines.length} @@\n${lines.map((l) => `+${l}`).join("\n")}\n`;
     })
     .join("");
   return tracked + added;
