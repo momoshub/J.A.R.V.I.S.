@@ -7,7 +7,7 @@
  * without review is "just text". This module reads the changed lines and
  * names the strongest thing the change can do, in four classes (low to high):
  *
- *   docs        - prose and comments an agent never loads as instructions
+ *   docs        - prose in doc files an agent never loads as instructions
  *   prompt      - text that steers an agent's actions: system prompt strings,
  *                 prompt guides, skills, CLAUDE.md / AGENTS.md
  *   runtime     - code that runs (logic, commands, adapters, scripts, tests,
@@ -16,12 +16,13 @@
  *                 commands run, roles and permissions, tickets, network,
  *                 credentials, process execution, dependencies, CI
  *
- * The path picks the comment syntax and whether a
- * markdown file is loaded by an agent. A file reaches `docs` in two ways: every
- * path it has (old and new) is a doc path that cannot run (`.md`, `.rst`,
- * images, pdf, LICENSE/NOTICE, outside the steering paths), or its changed
- * lines are comments the hunk itself proves to be comments (a code file with a
- * comment-only change is `docs`). Nothing else lowers a class. The class of a
+ * A file is `docs` only by its path: every path it has (old and new) is a doc
+ * path that cannot run (`.md`, `.rst`, images, pdf, LICENSE/NOTICE, outside the
+ * steering paths). Any change to a code file, a comment-only one included, is
+ * at least `runtime`: a hunk cannot show whether a comment-looking line sits in
+ * a string, a heredoc or a template, or which encoding or line-joining rule the
+ * compiler applies before it strips comments, and every attempt to prove it
+ * (rounds 1 to 10 of PR #137) was beaten by the next variant. The class of a
  * file is the highest class of any changed line, the class of a PR the highest
  * class of its files, and routing follows the class: docs none, prompt a
  * reviewer plus the probe gate, runtime and capability a reviewer plus a
@@ -108,49 +109,6 @@ const GITHOOK_RE = /(?:^|\/)\.githooks\//;
 const STEERING_PATH_RE = /(?:^|\/)(?:CLAUDE|AGENTS|GEMINI)(?:\.local|\.override)?\.md$|(?:^|\/)SKILL\.md$|(?:^|\/)\.claude\/(?!settings)[^/]+\/.*\.md$|(?:^|\/)\.claude\/(?:skills|agents|commands)\/|(?:^|\/)\.github\/(?:copilot-instructions\.md|(?:instructions|prompts|agents|chatmodes)\/)|(?:^|\/)\.(?:cursor\/rules|clinerules)\/|(?:^|\/)prompt-guides\/|(?:^|\/)docs\/probe-cases\//i;
 // Only what cannot run or name a dependency: no svg (a `<script>`), no txt (`requirements.txt`), no mdx (compiled JSX with expressions)
 const DOC_EXT_RE = /\.(?:md|rst|png|jpe?g|gif|webp|ico|pdf)$|(?:^|\/)(?:LICENSE|NOTICE|SECURITY\.md)$/i;
-const SLASH_COMMENT_EXT_RE = /\.(?:ts|tsx|js|jsx|mjs|cjs|css|scss|java|go|rs|c|h|cpp)$/;
-const HASH_COMMENT_EXT_RE = /\.(?:sh|bash|zsh|ya?ml|toml|py|rb|env|example|gitignore|gitleaksignore)$|(?:^|\/)\.env[\w.]*$|(?:^|\/)\.githooks\//;
-
-/** Consume `*/`-closed block comments and a `//` tail from the left; anything else left over is code (`/* a */ run(x) /* b */`). */
-const uncomment = (line: string): string => line.replace(/^\s*(?:\/\/+|\/\*+|\*+\/?|#+)/, "").replace(/\*\/\s*$/, "");
-
-function commentsOnly(line: string, inBlock: boolean): boolean {
-  let rest = line.trim();
-  if (inBlock) {
-    const close = rest.indexOf("*/");
-    if (close < 0) return true;
-    rest = rest.slice(close + 2).trim();
-  }
-  for (;;) {
-    if (rest === "" || rest.startsWith("//")) return true;
-    if (!rest.startsWith("/*")) return false;
-    const close = rest.indexOf("*/", 2);
-    if (close < 0) return true;
-    rest = rest.slice(close + 2).trim();
-  }
-}
-
-/** Comment-shaped lines a tool obeys: they steer a compiler, a linter or a generator, so they are code. */
-const DIRECTIVE_RE = /@ts-(?:ignore|expect-error|nocheck)|eslint-disable|biome-ignore|istanbul ignore|^\/\/go:|^\/\/\/\s*<|^#\s*(?:shellcheck|cgo|pylint|rubocop|noqa|type:\s*ignore)\b|#\s*noqa\b/;
-
-function isComment(path: string, line: string, inBlock: boolean): boolean {
-  const t = line.trim();
-  if (t === "") return true;
-  if (SLASH_COMMENT_EXT_RE.test(path)) {
-    // a `// @ts-ignore` or `/* istanbul ignore */` steers a tool, it is not prose
-    if (DIRECTIVE_RE.test(t)) return false;
-    // `//` is not a comment in plain css, where it breaks the next declaration
-    if (t.startsWith("//")) return !/\.css$/.test(path);
-    // inside a block comment, or opening one: a comment only if nothing but comments is on the line
-    if (inBlock || t.startsWith("/*")) return commentsOnly(t, inBlock);
-    // a `*` or `*/` line that is not provably inside a block comment (no opener in view) is scanned as code
-    return false;
-  }
-  // `# coding: utf_7` is a comment Python obeys: it can turn a later "comment" into code
-  // a UTF-7 shift sequence (`+AAo-` is a newline) in a python comment can end it: a payload under a cookie that is not in the diff is code
-  if (HASH_COMMENT_EXT_RE.test(path)) return t.startsWith("#") && !t.startsWith("#!") && !/coding[:=]/i.test(t) && !DIRECTIVE_RE.test(t) && !(/\.py$/.test(path) && /\+[A-Za-z0-9+/]|\\[uUxN0-7]/.test(t));
-  return false;
-}
 
 const STEERING_WORD_RE = /\b(?:never|always|must|do not|don't|you|your|should|before you|only if|instead of|make sure|ask the|tell the)\b/i;
 const CODE_SHAPE_RE = /=>|\bfunction\b|^\s*(?:const|let|var|import|export|return|if|for|while|type|interface)\b|[;{}]\s*$|\)\s*[,;]?\s*$/;
@@ -168,40 +126,20 @@ const isPromptText = (line: string): boolean => {
   return STEERING_WORD_RE.test(t);
 };
 
-// `inBlock`: between a block-comment opener and its closer, as far as the hunk (context lines included) shows
-type Line = { readonly sign: "+" | "-"; readonly text: string; readonly inBlock: boolean };
+type Line = { readonly sign: "+" | "-"; readonly text: string };
 
 /**
  * The added and removed lines of a patch (a removed guard is as much a change
- * as an added one), each with whether it sits inside a block comment. The old
- * and the new side keep their own state, fed by the context lines they share;
- * a hunk that starts mid-comment shows no opener, so its lines read as code.
+ * as an added one). Context lines are not changes. A hunk cannot say whether a
+ * line is code, a comment or text inside a string, so no line is ever read as a
+ * comment: a line of code is code whatever it starts with.
  */
 const changedLines = (patch: string): Line[] => {
   const out: Line[] = [];
-  let oldBlock = false;
-  let newBlock = false;
-  const next = (open: boolean, text: string): boolean => {
-    const t = text.trim();
-    if (open) return !t.includes("*/");
-    return t.startsWith("/*") && !t.slice(2).includes("*/");
-  };
   for (const raw of patch.split("\n")) {
     // a patch starts at its first `@@`, so a `+++` or `---` here is a changed line that begins with `++` or `--`, never a header
-    if (raw.startsWith("@@")) {
-      oldBlock = false;
-      newBlock = false;
-    } else if (raw.startsWith("+")) {
-      out.push({ sign: "+", text: raw.slice(1), inBlock: newBlock });
-      newBlock = next(newBlock, raw.slice(1));
-    } else if (raw.startsWith("-")) {
-      out.push({ sign: "-", text: raw.slice(1), inBlock: oldBlock });
-      oldBlock = next(oldBlock, raw.slice(1));
-    } else {
-      const text = raw.startsWith(" ") ? raw.slice(1) : raw;
-      oldBlock = next(oldBlock, text);
-      newBlock = next(newBlock, text);
-    }
+    if (raw.startsWith("+")) out.push({ sign: "+", text: raw.slice(1) });
+    else if (raw.startsWith("-")) out.push({ sign: "-", text: raw.slice(1) });
   }
   return out;
 };
@@ -244,17 +182,7 @@ const classifyFile = (file: ChangedFile): { risk: FileRisk; promptText: boolean 
   // prose only when every path the file had is a doc path: a rename out of source into `.md` is still that source
   const prose = paths.every((p) => DOC_EXT_RE.test(p)) && !steering;
   const test = TEST_PATH_RE.test(file.path);
-  // A hunk cannot show whether a line is inside a multi-line template string: `/*` and `//` lines there are text, and a backtick on a changed line
-  // can end the string and start code. A source patch with a backtick or a continued line (trailing backslash) therefore reads no line as a comment.
-  // `${` runs code inside a template without a backtick, and in JSX a `{...}` between tags does too, so both count (JSX: any brace in the patch).
-  const fragile = SLASH_COMMENT_EXT_RE.test(file.path) && (/`|\\\s*$|\?\?\/|\\u[0-9a-fA-F]{4}|\$\{/m.test(file.patch) || (/\.[jt]sx$/.test(file.path) && /[{}]/.test(file.patch)));
-  // The same doubt for hash-comment files: a `#` line a hunk cannot place may sit inside a shell heredoc (`$(...)`, a backtick), a python f-string or
-  // triple-quoted string (`{...}`), a ruby heredoc (`#{...}`) or a yaml block scalar, where it is code or prompt text. Any such opener in the patch (context
-  // lines included) reads no line as a comment.
-  const hashFragile =
-    HASH_COMMENT_EXT_RE.test(file.path) &&
-    (/\$\(|`|\$\{|#\{|<<|\"\"\"|'''|\\$/m.test(file.patch) || (/\.py$/.test(file.path) && /[{}]/.test(file.patch)) || /^[ +-]\s*(?:-\s+)?[\w."'-]+:\s*[|>][+-]?\s*$/m.test(file.patch));
-  for (const { text, inBlock } of lines) {
+  for (const { text } of lines) {
     if (text.trim() === "") continue;
     if (PACKAGE_JSON_RE.test(file.path) && DEPENDENCY_LINE_RE.test(text)) {
       verdicts.push({ class: "capability", reason: "dependencies: package.json", promptText: false });
@@ -267,11 +195,6 @@ const classifyFile = (file: ChangedFile): { risk: FileRisk; promptText: boolean 
     if (steering) {
       const tool = STEERING_TOOL_RE.test(text) ? capabilityOf(text) ?? "tools" : undefined;
       verdicts.push(tool !== undefined ? { class: "capability", reason: `${tool}: tool grant in a steering file`, promptText: true } : { class: "prompt", reason: "steering text (skill, guide or instruction file)", promptText: true });
-      continue;
-    }
-    if (!fragile && !hashFragile && isComment(file.path, text, inBlock)) {
-      // a hunk cannot show whether a comment-looking line sits inside a multi-line string, where it is prompt text: steering prose there is read as a prompt (a reviewer, no probe gate)
-      verdicts.push((SLASH_COMMENT_EXT_RE.test(file.path) || HASH_COMMENT_EXT_RE.test(file.path)) && isPromptText(uncomment(text)) ? { class: "prompt", reason: "comment that reads as steering text (may be inside a string)", promptText: false } : { class: "docs", reason: "comments", promptText: false });
       continue;
     }
     if (test) {

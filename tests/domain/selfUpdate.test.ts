@@ -119,7 +119,8 @@ describe("selfUpdateRules is the whole procedure, from the codebase", () => {
     for (const text of [rules, STANDALONE_REVIEW_RULE]) {
       expect(text).toContain("`bun bin/risk-class.ts --base origin/main`");
       expect(text).toContain("not the folder");
-      expect(text).toContain("`docs` (prose and comments only) gets no reviewer");
+      expect(text).toContain("`docs` (doc files only: markdown, rst, images, pdf, LICENSE; any change to a code file, a comment included, is at least `runtime`) gets no reviewer");
+      expect(text).not.toContain("prose and comments only");
     }
     // prompt text gets a reviewer and the probe gate but no verifier; runtime and capability get both
     expect(STANDALONE_REVIEW_RULE).toContain("`prompt` (text that steers an agent) gets the probe gate and a standalone reviewer, no verifier");
