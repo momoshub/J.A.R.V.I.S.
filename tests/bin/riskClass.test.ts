@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -94,5 +94,22 @@ describe("bin/risk-class.ts", () => {
     const r = run("--base", "nope");
     expect(r.code).toBe(2);
     expect(r.err).toContain("merge-base");
+  });
+
+  test("untracked files: a non-ASCII name and an executable doc-path file are read, a symlink or a directory does not crash it", () => {
+    mkdirSync(join(dir, "docs"));
+    writeFileSync(join(dir, "docs", "\u00e9.md"), "caf\u00e9\n");
+    let r = run("--base", "base");
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("risk class: docs");
+    writeFileSync(join(dir, "docs", "setup.md"), "#!/bin/sh\necho hi\n", { mode: 0o755 });
+    r = run("--base", "base");
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("risk class: runtime");
+    rmSync(join(dir, "docs", "setup.md"));
+    symlinkSync("src", join(dir, "docs", "linkdir"));
+    r = run("--base", "base");
+    expect(r.code).toBe(0);
+    expect(r.out).toContain("risk class: runtime");
   });
 });

