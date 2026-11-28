@@ -256,6 +256,19 @@ const schema = z
     // Empty: nobody's do, so no runtime PR merges (the repo is public: "anyone
     // but the author" would let any GitHub user vouch).
     MERGE_GATE_ATTESTERS: z.string().default(""),
+    // With the gate on, also require the full-flow audit: a `[flow-audit]` comment
+    // from an attester, `HEAD:` = the head sha, last line `VERDICT: clean`
+    // (`bun bin/flow-audit-brief.ts`). Off (the default): merging is unchanged.
+    MERGE_GATE_FLOW_AUDIT: z.enum(["on", "off"]).default("off"),
+    // Verdicts (review, verify, flow-audit) count only from accounts GitHub types as
+    // a Bot, never a person's login, and the verifier and the flow auditor must be
+    // two accounts. Adds to the author/app exclusion, never replaces it. Refuses to
+    // start unless MERGE_GATE_ROLE_TICKETS=on: an app comment alone cannot tell the
+    // writer's from a reviewer's, so this stays off until per-role tickets exist.
+    MERGE_GATE_APP_VERDICTS: z.enum(["on", "off"]).default("off"),
+    // Set to `on` only once per-role tickets (reviewer|verifier|flow-auditor, minted
+    // apart from the writer's, each app comment stamped with role and ticket id) ship.
+    MERGE_GATE_ROLE_TICKETS: z.enum(["on", "off"]).default("off"),
 
     // Slack bot ids (comma separated) whose messages are answered as the person
     // they post for. Such a bot posts with a person's user token, so its messages
@@ -325,6 +338,10 @@ const schema = z
     // prompt-injected turn has nothing to read out of its environment; Slack goes through a
     // ticketed local proxy instead. Empty (the default) passes none.
     TURN_ENV_PASSTHROUGH: z.string().optional(),
+  })
+  .refine((env) => env.MERGE_GATE_APP_VERDICTS !== "on" || env.MERGE_GATE_ROLE_TICKETS === "on", {
+    message: "MERGE_GATE_APP_VERDICTS=on needs MERGE_GATE_ROLE_TICKETS=on (per-role tickets are not configured: an app-posted verdict alone is forgeable by a writer)",
+    path: ["MERGE_GATE_APP_VERDICTS"],
   })
   .refine((env) => env.LLM_PROVIDER !== "anthropic" || !!env.ANTHROPIC_API_KEY, {
     message: "ANTHROPIC_API_KEY is required when LLM_PROVIDER=anthropic",
@@ -402,7 +419,7 @@ export type AppConfig = {
     slug: string;
     allowedOwners: string[];
     label: string;
-    mergeGate: { enabled: boolean; requiredChecks: string[]; attesters: string[] };
+    mergeGate: { enabled: boolean; requiredChecks: string[]; attesters: string[]; flowAudit: boolean; appVerdicts: boolean };
   };
   /** Who opens the bot's own PRs and who reviews and merges them; unset is one account. */
   selfPrAccounts?: SelfPrAccounts;
@@ -524,6 +541,8 @@ export const loadConfig = (source: Record<string, string | undefined> = process.
         enabled: env.MERGE_GATE === "on",
         requiredChecks: parseGateList(env.MERGE_GATE_REQUIRED_CHECKS, DEFAULT_REQUIRED_CHECKS),
         attesters: parseGateList(env.MERGE_GATE_ATTESTERS),
+        flowAudit: env.MERGE_GATE_FLOW_AUDIT === "on",
+        appVerdicts: env.MERGE_GATE_APP_VERDICTS === "on",
       },
     },
     ...((accounts) => (accounts ? { selfPrAccounts: accounts } : {}))(

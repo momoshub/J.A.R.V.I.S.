@@ -10,8 +10,8 @@ type World = {
   pull?: Record<string, unknown>;
   files?: ({ filename: string; previous_filename?: string } | string)[];
   checks?: { name: string; status: string; conclusion: string | null }[];
-  reviews?: { user: { login: string }; body: string; commit_id: string }[];
-  comments?: { user: { login: string }; body: string; created_at?: string; updated_at?: string }[];
+  reviews?: { user: { login: string; type?: string }; body: string; commit_id: string }[];
+  comments?: { user: { login: string; type?: string }; body: string; created_at?: string; updated_at?: string }[];
   mergeFails?: Error;
 };
 
@@ -53,6 +53,31 @@ describe("runMergeGate", () => {
     const out = await runMergeGate(config, g.request, "o/r", 9, SHA);
     expect(out).toMatchObject({ decision: "merged", sha: SHA, mergedSha: "merge-commit", runtime: true });
     expect(g.calls.filter((c) => c.startsWith("PUT"))).toEqual([`PUT repos/o/r/pulls/9/merge ${JSON.stringify({ sha: SHA, merge_method: "merge" })}`]);
+  });
+
+  test("flowAudit on: no [flow-audit] comment -> refused, no merge call; with a clean one on the head -> merged", async () => {
+    const g = github();
+    const d = await runMergeGate({ ...config, flowAudit: true }, g.request, "o/r", 9, SHA);
+    expect(d).toMatchObject({ decision: "refused" });
+    expect(g.calls.some((c) => c.startsWith("PUT"))).toBe(false);
+    const audit = `[flow-audit]\nHEAD: ${SHA}\n| 1 | fixed | ${SHA.slice(0, 7)} | SUPPORTED |\nVERDICT: clean`;
+    const ok = github({ comments: [{ user: { login: "rev" }, body: `[verify] ${SHA}\nVERDICT: verified` }, { user: { login: "rev" }, body: audit }] });
+    expect(await runMergeGate({ ...config, flowAudit: true }, ok.request, "o/r", 9, SHA)).toMatchObject({ decision: "merged" });
+    // the flag off: the same PR without an audit merges as before
+    expect(await runMergeGate(config, github().request, "o/r", 9, SHA)).toMatchObject({ decision: "merged" });
+  });
+
+  test("appVerdicts reads GitHub's user.type: a human reviewer is refused, a bot one merges", async () => {
+    const mk = (type: string) =>
+      github({
+        reviews: [{ user: { login: "rev", type }, body: "[review round 1]\nVERDICT: clean", commit_id: SHA }],
+        comments: [{ user: { login: "rev", type }, body: `[verify] ${SHA}\nVERDICT: verified` }],
+      });
+    const human = mk("User");
+    expect(await runMergeGate({ ...config, appVerdicts: true }, human.request, "o/r", 9, SHA)).toMatchObject({ decision: "refused" });
+    expect(human.calls.some((c) => c.startsWith("PUT"))).toBe(false);
+    expect(await runMergeGate({ ...config, appVerdicts: true }, mk("Bot").request, "o/r", 9, SHA)).toMatchObject({ decision: "merged" });
+    expect(await runMergeGate(config, mk("User").request, "o/r", 9, SHA)).toMatchObject({ decision: "merged" });
   });
 
   test("a red check -> refused, no merge call", async () => {

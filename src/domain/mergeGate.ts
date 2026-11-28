@@ -1,3 +1,5 @@
+import { FLOW_AUDIT_MARKER, flowAuditProblem } from "./flowAudit.ts";
+
 /**
  * The merge gate, as pure rules. The decision to merge a PR used to be a shell
  * script holding a human admin's token: whoever could run the script (the
@@ -17,6 +19,11 @@
  * repo is public, so anyone-but-the-author would let any GitHub user vouch. A
  * `[verify]` comment edited after it was posted refuses the merge, and a rename out of a
  * runtime path counts as touching it.
+ *
+ * Behind `MERGE_GATE_FLOW_AUDIT` (default off) every PR, docs-only ones too, also
+ * needs the latest `[flow-audit]` comment of an attester (the same account rule)
+ * to be a well-formed `VERDICT: clean` whose `HEAD:` line is the head
+ * (`domain/flowAudit.ts`): the audit of the review flow, not of the code.
  */
 
 /** A PR whose every file matches one of these needs no reviewer and no verifier (the self-fix guide's "review by risk"). */
@@ -45,9 +52,10 @@ export type GatePr = {
   mergeState: string;
 };
 export type GateCheck = { name: string; status: string; conclusion: string | null };
-export type GateReview = { login: string; body: string; commitId: string };
+/** `userType`: GitHub's `user.type` (`Bot` for an app, `User` for a person); absent = unknown, which `appVerdicts` treats as not a bot. */
+export type GateReview = { login: string; body: string; commitId: string; userType?: string };
 /** `edited`: the comment's `updated_at` is not its `created_at`. Anyone with write access can edit another's issue comment, keeping its author, so an edited `[verify]` proves nothing. */
-export type GateComment = { login: string; body: string; edited?: boolean };
+export type GateComment = { login: string; body: string; edited?: boolean; userType?: string };
 
 export type GateInput = {
   /** The sha the caller built and tested: the merge is pinned to it. */
@@ -64,6 +72,15 @@ export type GateInput = {
   attesters: readonly string[];
   /** The app's own login (`<slug>[bot]`). */
   botLogin: string;
+  /**
+   * `MERGE_GATE_APP_VERDICTS`: a review, verify or flow-audit only counts from an account GitHub types as a Bot, so a human
+   * login (a person's token in a worker's hands) can never satisfy the gate; the verifier and the flow auditor must also be
+   * two accounts. It adds to the rules above, never replaces them: the author and the app itself still do not count.
+   * Absent = off. Keep it off until per-role tickets exist (the app alone cannot tell a writer's comment from a reviewer's).
+   */
+  appVerdicts?: boolean;
+  /** `MERGE_GATE_FLOW_AUDIT`: also require a clean `[flow-audit]` comment on the head. Absent = off. */
+  flowAudit?: boolean;
 };
 
 /** `merge` = go ahead; `pending` = not yet, ask again; `conflict` = merge the base in; `refused` = a real no. */
@@ -102,9 +119,10 @@ const lastLine = (body: string): string =>
 export const namesSha = (body: string, sha: string): boolean =>
   (lc(body).match(/\b[0-9a-f]{7,40}\b/g) ?? []).some((t) => lc(sha).startsWith(t));
 
-const counts = (login: string, input: GateInput): boolean => {
-  const l = lc(login);
+const counts = (who: { login: string; userType?: string }, input: GateInput): boolean => {
+  const l = lc(who.login);
   if (!l || l === lc(input.pr.author) || l === lc(input.botLogin)) return false;
+  if (input.appVerdicts && lc(who.userType ?? "") !== "bot") return false;
   return input.attesters.some((a) => lc(a) === l);
 };
 
@@ -113,7 +131,7 @@ const latestReview = (input: GateInput): { round: number; review: GateReview } |
   let best: { round: number; review: GateReview } | undefined;
   for (const review of input.reviews) {
     const m = review.body.match(/^\s*\[review round (\d+)\]/);
-    if (!m || !counts(review.login, input)) continue;
+    if (!m || !counts({ login: review.login, ...(review.userType ? { userType: review.userType } : {}) }, input)) continue;
     const round = Number(m[1]);
     if (!best || round >= best.round) best = { round, review };
   }
@@ -129,12 +147,39 @@ const reviewProblem = (input: GateInput): string | undefined => {
 };
 
 const verifyProblem = (input: GateInput): string | undefined => {
-  const latest = [...input.comments].reverse().find((c) => /^\s*\[verify\]/.test(c.body) && counts(c.login, input));
-  if (!latest) return "no `[verify]` comment from a named attester (MERGE_GATE_ATTESTERS; never the PR author or the app)";
+  const latest = [...input.comments].reverse().find((c) => /^\s*\[verify\]/.test(c.body) && counts(c, input));
+  if (!latest) return `no \`[verify]\` comment from a named attester (MERGE_GATE_ATTESTERS; never the PR author or the app${input.appVerdicts ? ", and a bot account, never a person" : ""})`;
   // Not skipped in favour of an older one: a verifier who said `verified`, then `not verified`, must not be undone by editing the second.
   if (latest.edited) return "the latest `[verify]` comment was edited after it was posted";
   if (!/^VERDICT:\s*verified\s*$/i.test(lastLine(latest.body))) return "the latest `[verify]` comment does not end `VERDICT: verified`";
   if (!namesSha(latest.body, input.sha)) return `the latest \`[verify]\` comment does not name the head ${input.sha.slice(0, 7)}`;
+  return undefined;
+};
+
+const flowAuditCheck = (input: GateInput): string | undefined => {
+  if (input.attesters.length === 0) return "MERGE_GATE_ATTESTERS names no account, so nobody's flow audit counts";
+  const latest = [...input.comments].reverse().find((c) => c.body.trimStart().toLowerCase().startsWith(FLOW_AUDIT_MARKER) && counts(c, input));
+  if (!latest) return `no ${FLOW_AUDIT_MARKER} comment from a named attester (MERGE_GATE_ATTESTERS; never the PR author or the app)`;
+  if (latest.edited) return `the latest ${FLOW_AUDIT_MARKER} comment was edited after it was posted`;
+  return flowAuditProblem(latest.body, input.sha);
+};
+
+const VERDICT_WORDS = /^\s*(\[review round \d+\]|\[verify\]|\[flow-audit\])/i;
+
+/** With `appVerdicts`: every verdict-marked review or comment from a login that is not a Bot, named once, so the refusal says why nobody's words count. */
+const humanVerdicts = (input: GateInput): string[] => {
+  const humans = new Set<string>();
+  for (const x of [...input.reviews, ...input.comments]) {
+    if (VERDICT_WORDS.test(x.body) && lc(x.userType ?? "") !== "bot" && lc(x.login) !== lc(input.pr.author) && x.login) humans.add(x.login);
+  }
+  return [...humans];
+};
+
+/** With `appVerdicts` and the flow audit: the verifier and the flow auditor are two workers, so two accounts. */
+const separateRoles = (input: GateInput): string | undefined => {
+  const verify = [...input.comments].reverse().find((c) => /^\s*\[verify\]/i.test(c.body) && counts(c, input));
+  const audit = [...input.comments].reverse().find((c) => c.body.trimStart().toLowerCase().startsWith(FLOW_AUDIT_MARKER) && counts(c, input));
+  if (verify && audit && lc(verify.login) === lc(audit.login)) return `the \`[verify]\` and the \`[flow-audit]\` comments were both posted by ${verify.login}: the verifier and the flow auditor must be two separate workers (two accounts)`;
   return undefined;
 };
 
@@ -166,6 +211,17 @@ export const evaluateGate = (input: GateInput): GateDecision => {
     if (r) refused.push(r);
     const v = verifyProblem(input);
     if (v) refused.push(v);
+  }
+  if (input.flowAudit) {
+    const a = flowAuditCheck(input);
+    if (a) refused.push(a);
+  }
+  if (input.appVerdicts) {
+    for (const h of humanVerdicts(input)) refused.push(`a review, verify or flow-audit was posted by ${h}, a human account: MERGE_GATE_APP_VERDICTS counts bot accounts only`);
+    if (input.flowAudit) {
+      const sep = separateRoles(input);
+      if (sep) refused.push(sep);
+    }
   }
   if (refused.length > 0) return { decision: "refused", reasons: refused };
   if (pending.length > 0) return { decision: "pending", reasons: [...new Set(pending)] };
