@@ -82,7 +82,7 @@ export const routingFor = (cls: RiskClass, hasPromptText: boolean): Routing => (
 // --- the capability table: one regex per way a change can widen what the bot may do ---
 
 const CAPABILITY_PATTERNS: readonly { readonly kind: CapabilityKind; readonly re: RegExp }[] = [
-  { kind: "tools", re: /allowed[-_ ]?tools|disallowed[-_ ]?tools|\bBash\([^)]*\)|\bORCA_DENY\b|\bmcpServers\b|mcp[-_]config|--dangerously|permission[-_]mode|bypassPermissions|\bsandbox\b|\bdeny[-_ ]?list\b|\ballow[-_ ]?list\b/i },
+  { kind: "tools", re: /allowed[-_ ]?tools|disallowed[-_ ]?tools|\bBash\([^)]*\)|\bORCA_DENY\b|\bmcpServers\b|\bmcp__[\w-]+|mcp[-_]config|--dangerously|permission[-_]mode|bypassPermissions|\bsandbox\b|\bdeny[-_ ]?list\b|\ballow[-_ ]?list\b/i },
   { kind: "commands", re: /\bregisterCommand\b|\bdefineCommand\b|\bCommandSpec\b|\bCOMMANDS\b|\bcommandHandlers?\b/ },
   { kind: "roles", re: /\broleSeed\b|\bROLE_[A-Z_]+\b|\bseedRoles?\b|\bRoleGrant\b|\broles?\.(?:grant|revoke|assign)\b|\bgrantRole\b/i },
   { kind: "tickets", re: /\bJARVIS_RUN_TICKET|\bworker-ticket\b|\bworkerTicket\w*|\bmintTicket\b|\bticket(?:Ttl|Scope|Actions)\b/ },
@@ -93,10 +93,11 @@ const CAPABILITY_PATTERNS: readonly { readonly kind: CapabilityKind; readonly re
 ];
 
 /** In a skill/agent markdown file only its tool grants are a capability; the prose is `prompt`. */
+const STEERING_LIST_ITEM_RE = /^\s*-\s+\S/;
 const STEERING_TOOL_RE = /^\s*(?:allowed[-_]tools|tools|permissions?|disallowed[-_]tools)\s*:/i;
 
 const DEPENDENCY_LINE_RE = /^\s*"(?:@[\w.-]+\/)?[\w.-]+"\s*:\s*"[\^~<>=*]*\d[^"]*"\s*,?\s*$/;
-const LOCKFILE_RE = /(?:^|\/)(?:bun\.lockb?|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock|poetry\.lock|uv\.lock|Pipfile\.lock|Gemfile\.lock|composer\.lock|go\.sum)$/;
+const LOCKFILE_RE = /(?:^|\/)(?:bun\.lockb?|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock|poetry\.lock|uv\.lock|Pipfile\.lock|Gemfile\.lock|composer\.lock|go\.sum)$/i;
 /** Manifests and requirement lists of other ecosystems: what they name is what gets installed. */
 const DEPENDENCY_FILE_RE = /(?:^|\/)(?:[\w.-]*requirements[\w.-]*\.(?:txt|in)|constraints[\w.-]*\.(?:txt|in)|requirements\/[\w.\/-]+\.(?:txt|in)|Pipfile|Cargo\.toml|pyproject\.toml|go\.mod|Gemfile|composer\.json)$/i;
 const PACKAGE_JSON_RE = /(?:^|\/)package\.json$/;
@@ -158,9 +159,9 @@ const classifyFile = (file: ChangedFile): { risk: FileRisk; promptText: boolean 
     return { risk: { path: file.path, class: cls, reasons }, promptText: verdicts.some((v) => v.promptText) };
   };
   const paths = [file.path, ...(file.oldPath !== undefined && file.oldPath !== file.path ? [file.oldPath] : [])];
-  // steering text is markdown (and probe-case json) in a steering place: a script that lives in a skill folder is still a script, and a file
+  // steering text is markdown (and probe-case json, nothing else: a `package.json` in a skill folder has scripts) in a steering place: a script that lives in a skill folder is still a script, and a file
   // that moved between steering and non-steering places is judged line by line as code, never lowered to `prompt` by one of its paths
-  const isSteeringDoc = (p: string): boolean => STEERING_PATH_RE.test(p) && /\.(?:md|json)$/i.test(p);
+  const isSteeringDoc = (p: string): boolean => STEERING_PATH_RE.test(p) && (/\.md$/i.test(p) || /(?:^|\/)docs\/probe-cases\/[^/]+\.json$/i.test(p));
   const steering = paths.some(isSteeringDoc);
   const steeringAll = paths.every(isSteeringDoc);
   const lines = file.binary ? [] : changedLines(file.patch);
@@ -197,7 +198,9 @@ const classifyFile = (file: ChangedFile): { risk: FileRisk; promptText: boolean 
       continue;
     }
     if (steeringAll) {
-      const tool = STEERING_TOOL_RE.test(text) ? capabilityOf(text) ?? "tools" : undefined;
+      // a tool grant is a `tools:` line, a yaml list item under one, or any line that names a `Bash(...)` or `mcp__` tool
+      const grant = STEERING_TOOL_RE.test(text);
+      const tool = grant || STEERING_LIST_ITEM_RE.test(text) || /Bash\(|mcp__/.test(text) ? capabilityOf(text) ?? (grant ? "tools" : undefined) : undefined;
       verdicts.push(tool !== undefined ? { class: "capability", reason: `${tool}: tool grant in a steering file`, promptText: true } : { class: "prompt", reason: "steering text (skill, guide or instruction file)", promptText: true });
       continue;
     }
@@ -273,6 +276,8 @@ export const parseUnifiedDiff = (text: string): ChangedFile[] => {
     else if (raw.startsWith("deleted file mode")) cur.deleted = true;
     // a new file that is executable (100755), a symlink (120000) or a gitlink (160000) is not plain text whatever its path
     else if (raw.startsWith("new file mode ") && !raw.endsWith(" 100644")) cur.modeChanged = true;
+    // an edited file keeps its mode on the index line: an existing executable or symlink at a doc path is still one
+    else if (/^index [0-9a-f]+\.\.[0-9a-f]+ [0-7]{6}$/.test(raw) && !raw.endsWith(" 100644")) cur.modeChanged = true;
     else if (raw.startsWith("Binary files ") || raw.startsWith("GIT binary patch")) cur.binary = true;
     else if (raw.startsWith("+++ ") && raw !== "+++ /dev/null") cur.path = stripPrefix(raw.slice(4).replace(/^"|"$/g, ""));
   }

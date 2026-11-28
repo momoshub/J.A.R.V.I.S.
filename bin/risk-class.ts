@@ -62,6 +62,8 @@ const readDiff = (): string => {
     .split("\0")
     .filter((f) => f !== "")
     .map((f) => {
+      // a name with a newline, a quote or a backslash cannot be written into a diff header the parser would read: unreadable, so exit 2
+      if (/[\n"\\]/.test(f)) return fail(`cannot read the untracked file name ${JSON.stringify(f)}`);
       const st = lstatSync(f);
       if (st.isSymbolicLink() || st.isDirectory()) return `diff --git a/${f} b/${f}\nnew file mode 120000\n--- /dev/null\n+++ b/${f}\n@@ -0,0 +1 @@\n+symlink\n`;
       const mode = st.mode & 0o111 ? "100755" : "100644";

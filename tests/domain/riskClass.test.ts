@@ -412,7 +412,7 @@ describe("classifyDiff: round 12 review blockers", () => {
   test("AGENTS.md's class list is free of the retired comment rules", async () => {
     const { readFileSync } = await import("node:fs");
     const text = readFileSync("AGENTS.md", "utf8");
-    for (const gone of ["comments in code", "long steering-worded prose strings in source", "in two ways only", "picks the comment syntax", "A line that reads as steering prose is `prompt`", "comments a hunk proves", "comment, hunk"]) {
+    for (const gone of ["comments in code", "long steering-worded prose strings in source", "in two ways only", "picks the comment syntax", "A line that reads as steering prose is `prompt`", "names a capability is a `capability`, comment or not.", "comments a hunk proves", "comment, hunk"]) {
       expect(text).not.toContain(gone);
     }
   });
