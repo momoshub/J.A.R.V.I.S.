@@ -30,6 +30,10 @@ describe("touchesRuntime", () => {
   test("docs, skills, guides, dashboard UI and .env.example are not runtime", () => {
     expect(touchesRuntime(["README.md", "docs/a.png", "web/src/App.tsx", ".claude/skills/verify/SKILL.md", "data/prompt-guides/x.md", ".env.example"])).toBe(false);
   });
+  test("a docs/ folder exempts only files that cannot run: an svg, txt or mdx there is runtime", () => {
+    for (const f of ["docs/logo.svg", "docs/notes.txt", "docs/page.mdx", "docs/requirements.txt"]) expect(touchesRuntime(["README.md", f])).toBe(true);
+    for (const f of ["docs/a.md", "docs/a.png", "docs/spec.pdf"]) expect(touchesRuntime([f])).toBe(false);
+  });
   test("anything else is: source, scripts, CI, tests, config", () => {
     for (const f of ["src/a.ts", "bin/merge-when-green.sh", ".github/workflows/ci.yml", "tests/a.test.ts", "package.json"]) expect(touchesRuntime(["README.md", f])).toBe(true);
   });

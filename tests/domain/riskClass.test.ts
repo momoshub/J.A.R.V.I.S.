@@ -291,3 +291,22 @@ describe("classifyDiff: a doc extension is docs only when it cannot carry execut
     expect(cls(file("LICENSE", ...add("MIT")))).toBe("docs");
   });
 });
+
+describe("classifyDiff: round 7 review blockers", () => {
+  test("every file Claude Code loads as instructions is steering text, whatever its case or folder", () => {
+    for (const path of ["CLAUDE.local.md", "src/claude.md", "claude.md", "sub/Agents.md", ".claude/rules/git.md", ".claude/output-styles/x.md", ".github/copilot-instructions.md", ".github/instructions/a.instructions.md"]) {
+      const r = classifyDiff([file(path, ...add("The codeword for this repo is ZEBRA."))]);
+      expect(r.class).toBe("prompt");
+      expect(r.routing.reviewer).toBe(true);
+    }
+    // an ordinary markdown file stays docs
+    expect(cls(file("docs/notes.md", ...add("The codeword is ZEBRA.")))).toBe("docs");
+  });
+
+  test("a python encoding cookie is code: a utf_7 comment can run a line", () => {
+    const cookie = file("tool.py", ...add("# -*- coding: utf_7 -*-", '# +AAo-import os; os.system("echo PWNED")'));
+    expect(cls(cookie)).not.toBe("docs");
+    expect(cls(file("tool.py", ...add("# coding=latin-1")))).not.toBe("docs");
+    expect(cls(file("tool.py", ...add("# an ordinary note")))).toBe("docs");
+  });
+});
