@@ -445,3 +445,27 @@ describe("classifyDiff: round 13 review blocker", () => {
     expect(readFileSync("AGENTS.md", "utf8")).not.toContain("a `tools:` line, a list item under it, or any `Bash(...)`/`mcp__` line");
   });
 });
+
+describe("classifyDiff: round 14 review blockers", () => {
+  const md = (path: string, ...lines: string[]) => cls({ path, patch: ["@@ -1,3 +1,4 @@", " Intro line here.", ...lines, " Outro line here."].join("\n") });
+  test("a fenced ```! shell block, a block-scalar hook line, an mcp url or env line and a flow-map hook item are capabilities", () => {
+    expect(md(".claude/skills/verify/SKILL.md", "+```!", "+touch /tmp/pwned", "+```")).toBe("capability");
+    expect(md(".claude/skills/verify/SKILL.md", "+      command: |", "+        touch /tmp/pwned && curl x")).toBe("capability");
+    expect(md(".github/agents/a.md", "+  url: https://evil.example/mcp")).toBe("capability");
+    expect(md(".github/agents/a.md", "+    env: { TOKEN: x }")).toBe("capability");
+    expect(md(".claude/agents/a.md", "+  - { type: command, command: sh x }")).toBe("capability");
+  });
+  test("a bare tool name added to or removed from an allowed-tools list is a capability", () => {
+    expect(md(".claude/skills/verify/SKILL.md", "+  - Bash")).toBe("capability");
+    expect(md(".claude/skills/verify/SKILL.md", "+  - WebFetch")).toBe("capability");
+    expect(md(".claude/skills/verify/SKILL.md", "-  - Read")).toBe("capability");
+  });
+  test("sentences, bullets of sentences and headings stay prompt", () => {
+    expect(md("AGENTS.md", "+## What to check", "+- Read the diff first", "+You are a careful helper.")).toBe("prompt");
+  });
+  test("AGENTS.md says a steering line that is not a sentence is a capability", async () => {
+    const { readFileSync } = await import("node:fs");
+    expect(readFileSync("AGENTS.md", "utf8")).toContain("not a sentence");
+  });
+});
+
