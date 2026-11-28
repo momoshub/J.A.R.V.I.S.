@@ -320,7 +320,7 @@ no classes.
   diff, not the folder (`bin/risk-class.ts`): `docs` need no reviewer; `prompt` text (steering strings, guides,
   skills) gets the probe gate and a reviewer Orca worker; `runtime` code and `capability` changes (tools, commands, roles,
   tickets, permissions, network, credentials, process execution, dependencies, CI; a mixed PR counts as its highest class) get a reviewer and a
-  verifier. The reviewer reads it first, up to 5 rounds (each round is a real GitHub review, request changes or approve; fixes are pushes answered by a `[fix round N]` comment); `bin/reviewer-metrics.ts`
+  verifier. The reviewer reads it first, up to 15 rounds (each round is a real GitHub review, request changes or approve; fixes are pushes answered by a `[fix round N]` comment); `bin/reviewer-metrics.ts`
   measures it afterwards from the merged PRs (rounds, blockers, false positives, defects that got past a clean verdict). `bin/jarvis-restart.sh` runs typecheck and tests, rebuilds the
   dashboard bundle, and only restarts when all three pass. Under the release supervisor
   those checks run on an immutable per-commit export of HEAD (`~/.jarvis/releases/<sha>`,
