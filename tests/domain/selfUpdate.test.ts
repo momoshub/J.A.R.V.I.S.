@@ -123,7 +123,8 @@ describe("selfUpdateRules is the whole procedure, from the codebase", () => {
       expect(text).not.toContain("prose and comments only");
     }
     // prompt text gets a reviewer and the probe gate but no verifier; runtime and capability get both
-    expect(STANDALONE_REVIEW_RULE).toContain("`prompt` (text that steers an agent) gets the probe gate and a standalone reviewer, no verifier");
+    expect(STANDALONE_REVIEW_RULE).toContain("`prompt` (steering files: instruction files, skills, prompt guides, probe cases) gets the probe gate and a standalone reviewer, no verifier");
+    expect(STANDALONE_REVIEW_RULE).toContain("a prompt string inside a code file is a change to code, so it is `runtime` and also owes the probe gate");
     expect(STANDALONE_REVIEW_RULE).toContain("get a standalone reviewer agent and a verifier before you merge");
     for (const kind of ["tools", "commands", "roles", "tickets", "permissions", "network", "credentials", "process execution", "dependencies", "CI"]) expect(STANDALONE_REVIEW_RULE).toContain(kind);
     expect(STANDALONE_REVIEW_RULE).toContain("the brief quotes the script's reasons");

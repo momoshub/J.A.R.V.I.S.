@@ -1911,7 +1911,7 @@ gh pr diff 123 | bun bin/risk-class.ts --diff -
 | class | what it is | owes |
 | --- | --- | --- |
 | `docs` | prose in doc files (markdown, rst, images, pdf, LICENSE); never a change to a code file, comments included | nothing: typecheck, tests and CI |
-| `prompt` | text that steers an agent: `CLAUDE.md`/`AGENTS.md`, skills, prompt guides, prompt strings in source | the probe gate and a standalone reviewer |
+| `prompt` | steering files an agent loads: `CLAUDE.md`/`AGENTS.md`, skills, prompt guides, probe cases (a prompt string in a code file is `runtime` and still owes the probe gate) | the probe gate and a standalone reviewer |
 | `runtime` | any other code, tests, config, and anything the script does not recognise | a reviewer and a verifier |
 | `capability` | what the bot or its workers may do: tools, commands, roles, tickets, permissions, network, credentials, process execution, dependencies, CI | a reviewer (told the reasons) and a verifier |
 

@@ -8,7 +8,7 @@
  * names the strongest thing the change can do, in four classes (low to high):
  *
  *   docs        - prose in doc files an agent never loads as instructions
- *   prompt      - text that steers an agent's actions: system prompt strings,
+ *   prompt      - files that steer an agent's actions: instruction files,
  *                 prompt guides, skills, CLAUDE.md / AGENTS.md
  *   runtime     - code that runs (logic, commands, adapters, scripts, tests,
  *                 config, anything not recognised: the default fails closed)
@@ -212,7 +212,8 @@ const classifyFile = (file: ChangedFile): { risk: FileRisk; promptText: boolean 
       continue;
     }
     if (isPromptText(text)) {
-      verdicts.push({ class: "prompt", reason: "prompt text in source", promptText: true });
+      // a prompt string in a code file is a change to a code file: runtime, and it owes the probe gate
+      verdicts.push({ class: "runtime", reason: "prompt text in source", promptText: true });
       continue;
     }
     verdicts.push({ class: "runtime", reason: "code", promptText: false });
