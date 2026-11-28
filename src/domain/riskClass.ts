@@ -91,7 +91,9 @@ const CAPABILITY_PATTERNS: readonly { readonly kind: CapabilityKind; readonly re
 const STEERING_TOOL_RE = /^\s*(?:allowed[-_]tools|tools|permissions?|disallowed[-_]tools)\s*:/i;
 
 const DEPENDENCY_LINE_RE = /^\s*"(?:@[\w.-]+\/)?[\w.-]+"\s*:\s*"[\^~<>=*]*\d[^"]*"\s*,?\s*$/;
-const LOCKFILE_RE = /(?:^|\/)(?:bun\.lockb?|package-lock\.json|yarn\.lock|pnpm-lock\.yaml)$/;
+const LOCKFILE_RE = /(?:^|\/)(?:bun\.lockb?|package-lock\.json|yarn\.lock|pnpm-lock\.yaml|Cargo\.lock|poetry\.lock|uv\.lock|Pipfile\.lock|Gemfile\.lock|composer\.lock|go\.sum)$/;
+/** Manifests and requirement lists of other ecosystems: what they name is what gets installed. */
+const DEPENDENCY_FILE_RE = /(?:^|\/)(?:requirements[\w.-]*\.txt|constraints[\w.-]*\.txt|Pipfile|Cargo\.toml|pyproject\.toml|go\.mod|Gemfile|composer\.json)$/;
 const PACKAGE_JSON_RE = /(?:^|\/)package\.json$/;
 const WORKFLOW_RE = /(?:^|\/)\.github\/(?:workflows|actions)\//;
 const MANIFEST_RE = /(?:^|\/)slack-app-manifest\.ya?ml$/;
@@ -100,7 +102,8 @@ const GITHOOK_RE = /(?:^|\/)\.githooks\//;
 
 /** Markdown an agent loads as instructions: skills, agents, guides, probe replay cases, the repo's own instruction files. */
 const STEERING_PATH_RE = /(?:^|\/)(?:CLAUDE|AGENTS)\.md$|(?:^|\/)SKILL\.md$|(?:^|\/)\.claude\/(?:skills|agents|commands)\/|(?:^|\/)prompt-guides\/|(?:^|\/)docs\/probe-cases\//;
-const DOC_EXT_RE = /\.(?:md|mdx|txt|rst|png|jpe?g|gif|svg|webp|ico|pdf)$|(?:^|\/)(?:LICENSE|NOTICE|SECURITY\.md)$/i;
+// Only what cannot run or name a dependency: no svg (a `<script>`), no txt (`requirements.txt`), no mdx (compiled JSX with expressions)
+const DOC_EXT_RE = /\.(?:md|rst|png|jpe?g|gif|webp|ico|pdf)$|(?:^|\/)(?:LICENSE|NOTICE|SECURITY\.md)$/i;
 const SLASH_COMMENT_EXT_RE = /\.(?:ts|tsx|js|jsx|mjs|cjs|css|scss|java|go|rs|c|h|cpp)$/;
 const HASH_COMMENT_EXT_RE = /\.(?:sh|bash|zsh|ya?ml|toml|py|rb|env|example|gitignore|gitleaksignore)$|(?:^|\/)\.env[\w.]*$|(?:^|\/)\.githooks\//;
 
@@ -223,6 +226,7 @@ const classifyFile = (file: ChangedFile): { risk: FileRisk; promptText: boolean 
   const moved = lines.length > 0 || file.deleted === true || file.binary === true || paths.length > 1;
   const any = (re: RegExp): boolean => moved && paths.some((p) => re.test(p));
   if (any(LOCKFILE_RE)) verdicts.push({ class: "capability", reason: "dependencies: lockfile changed", promptText: false });
+  if (any(DEPENDENCY_FILE_RE)) verdicts.push({ class: "capability", reason: "dependencies: manifest or requirements file changed", promptText: false });
   if (any(MANIFEST_RE)) verdicts.push({ class: "capability", reason: "permissions: slack app manifest changed", promptText: false });
   if (any(WORKFLOW_RE)) verdicts.push({ class: "capability", reason: "ci: workflow changed", promptText: false });
   if (any(GITHOOK_RE)) verdicts.push({ class: "capability", reason: "exec: git hook changed", promptText: false });
