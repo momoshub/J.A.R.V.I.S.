@@ -388,3 +388,41 @@ describe("classifyDiff: round 9 review blockers", () => {
     expect(cls(hunk("site.scss", "+// a note"))).toBe("docs");
   });
 });
+
+describe("classifyDiff: a code file is never docs, whatever its lines look like (round 11)", () => {
+  const hunk = (path: string, ...lines: string[]): ChangedFile => ({ path, patch: ["@@ -1,3 +1,3 @@", ...lines].join("\n") });
+  const CODE_PATHS = ["src/a.ts", "web/src/a.tsx", "bin/a.sh", "tool.py", "tool.rb", "app.js", "a.c", "a.h", "a.cpp", "A.java", "a.go", "a.rs", "site.css", "site.scss", "ci.yml", "a.toml", "Makefile", "Dockerfile", ".env.example"];
+
+  test("a comment-only change is runtime in every code language", () => {
+    for (const path of CODE_PATHS) {
+      for (const line of ["// a note about the retry", "# a note about the retry", "/* a note */", " * a note", "-// a removed note"]) {
+        const patch = line.startsWith("-") ? line : `+${line}`;
+        expect(cls(hunk(path, patch))).toBe("runtime");
+      }
+    }
+  });
+
+  test("the round-10 evasions classify runtime: a CR or U+2028 inside a comment, a comment line that closes a multi-line string", () => {
+    expect(cls(hunk("a.ts", '+// a note\rBun.spawnSync(["sh", "-c", "x"]);'))).not.toBe("docs");
+    expect(cls(hunk("a.ts", "+// a note\u2028Bun.spawnSync(x);"))).not.toBe("docs");
+    expect(cls(hunk("tool.py", '+# a note\rimport os; os.system("x")'))).not.toBe("docs");
+    expect(cls(hunk("run.sh", ' echo "', '+# "; touch /tmp/pwned; echo "'))).toBe("runtime");
+    expect(cls(hunk("tool.rb", " msg = <<~TXT", "+TXT", "+# system('x')"))).toBe("runtime");
+    expect(cls(hunk("A.java", ' String s = """', '+// """; Runtime.getRuntime().exec(cmd); String t = """'))).toBe("runtime");
+    expect(cls(hunk("a.cpp", ' const char* s = R"(', '+// )"; std::system("x"); const char* t = R"('))).toBe("runtime");
+    expect(cls(hunk("a.rs", ' let s = r#"', '+// "#; std::process::Command::new("x"); let t = r#"'))).toBe("runtime");
+  });
+
+  test("steering prose in a comment still gets the prompt class, and a capability word in a comment is a capability", () => {
+    expect(cls(hunk("src/a.ts", `+// ${PROSE}`))).toBe("prompt");
+    expect(cls(hunk("run.sh", `+# ${PROSE}`))).toBe("prompt");
+    expect(cls(hunk("src/a.ts", "+// const t = process.env.GH_TOKEN;"))).toBe("capability");
+  });
+
+  test("docs are doc paths only: markdown, rst, images, pdf, LICENSE, outside the steering paths", () => {
+    for (const path of ["README.md", "docs/a.md", "docs/a.rst", "LICENSE", "NOTICE"]) expect(cls(hunk(path, "+a note"))).toBe("docs");
+    expect(cls({ path: "docs/a.png", patch: "", binary: true })).toBe("docs");
+    expect(cls({ path: "docs/a.md", patch: "", deleted: true })).toBe("docs");
+    expect(classifyDiff([]).class).toBe("docs");
+  });
+});
