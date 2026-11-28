@@ -342,3 +342,23 @@ describe("classifyDiff: round 8 review blocker, a # line a hunk cannot place out
     expect(cls(file("run.sh", ...add("# shellcheck disable=SC2086")))).not.toBe("docs");
   });
 });
+
+describe("classifyDiff: round 8 audit findings", () => {
+  test("a utf_7 payload comment is code even when the cookie is not in the diff", () => {
+    expect(cls(file("tool.py", ...add("# +AAo-import os; os.system('id')")))).not.toBe("docs");
+    const withCookie: ChangedFile = { path: "tool.py", patch: ["@@ -1,2 +1,3 @@", " # -*- coding: utf_7 -*-", " import sys", "+# +AAo-import os; os.system('id')"].join("\n") };
+    expect(cls(withCookie)).not.toBe("docs");
+    expect(cls(file("tool.py", ...add("# a note, 1 + 2 = 3")))).toBe("docs");
+  });
+
+  test("the docs describe what the code does: a code path reaches docs through a comment, so no text says every other path is runtime", async () => {
+    const { readFileSync } = await import("node:fs");
+    for (const f of ["src/domain/riskClass.ts", "AGENTS.md"]) {
+      const text = readFileSync(f, "utf8");
+      expect(text).not.toContain("never lowers a class");
+      expect(text).not.toContain("any other path is at least `runtime`");
+      expect(text).not.toContain("every other path is at least `runtime`");
+    }
+    expect(cls(file("src/a.ts", ...add("// a note")))).toBe("docs");
+  });
+});

@@ -104,14 +104,14 @@ const TEST_PATH_RE = /(?:^|\/)(?:tests?|e2e|__tests__)\/|\.(?:test|spec|e2e)\.[c
 const GITHOOK_RE = /(?:^|\/)\.githooks\//;
 
 /** Markdown an agent loads as instructions: skills, agents, guides, probe replay cases, the repo's own instruction files. */
-const STEERING_PATH_RE = /(?:^|\/)(?:CLAUDE|AGENTS|GEMINI)(?:\.local)?\.md$|(?:^|\/)SKILL\.md$|(?:^|\/)\.claude\/(?!settings)[^/]+\/.*\.md$|(?:^|\/)\.claude\/(?:skills|agents|commands)\/|(?:^|\/)\.github\/(?:copilot-instructions\.md|instructions\/)|(?:^|\/)prompt-guides\/|(?:^|\/)docs\/probe-cases\//i;
+const STEERING_PATH_RE = /(?:^|\/)(?:CLAUDE|AGENTS|GEMINI)(?:\.local|\.override)?\.md$|(?:^|\/)SKILL\.md$|(?:^|\/)\.claude\/(?!settings)[^/]+\/.*\.md$|(?:^|\/)\.claude\/(?:skills|agents|commands)\/|(?:^|\/)\.github\/(?:copilot-instructions\.md|(?:instructions|prompts|agents|chatmodes)\/)|(?:^|\/)\.(?:cursor\/rules|clinerules)\/|(?:^|\/)prompt-guides\/|(?:^|\/)docs\/probe-cases\//i;
 // Only what cannot run or name a dependency: no svg (a `<script>`), no txt (`requirements.txt`), no mdx (compiled JSX with expressions)
 const DOC_EXT_RE = /\.(?:md|rst|png|jpe?g|gif|webp|ico|pdf)$|(?:^|\/)(?:LICENSE|NOTICE|SECURITY\.md)$/i;
 const SLASH_COMMENT_EXT_RE = /\.(?:ts|tsx|js|jsx|mjs|cjs|css|scss|java|go|rs|c|h|cpp)$/;
 const HASH_COMMENT_EXT_RE = /\.(?:sh|bash|zsh|ya?ml|toml|py|rb|env|example|gitignore|gitleaksignore)$|(?:^|\/)\.env[\w.]*$|(?:^|\/)\.githooks\//;
 
 /** Consume `*/`-closed block comments and a `//` tail from the left; anything else left over is code (`/* a */ run(x) /* b */`). */
-const uncomment = (line: string): string => line.replace(/^\s*(?:\/\/+|\/\*+|\*+\/?)/, "").replace(/\*\/\s*$/, "");
+const uncomment = (line: string): string => line.replace(/^\s*(?:\/\/+|\/\*+|\*+\/?|#+)/, "").replace(/\*\/\s*$/, "");
 
 function commentsOnly(line: string, inBlock: boolean): boolean {
   let rest = line.trim();
@@ -129,12 +129,15 @@ function commentsOnly(line: string, inBlock: boolean): boolean {
   }
 }
 
+/** Comment-shaped lines a tool obeys: they steer a compiler, a linter or a generator, so they are code. */
+const DIRECTIVE_RE = /@ts-(?:ignore|expect-error|nocheck)|eslint-disable|biome-ignore|istanbul ignore|^\/\/go:|^\/\/\/\s*<|^#\s*(?:shellcheck|cgo|pylint|rubocop|noqa|type:\s*ignore)\b|#\s*noqa\b/;
+
 function isComment(path: string, line: string, inBlock: boolean): boolean {
   const t = line.trim();
   if (t === "") return true;
   if (SLASH_COMMENT_EXT_RE.test(path)) {
     // a `// @ts-ignore` or `/* istanbul ignore */` steers a tool, it is not prose
-    if (/@ts-(?:ignore|expect-error|nocheck)|eslint-disable|biome-ignore|istanbul ignore/.test(t)) return false;
+    if (DIRECTIVE_RE.test(t)) return false;
     if (t.startsWith("//")) return true;
     // inside a block comment, or opening one: a comment only if nothing but comments is on the line
     if (inBlock || t.startsWith("/*")) return commentsOnly(t, inBlock);
@@ -142,7 +145,7 @@ function isComment(path: string, line: string, inBlock: boolean): boolean {
     return false;
   }
   // `# coding: utf_7` is a comment Python obeys: it can turn a later "comment" into code
-  if (HASH_COMMENT_EXT_RE.test(path)) return t.startsWith("#") && !t.startsWith("#!") && !/coding[:=]/i.test(t);
+  if (HASH_COMMENT_EXT_RE.test(path)) return t.startsWith("#") && !t.startsWith("#!") && !/coding[:=]/i.test(t) && !DIRECTIVE_RE.test(t);
   return false;
 }
 
@@ -242,6 +245,12 @@ const classifyFile = (file: ChangedFile): { risk: FileRisk; promptText: boolean 
   // can end the string and start code. A source patch with a backtick or a continued line (trailing backslash) therefore reads no line as a comment.
   // `${` runs code inside a template without a backtick, and in JSX a `{...}` between tags does too, so both count (JSX: any brace in the patch).
   const fragile = SLASH_COMMENT_EXT_RE.test(file.path) && (/`|\\$|\$\{/m.test(file.patch) || (/\.[jt]sx$/.test(file.path) && /[{}]/.test(file.patch)));
+  // The same doubt for hash-comment files: a `#` line a hunk cannot place may sit inside a shell heredoc (`$(...)`, a backtick), a python f-string or
+  // triple-quoted string (`{...}`), a ruby heredoc (`#{...}`) or a yaml block scalar, where it is code or prompt text. Any such opener in the patch (context
+  // lines included) reads no line as a comment.
+  const hashFragile =
+    HASH_COMMENT_EXT_RE.test(file.path) &&
+    (/\$\(|`|\$\{|#\{|<<|\"\"\"|'''|\\$/m.test(file.patch) || (/\.py$/.test(file.path) && /[{}]/.test(file.patch)) || /^[ +-]\s*(?:-\s+)?[\w."'-]+:\s*[|>][+-]?\s*$/m.test(file.patch));
   for (const { text, inBlock } of lines) {
     if (text.trim() === "") continue;
     if (PACKAGE_JSON_RE.test(file.path) && DEPENDENCY_LINE_RE.test(text)) {
@@ -257,9 +266,9 @@ const classifyFile = (file: ChangedFile): { risk: FileRisk; promptText: boolean 
       verdicts.push(tool !== undefined ? { class: "capability", reason: `${tool}: tool grant in a steering file`, promptText: true } : { class: "prompt", reason: "steering text (skill, guide or instruction file)", promptText: true });
       continue;
     }
-    if (!fragile && isComment(file.path, text, inBlock)) {
+    if (!fragile && !hashFragile && isComment(file.path, text, inBlock)) {
       // a hunk cannot show whether a comment-looking line sits inside a multi-line string, where it is prompt text: steering prose there is read as a prompt (a reviewer, no probe gate)
-      verdicts.push(SLASH_COMMENT_EXT_RE.test(file.path) && isPromptText(uncomment(text)) ? { class: "prompt", reason: "comment that reads as steering text (may be inside a string)", promptText: false } : { class: "docs", reason: "comments", promptText: false });
+      verdicts.push((SLASH_COMMENT_EXT_RE.test(file.path) || HASH_COMMENT_EXT_RE.test(file.path)) && isPromptText(uncomment(text)) ? { class: "prompt", reason: "comment that reads as steering text (may be inside a string)", promptText: false } : { class: "docs", reason: "comments", promptText: false });
       continue;
     }
     if (test) {
