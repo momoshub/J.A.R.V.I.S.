@@ -93,6 +93,9 @@ const CAPABILITY_PATTERNS: readonly { readonly kind: CapabilityKind; readonly re
 ];
 
 /** In a skill/agent markdown file only its tool grants are a capability; the prose is `prompt`. */
+/** A sentence: an optional bullet or number, a capital, then at least two more words; or a markdown heading. */
+const STEERING_PROSE_RE = /^\s*(?:#{1,6}\s+\S.*|(?:[-*+]\s+|\d+[.)]\s+)?[A-Z]\S*(?:\s+\S+){2,})$/;
+const STEERING_SHELL_RE = /!`|\$\(|&&|\|\||\s\|\s|`{3}|;\s*$|^\s*(?:[-*+]\s+)?(?:sh|bash|zsh|curl|wget|git|rm|touch|python3?|node|bun|npm|npx|gh|chmod|cat|echo|eval|exec|ssh|nc)\s/;
 const STEERING_LIST_ITEM_RE = /^\s*-\s+\S/;
 const STEERING_TOOL_RE = /^\s*-?\s*(?:allowed[-_]?tools|tools|permissions?|permission[-_]?mode|disallowed[-_]?tools|mcp[-_]?servers|hooks|command|args)\s*:|!`/i;
 
@@ -198,10 +201,15 @@ const classifyFile = (file: ChangedFile): { risk: FileRisk; promptText: boolean 
       continue;
     }
     if (steeringAll) {
-      // a tool grant is a grant key (tools, permissionMode, disallowedTools, mcpServers, hooks, command), a yaml list item, a line that names a `Bash(...)` or `mcp__` tool, or a !`cmd` shell line; removed lines count too
+      // fail closed: in a steering file only a line that reads as a sentence, a heading or a blank is `prompt`. Anything else (a key, a short token, a fence, a shell line, a list item naming a tool) can be a grant or a command, so it is a capability; added or removed
+      if (paths.every((p) => /^docs\/probe-cases\/.*\.json$/.test(p))) {
+        verdicts.push({ class: "prompt", reason: "probe case data", promptText: true });
+        continue;
+      }
       const grant = STEERING_TOOL_RE.test(text);
-      const tool = grant || STEERING_LIST_ITEM_RE.test(text) || /Bash\(|mcp__/.test(text) ? capabilityOf(text) ?? (grant ? "tools" : undefined) : undefined;
-      verdicts.push(tool !== undefined ? { class: "capability", reason: `${tool}: tool grant in a steering file`, promptText: true } : { class: "prompt", reason: "steering text (skill, guide or instruction file)", promptText: true });
+      const named = grant || STEERING_LIST_ITEM_RE.test(text) || /Bash\(|mcp__/.test(text) ? capabilityOf(text) : undefined;
+      const tool = named ?? (grant || !STEERING_PROSE_RE.test(text) || STEERING_SHELL_RE.test(text) ? "tools" : undefined);
+      verdicts.push(tool !== undefined ? { class: "capability", reason: `${tool}: tool grant or non-prose line in a steering file`, promptText: true } : { class: "prompt", reason: "steering text (skill, guide or instruction file)", promptText: true });
       continue;
     }
     if (test) {

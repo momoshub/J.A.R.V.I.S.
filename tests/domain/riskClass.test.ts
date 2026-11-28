@@ -467,5 +467,8 @@ describe("classifyDiff: round 14 review blockers", () => {
     const { readFileSync } = await import("node:fs");
     expect(readFileSync("AGENTS.md", "utf8")).toContain("not a sentence");
   });
+  test("AGENTS.md quotes no metrics figure that has no report behind it", async () => {
+    const { readFileSync } = await import("node:fs");
+    expect(readFileSync("AGENTS.md", "utf8")).not.toContain("65% against 22%");
+  });
 });
-
