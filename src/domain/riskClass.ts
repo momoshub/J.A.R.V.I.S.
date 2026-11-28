@@ -139,7 +139,8 @@ function isComment(path: string, line: string, inBlock: boolean): boolean {
   if (SLASH_COMMENT_EXT_RE.test(path)) {
     // a `// @ts-ignore` or `/* istanbul ignore */` steers a tool, it is not prose
     if (DIRECTIVE_RE.test(t)) return false;
-    if (t.startsWith("//")) return true;
+    // `//` is not a comment in plain css, where it breaks the next declaration
+    if (t.startsWith("//")) return !/\.css$/.test(path);
     // inside a block comment, or opening one: a comment only if nothing but comments is on the line
     if (inBlock || t.startsWith("/*")) return commentsOnly(t, inBlock);
     // a `*` or `*/` line that is not provably inside a block comment (no opener in view) is scanned as code
@@ -147,7 +148,7 @@ function isComment(path: string, line: string, inBlock: boolean): boolean {
   }
   // `# coding: utf_7` is a comment Python obeys: it can turn a later "comment" into code
   // a UTF-7 shift sequence (`+AAo-` is a newline) in a python comment can end it: a payload under a cookie that is not in the diff is code
-  if (HASH_COMMENT_EXT_RE.test(path)) return t.startsWith("#") && !t.startsWith("#!") && !/coding[:=]/i.test(t) && !DIRECTIVE_RE.test(t) && !(/\.py$/.test(path) && /\+[A-Za-z0-9+/]{2,}-/.test(t));
+  if (HASH_COMMENT_EXT_RE.test(path)) return t.startsWith("#") && !t.startsWith("#!") && !/coding[:=]/i.test(t) && !DIRECTIVE_RE.test(t) && !(/\.py$/.test(path) && /\+[A-Za-z0-9+/]|\\[uUxN0-7]/.test(t));
   return false;
 }
 
@@ -246,7 +247,7 @@ const classifyFile = (file: ChangedFile): { risk: FileRisk; promptText: boolean 
   // A hunk cannot show whether a line is inside a multi-line template string: `/*` and `//` lines there are text, and a backtick on a changed line
   // can end the string and start code. A source patch with a backtick or a continued line (trailing backslash) therefore reads no line as a comment.
   // `${` runs code inside a template without a backtick, and in JSX a `{...}` between tags does too, so both count (JSX: any brace in the patch).
-  const fragile = SLASH_COMMENT_EXT_RE.test(file.path) && (/`|\\$|\$\{/m.test(file.patch) || (/\.[jt]sx$/.test(file.path) && /[{}]/.test(file.patch)));
+  const fragile = SLASH_COMMENT_EXT_RE.test(file.path) && (/`|\\\s*$|\?\?\/|\\u[0-9a-fA-F]{4}|\$\{/m.test(file.patch) || (/\.[jt]sx$/.test(file.path) && /[{}]/.test(file.patch)));
   // The same doubt for hash-comment files: a `#` line a hunk cannot place may sit inside a shell heredoc (`$(...)`, a backtick), a python f-string or
   // triple-quoted string (`{...}`), a ruby heredoc (`#{...}`) or a yaml block scalar, where it is code or prompt text. Any such opener in the patch (context
   // lines included) reads no line as a comment.
