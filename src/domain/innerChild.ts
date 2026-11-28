@@ -11,7 +11,7 @@
  * what is said before and after.
  */
 
-import { STANDALONE_REVIEW_RULE, selfPrAccountsRule, type SelfPrAccounts } from "./selfUpdate.ts";
+import { STANDALONE_REVIEW_RULE, flowAuditRule, selfPrAccountsRule, type SelfPrAccounts } from "./selfUpdate.ts";
 
 /** One finished turn, as the triage sees it. */
 export type ObservedTurn = {
@@ -209,8 +209,9 @@ export const fixPrompt = (
     "- in the worktree run `bun run typecheck` and `bun test` (a full run queues behind other full runs on this host and may wait a while: that is not a hang, do not kill it or turn the lock off). if they do not pass before a PR exists, push nothing, remove the worktree and report that",
     `- when they pass: commit (no co-author line), push the branch and open a PR`,
     `- ${STANDALONE_REVIEW_RULE}`,
+    `- ${flowAuditRule(true)}`,
     ...(accounts ? [`- ${selfPrAccountsRule(accounts)}`] : []),
-    "- if the reviewer is still not clean after 5 rounds, or it died or went silent, or the checks or CI cannot be made green again after a review fix, merge nothing, leave the PR open, remove the worktree, name the PR and what is still open in your summary, end with `RESULT: not fixed`, and stop there - skip the steps below",
+    "- if the reviewer is still not clean after 15 rounds, or it died or went silent, or the checks or CI cannot be made green again after a review fix, merge nothing, leave the PR open, remove the worktree, name the PR and what is still open in your summary, end with `RESULT: not fixed`, and stop there - skip the steps below",
     `- then merge it yourself with \`bin/merge-when-green.sh <pr>\` - CI, the checks you ran and the reviewer are the gate. if CI stays red, treat it like the case above. the PR body carries no attribution line, no "Generated with ..." of any kind`,
     `- then bring it home: \`git -C ${sourceDir} pull --ff-only origin main\`. the main folder may hold someone else's uncommitted work - never revert, reset, stash or rewrite it. if the pull is refused, stop and report that`,
     `- remove the worktree, then run ${restartScript}`,

@@ -319,7 +319,7 @@ no classes.
   and a one-shot push credential, the reviewer and verifier a non-admin login that can only post reviews and comments, the app's private key and the merge live in the bot alone
   (the owner's by-hand steps to finish this are in the README, "Who merges"). When it touches runtime code
   (logic, commands, adapters, `bin/` scripts, or a mixed PR) a reviewer Orca worker
-  reads it first, up to 5 rounds (each round is a real GitHub review, request changes or approve; fixes are pushes answered by a `[fix round N]` comment); docs,
+  reads it first, up to 15 rounds (each round is a real GitHub review, request changes or approve; fixes are pushes answered by a `[fix round N]` comment); docs,
   prompt text, skills and dashboard UI need no reviewer. `bin/jarvis-restart.sh` runs typecheck and tests, rebuilds the
   dashboard bundle, and only restarts when all three pass. Under the release supervisor
   those checks run on an immutable per-commit export of HEAD (`~/.jarvis/releases/<sha>`,

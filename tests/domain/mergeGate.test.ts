@@ -285,8 +285,15 @@ describe("app-only verdicts (MERGE_GATE_APP_VERDICTS)", () => {
     refusedWith(one, "two separate workers");
   });
 
-  test("a stranger human's comment on a verdict marker blocks nothing it does not have to, but is named", () => {
-    refusedWith(bots({ comments: [...bots().comments, { login: "stranger", userType: "User", body: "[verify]\nVERDICT: verified" }] }), "posted by stranger, a human account");
+  test("a named human attester is refused with a reason; a stranger's comment is ignored, so no GitHub user can block a PR", () => {
+    const withHuman = (login: string, attesters: string[]) => bots({ attesters: [...bots().attesters, ...attesters], comments: [...bots().comments, { login, userType: "User", body: "[verify]\nVERDICT: failed" }] });
+    refusedWith(withHuman("lyluongthien", ["lyluongthien"]), "posted by lyluongthien, a human account");
+    expect(evaluateGate(withHuman("stranger", []))).toEqual({ decision: "merge", runtime: true });
+  });
+
+  test("a clean audit dressed to hide a FALSE row does not pass the gate", () => {
+    const dressed = `[flow-audit]\nHEAD: ${SHA}\n| 1 | a | ${SHA.slice(0, 7)} | SUPPORTED |\n| 2 | stale verify | **FALSE** |\nVERDICT: clean`;
+    refusedWith(bots({ comments: [bots().comments[0]!, { login: "aud-app[bot]", userType: BOT_TYPE, body: dressed }] }), "UNSUPPORTED or FALSE row");
   });
 });
 

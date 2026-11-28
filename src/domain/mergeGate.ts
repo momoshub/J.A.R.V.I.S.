@@ -166,11 +166,15 @@ const flowAuditCheck = (input: GateInput): string | undefined => {
 
 const VERDICT_WORDS = /^\s*(\[review round \d+\]|\[verify\]|\[flow-audit\])/i;
 
-/** With `appVerdicts`: every verdict-marked review or comment from a login that is not a Bot, named once, so the refusal says why nobody's words count. */
+/**
+ * With `appVerdicts`: every verdict-marked review or comment from a NAMED ATTESTER that is not a Bot, named once, so the
+ * refusal says why that person's words do not count. A stranger's comment is ignored (never refused for), or any GitHub
+ * user could block any PR of a public repo with one comment.
+ */
 const humanVerdicts = (input: GateInput): string[] => {
   const humans = new Set<string>();
   for (const x of [...input.reviews, ...input.comments]) {
-    if (VERDICT_WORDS.test(x.body) && lc(x.userType ?? "") !== "bot" && lc(x.login) !== lc(input.pr.author) && x.login) humans.add(x.login);
+    if (VERDICT_WORDS.test(x.body) && lc(x.userType ?? "") !== "bot" && lc(x.login) !== lc(input.pr.author) && input.attesters.some((a) => lc(a) === lc(x.login))) humans.add(x.login);
   }
   return [...humans];
 };

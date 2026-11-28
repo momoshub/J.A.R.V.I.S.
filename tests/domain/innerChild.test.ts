@@ -110,12 +110,16 @@ describe("messages", () => {
     // a standalone reviewer reads the PR before it is merged
     expect(text).toContain(STANDALONE_REVIEW_RULE);
     expect(text.indexOf(STANDALONE_REVIEW_RULE)).toBeLessThan(text.indexOf("then merge it yourself"));
+    // the flow audit sits after the reviewer and before the merge, and the cap in the rule is the one the prompt states
+    expect(text).toContain("- flow audit (every PR");
+    expect(text.indexOf("- flow audit")).toBeLessThan(text.indexOf("then merge it yourself"));
+    expect(text).not.toContain("after 5 rounds");
     // and merges only through the CI gate
     expect(text).toContain("then merge it yourself with `bin/merge-when-green.sh <pr>`");
     expect(text).not.toContain("no CI");
     // a review that never comes back clean ends the fix unmerged, with a result line
-    expect(text).toMatch(/still not clean after 5 rounds[^\n]*RESULT: not fixed`, and stop there/);
-    expect(text.indexOf("still not clean after 5 rounds")).toBeLessThan(text.indexOf("then merge it yourself"));
+    expect(text).toMatch(/still not clean after 15 rounds[^\n]*RESULT: not fixed`, and stop there/);
+    expect(text.indexOf("still not clean after 15 rounds")).toBeLessThan(text.indexOf("then merge it yourself"));
   });
 
   test("after notices", () => {
