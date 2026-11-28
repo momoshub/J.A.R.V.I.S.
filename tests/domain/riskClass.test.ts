@@ -221,6 +221,21 @@ describe("parseUnifiedDiff", () => {
     expect(r.files.map((f) => f.class)).toEqual(["runtime", "docs", "runtime", "docs", "runtime"]);
   });
 
+  test("a rename to a binary file with a doc extension keeps the old path's class: the binary branch checks every path", () => {
+    const rename = (from: string, to: string): string => ["diff --git a/" + from + " b/" + to, "similarity index 99%", "rename from " + from, "rename to " + to, "Binary files a/" + from + " and b/" + to + " differ"].join("\n");
+    const klass = (from: string, to: string): string => classifyDiff(parseUnifiedDiff(rename(from, to))).class;
+    expect(klass(".github/workflows/ci.yml", "docs/ci.png")).toBe("capability");
+    expect(klass("src/policy.ts", "docs/policy.png")).toBe("runtime");
+    expect(klass("bun.lock", "docs/lock.pdf")).toBe("capability");
+    expect(klass(".claude/skills/verify/SKILL.md", "docs/skill.png")).toBe("runtime");
+    // a binary doc asset moved between doc paths, and a binary file modified in place, keep their class
+    expect(klass("docs/a.png", "docs/b.png")).toBe("docs");
+    expect(cls({ path: "docs/a.png", patch: "", binary: true })).toBe("docs");
+    expect(cls({ path: ".github/workflows/ci.yml", patch: "", binary: true })).toBe("capability");
+    // a mode change on a binary doc asset is not docs
+    expect(cls({ path: "docs/a.png", patch: "", binary: true, modeChanged: true })).toBe("runtime");
+  });
+
   test("a hunk line that reads like a file header does not split the file", () => {
     const text = ["diff --git a/x.md b/x.md", "--- a/x.md", "+++ b/x.md", "@@ -1 +1,2 @@", "+++ not a header", "+diff --git a/y b/y"].join("\n");
     expect(parseUnifiedDiff(text).map((f) => f.path)).toEqual(["x.md"]);

@@ -208,17 +208,19 @@ const classifyFile = (file: ChangedFile): { risk: FileRisk; promptText: boolean 
   };
   const paths = [file.path, ...(file.oldPath !== undefined && file.oldPath !== file.path ? [file.oldPath] : [])];
   const steering = paths.some((p) => STEERING_PATH_RE.test(p));
-  const lines = changedLines(file.patch);
+  const lines = file.binary ? [] : changedLines(file.patch);
   const verdicts: Verdict[] = [];
 
+  // a binary file has no lines to read, but it is not docs by its new path alone: a rename out of a workflow or source file keeps that class,
+  // so it falls through to the path checks below instead of returning here
   if (file.binary) {
-    return DOC_EXT_RE.test(file.path) && !steering ? done([{ class: "docs", reason: "binary doc asset", promptText: false }]) : done([{ class: "runtime", reason: "binary file", promptText: false }]);
+    verdicts.push(paths.every((p) => DOC_EXT_RE.test(p)) && !steering ? { class: "docs", reason: "binary doc asset", promptText: false } : { class: "runtime", reason: "binary file", promptText: false });
   }
   if (file.modeChanged) verdicts.push({ class: "runtime", reason: "file mode change", promptText: false });
   if (file.deleted && !steering && !paths.every((p) => DOC_EXT_RE.test(p))) verdicts.push({ class: "runtime", reason: "file deleted", promptText: false });
 
   // a rename or delete changes a file whose old path counts too, even with no changed line
-  const moved = lines.length > 0 || file.deleted === true || paths.length > 1;
+  const moved = lines.length > 0 || file.deleted === true || file.binary === true || paths.length > 1;
   const any = (re: RegExp): boolean => moved && paths.some((p) => re.test(p));
   if (any(LOCKFILE_RE)) verdicts.push({ class: "capability", reason: "dependencies: lockfile changed", promptText: false });
   if (any(MANIFEST_RE)) verdicts.push({ class: "capability", reason: "permissions: slack app manifest changed", promptText: false });
